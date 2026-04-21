@@ -20,6 +20,7 @@ GEMINI.md
 # Visual Studio
 .vs/
 .vscode/
+.claude/
 
 # Web UI
 dist-ssr/
