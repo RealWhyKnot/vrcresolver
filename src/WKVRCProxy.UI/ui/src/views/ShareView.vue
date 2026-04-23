@@ -80,16 +80,18 @@ async function copyP2PUrl() {
 </script>
 
 <template>
-  <div class="h-full flex flex-col p-8 animate-in fade-in duration-700 overflow-y-auto no-scrollbar">
+  <div class="h-full flex flex-col p-8 overflow-y-auto no-scrollbar">
 
     <!-- Header -->
-    <div class="mb-6">
+    <div class="mb-6"
+         v-motion :initial="{ opacity: 0, y: -8 }" :enter="{ opacity: 1, y: 0, transition: { duration: 450, delay: 40 } }">
       <h2 class="text-2xl font-black uppercase tracking-tighter italic text-white/90">Share</h2>
       <p class="text-white/35 text-[9px] font-bold uppercase tracking-[0.2em] mt-1">Broadcast your stream to a friend via WhyKnot.dev</p>
     </div>
 
     <!-- URL input -->
-    <div class="mb-4">
+    <div class="mb-4"
+         v-motion :initial="{ opacity: 0, y: 8 }" :enter="{ opacity: 1, y: 0, transition: { duration: 450, delay: 100 } }">
       <label class="text-[7px] font-bold uppercase tracking-[0.2em] text-white/30 mb-1.5 block">Video URL</label>
       <div class="flex gap-2">
         <input v-model="shareUrl" type="text" placeholder="Paste a YouTube / Twitch / direct video URL..."
@@ -105,9 +107,10 @@ async function copyP2PUrl() {
     </div>
 
     <!-- Mode selector -->
-    <div class="flex gap-2 mb-5">
+    <div class="flex gap-2 mb-5"
+         v-motion :initial="{ opacity: 0, y: 8 }" :enter="{ opacity: 1, y: 0, transition: { duration: 450, delay: 160 } }">
       <button v-for="m in modes" :key="m.id" @click="mode = (m.id as 'cloud' | 'p2p')"
-              class="flex-1 py-3 rounded-2xl text-[8px] font-black uppercase tracking-widest transition-all duration-300 italic"
+              class="flex-1 py-3 rounded-2xl text-[8px] font-black uppercase tracking-widest transition-all duration-300 italic active:scale-95"
               :class="mode === m.id
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                 : 'bg-white/5 text-white/45 hover:bg-white/8 hover:text-white/65'">
@@ -117,6 +120,8 @@ async function copyP2PUrl() {
 
     <!-- ── Mode B: Cloud Link ── -->
     <template v-if="mode === 'cloud'">
+    <Transition name="state-swap" mode="out-in">
+      <div :key="appStore.cloudResolveStatus">
 
       <!-- Idle / no resolve yet -->
       <div v-if="appStore.cloudResolveStatus === 'idle'" class="p-4 bg-white/[0.03] border border-white/5 rounded-2xl space-y-3">
@@ -186,10 +191,14 @@ async function copyP2PUrl() {
         </button>
       </div>
 
+      </div>
+    </Transition>
     </template>
 
     <!-- ── Mode A: P2P Stream ── -->
     <template v-if="mode === 'p2p'">
+    <Transition name="state-swap" mode="out-in">
+      <div :key="appStore.p2pShareStatus">
 
       <!-- Idle -->
       <div v-if="appStore.p2pShareStatus === 'idle'" class="p-4 bg-white/[0.03] border border-white/5 rounded-2xl space-y-3">
@@ -253,7 +262,16 @@ async function copyP2PUrl() {
         </button>
       </div>
 
+      </div>
+    </Transition>
     </template>
 
   </div>
 </template>
+
+<style scoped>
+.state-swap-enter-active { transition: all 350ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+.state-swap-leave-active { transition: all 200ms ease-in; }
+.state-swap-enter-from   { opacity: 0; transform: translateY(8px) scale(0.97); }
+.state-swap-leave-to     { opacity: 0; transform: translateY(-8px) scale(0.97); }
+</style>

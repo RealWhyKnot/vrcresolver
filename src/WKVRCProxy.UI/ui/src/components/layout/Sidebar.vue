@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, watch, nextTick, onMounted } from 'vue'
 import { useAppStore } from '../../stores/appStore'
 
 const appStore = useAppStore()
@@ -12,6 +13,29 @@ const tabs = [
   { id: 'logs', label: 'Logs', icon: 'bi-terminal-fill' },
   { id: 'settings', label: 'Settings', icon: 'bi-sliders' }
 ]
+
+const navRoot = ref<HTMLElement | null>(null)
+const indicator = ref<{ top: number; height: number; visible: boolean }>({ top: 0, height: 0, visible: false })
+
+function measure() {
+  const root = navRoot.value
+  if (!root) return
+  const active = root.querySelector<HTMLElement>(`[data-tab-id="${appStore.activeTab}"]`)
+  if (!active) return
+  indicator.value = {
+    top: active.offsetTop,
+    height: active.offsetHeight,
+    visible: true
+  }
+}
+
+watch(() => appStore.activeTab, () => nextTick(measure))
+
+onMounted(() => {
+  nextTick(measure)
+  // Re-measure on resize just in case the font metrics shift.
+  window.addEventListener('resize', measure)
+})
 </script>
 
 <template>
@@ -34,17 +58,19 @@ const tabs = [
       </div>
     </div>
 
-    <nav class="flex-grow space-y-1">
-      <button v-for="tab in tabs" :key="tab.id" @click="appStore.activeTab = tab.id"
-              class="w-full flex items-center gap-3.5 px-5 py-3 rounded-2xl transition-all duration-500 group relative overflow-hidden hover:shadow-[inset_0_0_20px_rgba(59,130,246,0.05)]"
+    <nav ref="navRoot" class="flex-grow space-y-1 relative">
+      <!-- Sliding active indicator pill -->
+      <div v-show="indicator.visible"
+           class="absolute left-0 right-0 bg-white/5 border border-white/10 rounded-2xl shadow-xl pointer-events-none tab-indicator"
+           :style="{ top: indicator.top + 'px', height: indicator.height + 'px' }">
+        <div class="absolute left-0 top-0 bottom-0 w-[2px] bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
+      </div>
+
+      <button v-for="tab in tabs" :key="tab.id"
+              :data-tab-id="tab.id"
+              @click="appStore.activeTab = tab.id"
+              class="w-full flex items-center gap-3.5 px-5 py-3 rounded-2xl transition-colors duration-300 group relative active:scale-[0.98]"
               :class="appStore.activeTab === tab.id ? 'text-white' : 'text-white/50 hover:text-white/70'">
-
-        <!-- Active Left Accent Bar -->
-        <div v-if="appStore.activeTab === tab.id" class="absolute left-0 inset-y-0 w-[2px] bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
-
-        <!-- Active Background -->
-        <div v-if="appStore.activeTab === tab.id" class="absolute inset-0 bg-white/5 border border-white/10 rounded-2xl shadow-xl"></div>
-        <div v-else class="absolute inset-0 bg-transparent group-hover:bg-white/[0.02] rounded-2xl transition-all duration-500"></div>
 
         <i class="bi text-lg relative z-10 transition-transform duration-500 group-hover:scale-110 group-hover:text-blue-400"
            :class="[tab.icon, appStore.activeTab === tab.id ? 'text-blue-400' : '']"></i>
@@ -57,7 +83,7 @@ const tabs = [
         <span v-else-if="tab.id === 'history' && appStore.config.history.length > 0" class="relative z-10 ml-auto bg-blue-500/20 text-blue-400 text-[7px] font-black px-1.5 py-0.5 rounded-full">{{ appStore.config.history.length }}</span>
 
         <!-- Active Indicator Dot -->
-        <div v-if="appStore.activeTab === tab.id" class="absolute right-4 w-1 h-1 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,1)]"></div>
+        <div v-if="appStore.activeTab === tab.id" class="absolute right-4 w-1 h-1 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,1)] z-10"></div>
       </button>
     </nav>
 
@@ -70,3 +96,10 @@ const tabs = [
     </div>
   </aside>
 </template>
+
+<style scoped>
+.tab-indicator {
+  transition: top 400ms cubic-bezier(0.34, 1.56, 0.64, 1),
+              height 300ms ease-out;
+}
+</style>

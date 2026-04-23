@@ -107,6 +107,18 @@ export interface DemotionNotification {
   correlationId?: string;
 }
 
+export type ToastVariant = 'info' | 'success' | 'warning' | 'error'
+
+export interface Toast {
+  id: string;
+  variant: ToastVariant;
+  title: string;
+  message?: string;
+  /** ms until auto-dismiss; 0 or less = sticky */
+  timeoutMs?: number;
+  createdAt: number;
+}
+
 export const useAppStore = defineStore('app', () => {
   const activeTab = ref('dashboard')
   const logs = ref<LogEntry[]>([])
@@ -162,7 +174,7 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.23.3-D680')
+  const version = ref('2026.4.23.4-20AF')
 
   const demotions = ref<DemotionNotification[]>([])
   const DEMOTION_CAP = 20
@@ -174,6 +186,61 @@ export const useAppStore = defineStore('app', () => {
     localVersion: '',
     remoteVersion: ''
   })
+  // Previous status used to detect transitions (e.g. Checking -> Updated) for one-shot toasts.
+  let _prevYtDlpStatus: YtDlpUpdateStatus['status'] = 'Idle'
+  // Set when user clicks Save; cleared when the CONFIG echo returns. Lets us confirm persistence
+  // on the round-trip rather than trusting the optimistic local mutation.
+  let _pendingSaveToast = false
+
+  const toasts = ref<Toast[]>([])
+  const _toastTimers = new Map<string, number>()
+  const TOAST_CAP = 6
+
+  function enqueueToast(t: { variant: ToastVariant; title: string; message?: string; id?: string; timeoutMs?: number }) {
+    const id = t.id ?? `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const timeoutMs = t.timeoutMs ?? 4000
+    const toast: Toast = {
+      id,
+      variant: t.variant,
+      title: t.title,
+      message: t.message,
+      timeoutMs,
+      createdAt: Date.now()
+    }
+    toasts.value.unshift(toast)
+    if (toasts.value.length > TOAST_CAP) {
+      const dropped = toasts.value.pop()
+      if (dropped) {
+        const timer = _toastTimers.get(dropped.id)
+        if (timer) window.clearTimeout(timer)
+        _toastTimers.delete(dropped.id)
+      }
+    }
+    if (timeoutMs > 0) {
+      const handle = window.setTimeout(() => dismissToast(id), timeoutMs)
+      _toastTimers.set(id, handle)
+    }
+  }
+
+  function dismissToast(id: string) {
+    const timer = _toastTimers.get(id)
+    if (timer) window.clearTimeout(timer)
+    _toastTimers.delete(id)
+    toasts.value = toasts.value.filter(t => t.id !== id)
+  }
+
+  function pauseToast(id: string) {
+    const timer = _toastTimers.get(id)
+    if (timer) window.clearTimeout(timer)
+    _toastTimers.delete(id)
+  }
+
+  function resumeToast(id: string) {
+    const t = toasts.value.find(x => x.id === id)
+    if (!t || !t.timeoutMs || t.timeoutMs <= 0) return
+    const handle = window.setTimeout(() => dismissToast(id), t.timeoutMs)
+    _toastTimers.set(id, handle)
+  }
 
   function handleMessage(message: string) {
     try {
@@ -186,6 +253,10 @@ export const useAppStore = defineStore('app', () => {
         }
       } else if (parsed.type === 'CONFIG') {
         config.value = parsed.data
+        if (_pendingSaveToast) {
+          enqueueToast({ variant: 'success', title: 'Settings saved' })
+          _pendingSaveToast = false
+        }
       } else if (parsed.type === 'STATUS') {
         status.value = parsed.data
       } else if (parsed.type === 'PROMPT_HOSTS_SETUP') {
@@ -193,12 +264,14 @@ export const useAppStore = defineStore('app', () => {
       } else if (parsed.type === 'P2P_SHARE_STARTED') {
         p2pShareStatus.value = 'active'
         p2pSharePublicUrl.value = parsed.data?.publicUrl ?? ''
+        enqueueToast({ variant: 'success', title: 'Stream active', message: 'Share link ready to copy.' })
       } else if (parsed.type === 'P2P_SHARE_STOPPED') {
         p2pShareStatus.value = 'idle'
         p2pSharePublicUrl.value = ''
       } else if (parsed.type === 'P2P_SHARE_ERROR') {
         p2pShareStatus.value = 'error'
         p2pShareError.value = parsed.data?.message ?? 'Unknown error'
+        enqueueToast({ variant: 'error', title: 'Stream failed', message: p2pShareError.value, timeoutMs: 6000 })
       } else if (parsed.type === 'CLOUD_RESOLVE_RESULT') {
         if (parsed.data?.success) {
           cloudResolveStatus.value = 'ready'
@@ -206,9 +279,17 @@ export const useAppStore = defineStore('app', () => {
           cloudResolveTier.value = parsed.data.tier ?? ''
           cloudResolveHeight.value = parsed.data.height ?? null
           cloudResolveError.value = ''
+          const height = cloudResolveHeight.value
+          const tier = cloudResolveTier.value
+          enqueueToast({
+            variant: 'success',
+            title: 'Resolved',
+            message: [tier && tier.toUpperCase(), height && `${height}p`].filter(Boolean).join(' · ') || undefined
+          })
         } else {
           cloudResolveStatus.value = 'error'
           cloudResolveError.value = parsed.data?.message ?? 'Resolve failed'
+          enqueueToast({ variant: 'error', title: 'Resolve failed', message: cloudResolveError.value, timeoutMs: 6000 })
         }
       } else if (parsed.type === 'RELAY_EVENT') {
         const e = parsed.data as RelayEvent;
@@ -222,7 +303,21 @@ export const useAppStore = defineStore('app', () => {
       } else if (parsed.type === 'BYPASS_MEMORY') {
         bypassMemory.value = (parsed.data ?? []) as BypassMemoryRow[]
       } else if (parsed.type === 'YTDLP_UPDATE') {
-        ytDlpUpdate.value = parsed.data as YtDlpUpdateStatus
+        const next = parsed.data as YtDlpUpdateStatus
+        const prev = _prevYtDlpStatus
+        ytDlpUpdate.value = next
+        if (prev !== next.status) {
+          if (next.status === 'Updated') {
+            enqueueToast({
+              variant: 'success',
+              title: 'yt-dlp updated',
+              message: next.localVersion ? `Now running ${next.localVersion}` : undefined
+            })
+          } else if (next.status === 'Failed' && prev !== 'Idle') {
+            enqueueToast({ variant: 'error', title: 'yt-dlp update failed', message: next.detail || undefined, timeoutMs: 6000 })
+          }
+          _prevYtDlpStatus = next.status
+        }
       } else if (parsed.type === 'STRATEGY_DEMOTED') {
         const p = parsed.data ?? {}
         const entry: DemotionNotification = {
@@ -235,6 +330,11 @@ export const useAppStore = defineStore('app', () => {
         }
         demotions.value.unshift(entry)
         if (demotions.value.length > DEMOTION_CAP) demotions.value.pop()
+        enqueueToast({
+          variant: 'warning',
+          title: `Demoted: ${entry.strategyName}`,
+          message: entry.reason
+        })
       }
     } catch (e) { }
   }
@@ -263,6 +363,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function saveConfig() {
+    _pendingSaveToast = true
     sendMessage('SAVE_CONFIG', config.value)
   }
 
@@ -391,7 +492,12 @@ export const useAppStore = defineStore('app', () => {
     refreshYtDlpUpdate,
     demotions,
     dismissDemotion,
-    clearDemotions
+    clearDemotions,
+    toasts,
+    enqueueToast,
+    dismissToast,
+    pauseToast,
+    resumeToast
   }
 })
 

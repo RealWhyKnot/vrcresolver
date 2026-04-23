@@ -3,6 +3,8 @@ import { onMounted } from 'vue'
 import { useAppStore } from './stores/appStore'
 import ThreeBackground from './components/ThreeBackground.vue'
 import Sidebar from './components/layout/Sidebar.vue'
+import ToastContainer from './components/ToastContainer.vue'
+import ActivityBar from './components/ActivityBar.vue'
 import DashboardView from './views/DashboardView.vue'
 import HistoryView from './views/HistoryView.vue'
 import BypassView from './views/BypassView.vue'
@@ -87,6 +89,10 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- Global activity bar + toasts (z-index above all content) -->
+    <ActivityBar />
+    <ToastContainer />
 
     <!-- 3D Background & Overlays -->
     <ThreeBackground :isReduced="appStore.activeTab !== 'dashboard'" />

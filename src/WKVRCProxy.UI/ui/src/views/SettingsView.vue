@@ -69,8 +69,9 @@ function clearHistory() {
 </script>
 
 <template>
-  <div class="p-8 max-w-4xl space-y-10 animate-in zoom-in-95 duration-700">
-    <div class="space-y-2">
+  <div class="p-8 max-w-4xl space-y-10">
+    <div class="space-y-2"
+         v-motion :initial="{ opacity: 0, y: -8 }" :enter="{ opacity: 1, y: 0, transition: { duration: 450, delay: 40 } }">
       <h2 class="text-3xl font-black uppercase tracking-tighter italic">Settings</h2>
       <p class="text-white/45 font-black uppercase tracking-[0.4em] text-[9px] ml-1">Configuration</p>
     </div>
