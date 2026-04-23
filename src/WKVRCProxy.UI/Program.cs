@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -126,6 +127,7 @@ class Program
         var potProvider = new PotProviderService();
         var integrityManager = new RelayIntegrityManager();
         var ytDlpUpdater = new YtDlpUpdater();
+        var bgutilPluginUpdater = new BgutilPluginUpdater();
         var browserSessionCache = new BrowserSessionCache();
         // BrowserExtractService is not a module (no InitializeAsync lifecycle needed — its browser
         // is lazy-initialised on first extraction call). Constructed here so Program.cs owns its
@@ -148,6 +150,7 @@ class Program
         _coordinator.Register(relayServer);
         _coordinator.Register(integrityManager);
         _coordinator.Register(ytDlpUpdater);
+        _coordinator.Register(bgutilPluginUpdater);
         _coordinator.Register(warpService);
 
         ytDlpUpdater.OnStatusChanged += (status, detail, local, remote) => {
@@ -239,6 +242,10 @@ class Program
                         break;
                     case SystemEventType.Error:
                         eventType = "ERROR";
+                        data = evt.Payload!;
+                        break;
+                    case SystemEventType.StrategyDemoted:
+                        eventType = "STRATEGY_DEMOTED";
                         data = evt.Payload!;
                         break;
                     default:
@@ -484,6 +491,8 @@ class Program
                             _settings.Config.CustomVrcPath = newConfig.CustomVrcPath;
                             _settings.Config.BypassHostsSetupDeclined = newConfig.BypassHostsSetupDeclined;
                             _settings.Config.EnableRelayBypass = newConfig.EnableRelayBypass;
+                            _settings.Config.EnablePreflightProbe = newConfig.EnablePreflightProbe;
+                            _settings.Config.NativeAvProUaHosts = newConfig.NativeAvProUaHosts ?? new List<string> { "vr-m.net" };
                             _settings.Save();
                         }
                     }

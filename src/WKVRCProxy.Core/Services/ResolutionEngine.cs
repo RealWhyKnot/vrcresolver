@@ -78,10 +78,33 @@ public class ResolutionEngine
     // for the same video (thumbnail probe + duration probe + actual play). Without this, each call hits
     // whyknot.dev fresh, burning ~6s per trip. Cache TTL stays short to keep CDN URLs (which expire
     // server-side) fresh and lets transient failures self-heal on the next real play.
-    private record ResolveCacheEntry(YtDlpResult Result, string Tier, DateTime Expires);
+    //
+    // MaxHits caps replays: 2-3 calls per play-event is the normal VRChat pattern, but AVPro retrying
+    // a broken URL shows up as 4+ calls within the TTL. After MaxHits, the entry self-invalidates so
+    // the next attempt re-resolves — previously we'd keep serving a stale URL for the full 90s window
+    // even when AVPro was obviously bouncing off it (e.g. SoundCloud signed-URL expiry).
+    private record ResolveCacheEntry(YtDlpResult Result, string Tier, DateTime Expires, int Hits);
     private readonly ConcurrentDictionary<string, ResolveCacheEntry> _resolveCache = new();
     private static readonly TimeSpan ResolveCacheTtl = TimeSpan.FromSeconds(90);
+    private const int ResolveCacheMaxHits = 3;
     public static string ResolveCacheKey(string url, string player) => player + "|" + url;
+
+    // Short-term record of what each recent resolution handed back. Keyed by BOTH the outgoing
+    // resolved URL (post-wrap) AND the original user URL — VRChat's AVPro "Opening" log line can
+    // reference either depending on whether VRChat's own yt-dlp hook intercepted. When
+    // VrcLogMonitor fires OnAvProLoadFailure with an URL, we look it up here to find the strategy
+    // that produced it, then demote that strategy with PlaybackFailed (one-strike demote).
+    //
+    // HistoryEntryRef lets us flip the matching history row's PlaybackVerified flag on the
+    // feedback signal — without it, the UI's Success column would still lie about dead URLs.
+    private record RecentResolution(string StrategyName, string MemKey, string OriginalUrl, string ResolvedUrl, DateTime CreatedAt, string CorrelationId, HistoryEntry? HistoryEntryRef);
+    private readonly ConcurrentDictionary<string, RecentResolution> _recentByUrl = new();
+    private static readonly TimeSpan RecentResolutionTtl = TimeSpan.FromSeconds(60);
+    private const int RecentResolutionCap = 64;
+    // How long to wait before promoting a history entry from "pending" to "verified". AVPro
+    // typically logs "Loading failed" within 1-3 seconds of Opening; 8s is comfortable headroom
+    // without making the UI feel stuck.
+    private static readonly TimeSpan PlaybackVerifyDelay = TimeSpan.FromSeconds(8);
 
     public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager, PatcherService patcher, CurlImpersonateClient? curlClient = null, PotProviderService? potProvider = null, BrowserExtractService? browserExtractor = null, WarpService? warp = null)
     {
@@ -109,7 +132,103 @@ public class ResolutionEngine
         _strategyMemory = new StrategyMemory(_logger, AppDomain.CurrentDomain.BaseDirectory);
         _strategyMemory.Load();
 
+        // Close the feedback loop: when AVPro reports Loading failed, find the strategy that
+        // produced that URL and demote it, so the next request doesn't re-use the broken
+        // fast-path. Playback failure → PlaybackFailed → one-strike demote (see StrategyMemory).
+        _monitor.OnAvProLoadFailure += HandleAvProLoadFailure;
+
         LogActiveTiers();
+    }
+
+    private void HandleAvProLoadFailure(string failedUrl, DateTime observedAt)
+    {
+        if (string.IsNullOrWhiteSpace(failedUrl)) return;
+        PruneRecentResolutions();
+        if (!_recentByUrl.TryGetValue(failedUrl, out var recent))
+        {
+            _logger.Debug("[Playback] AVPro Loading failed for URL not in recent-resolutions ring (" +
+                (failedUrl.Length > 80 ? failedUrl.Substring(0, 80) + "..." : failedUrl) + "). Ignoring — likely a URL WKVRCProxy did not resolve.");
+            return;
+        }
+        if (observedAt - recent.CreatedAt > RecentResolutionTtl)
+        {
+            _logger.Debug("[Playback] AVPro failure for resolved URL older than TTL — not demoting.");
+            return;
+        }
+        _logger.Warning("[Playback] [" + recent.CorrelationId + "] AVPro rejected resolved URL from '" + recent.StrategyName + "' on " + recent.MemKey + ". Demoting (PlaybackFailed) — next request will re-cascade.");
+        RecordStrategyFailure(recent.MemKey, recent.StrategyName, StrategyFailureKind.PlaybackFailed);
+        _eventBus?.PublishStrategyDemoted(recent.StrategyName, recent.MemKey, "AVPro rejected URL", recent.CorrelationId);
+
+        // Flag the matching history row so the UI's Success column reflects actual playback, not
+        // just "resolution returned a URL". If the scheduled verifier hasn't run yet, this wins
+        // over it because it re-reads the flag under a null check.
+        if (recent.HistoryEntryRef != null && recent.HistoryEntryRef.PlaybackVerified != false)
+        {
+            recent.HistoryEntryRef.PlaybackVerified = false;
+            try { _settings.Save(); }
+            catch (Exception ex) { _logger.Debug("[Playback] Failed to persist playback-failed flag: " + ex.Message); }
+        }
+
+        // Evict any resolve-cache entry that would replay this dead URL on the duration/thumbnail
+        // probes that follow an initial play-attempt. Without this the cache would serve the same
+        // URL for up to 90s and AVPro would keep failing.
+        foreach (var cacheKey in _resolveCache.Keys.ToList())
+        {
+            if (_resolveCache.TryGetValue(cacheKey, out var entry)
+                && (entry.Result.Url == recent.ResolvedUrl || cacheKey.EndsWith("|" + recent.OriginalUrl)))
+            {
+                _resolveCache.TryRemove(cacheKey, out _);
+            }
+        }
+        // And clear the recent-resolutions entry so a second "Loading failed" for the same URL
+        // doesn't double-demote.
+        _recentByUrl.TryRemove(failedUrl, out _);
+        if (recent.ResolvedUrl != failedUrl) _recentByUrl.TryRemove(recent.ResolvedUrl, out _);
+        if (recent.OriginalUrl != failedUrl) _recentByUrl.TryRemove(recent.OriginalUrl, out _);
+    }
+
+    private void RecordRecentResolution(string originalUrl, string resolvedUrl, string strategyName, string memKey, string correlationId, HistoryEntry? historyEntry = null)
+    {
+        if (string.IsNullOrEmpty(strategyName) || string.IsNullOrEmpty(memKey)) return;
+        var rec = new RecentResolution(strategyName, memKey, originalUrl, resolvedUrl, DateTime.UtcNow, correlationId, historyEntry);
+        _recentByUrl[originalUrl] = rec;
+        if (!string.Equals(resolvedUrl, originalUrl, StringComparison.Ordinal))
+            _recentByUrl[resolvedUrl] = rec;
+        PruneRecentResolutions();
+
+        // Schedule the optimistic "verified" promotion. If no AVPro failure arrives within the
+        // delay, we promote to true — a.k.a. "no news is good news". A failure observed in the
+        // meantime sets PlaybackVerified=false and this task finds it already non-null and bails.
+        if (historyEntry != null && historyEntry.PlaybackVerified == null)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(PlaybackVerifyDelay);
+                if (historyEntry.PlaybackVerified == null)
+                {
+                    historyEntry.PlaybackVerified = true;
+                    try { _settings.Save(); } catch { /* best-effort persistence */ }
+                }
+            });
+        }
+    }
+
+    private void PruneRecentResolutions()
+    {
+        var now = DateTime.UtcNow;
+        if (_recentByUrl.Count <= RecentResolutionCap)
+        {
+            foreach (var kv in _recentByUrl)
+                if (now - kv.Value.CreatedAt > RecentResolutionTtl) _recentByUrl.TryRemove(kv.Key, out _);
+            return;
+        }
+        // Hard cap hit: drop oldest until under cap, plus any past TTL.
+        var ordered = _recentByUrl.OrderBy(kv => kv.Value.CreatedAt).ToList();
+        foreach (var kv in ordered)
+        {
+            if (_recentByUrl.Count <= RecentResolutionCap && now - kv.Value.CreatedAt <= RecentResolutionTtl) break;
+            _recentByUrl.TryRemove(kv.Key, out _);
+        }
     }
 
     private void LogActiveTiers()
@@ -121,7 +240,11 @@ public class ResolutionEngine
             ("tier3", "yt-dlp-og"),
             ("tier4", "passthrough"),
         };
-        var disabled = _settings.Config.DisabledTiers ?? new List<string>();
+        var disabledRaw = _settings.Config.DisabledTiers ?? new List<string>();
+        bool tier4WasDisabled = disabledRaw.Any(t => string.Equals(t, "tier4", StringComparison.OrdinalIgnoreCase));
+        if (tier4WasDisabled)
+            _logger.Warning("Config requested tier4 (passthrough) be disabled, but tier4 is the always-return-something backstop and cannot be turned off. Ignoring.");
+        var disabled = disabledRaw.Where(t => !string.Equals(t, "tier4", StringComparison.OrdinalIgnoreCase)).ToList();
         var active = all.Where(t => !disabled.Contains(t.Item1)).Select(t => t.Item2);
         var off = all.Where(t => disabled.Contains(t.Item1)).Select(t => t.Item2).ToList();
         string line = "Active tiers: " + string.Join(", ", active);
@@ -144,43 +267,61 @@ public class ResolutionEngine
         _eventBus?.PublishStatus("ResolutionEngine", message, stats, ctx?.CorrelationId);
     }
 
-    // Headers for reachability checks on binary stream URLs (MP4, DASH, etc.) — Range probe returns 206.
-    private static readonly Dictionary<string, string> _reachabilityHeaders = new()
+    // Probe headers are shaped to look like the first request AVPro/UnityPlayer sends when it
+    // opens a stream — NOT like a scanner. Anti-bot CDNs (YouTube, Cloudflare, Akamai) fingerprint
+    // probe-like requests (no UA, HEAD, Range: bytes=0-0, empty Accept) and return 403 for ones
+    // that look synthetic. We send: AVPro's real UA, a realistic Accept set, gzip/identity encoding
+    // (AVPro doesn't compress range reads), and a DASH/MP4-typical initial segment range. Combined
+    // with curl-impersonate's Chrome TLS fingerprint, the request is indistinguishable from an
+    // actual playback start. Keep these changes in lockstep with any UA/header tweaks made
+    // elsewhere — inconsistency is itself a fingerprint.
+    private static Dictionary<string, string> BuildBinaryProbeHeaders() => new()
     {
+        ["User-Agent"] = VrchatAvProUserAgent,
         ["Accept"] = "*/*",
-        ["Accept-Language"] = "en-us,en;q=0.5",
-        ["Range"] = "bytes=0-0"
+        ["Accept-Language"] = "en-US,en;q=0.9",
+        ["Accept-Encoding"] = "identity;q=1, *;q=0",
+        ["Range"] = "bytes=0-4095",
+        ["Connection"] = "keep-alive",
     };
 
-    // HLS manifest URLs do not support Range requests — a plain GET returning 200 is the correct probe.
-    private static readonly Dictionary<string, string> _hlsReachabilityHeaders = new()
+    private static Dictionary<string, string> BuildHlsProbeHeaders() => new()
     {
-        ["Accept"] = "*/*",
-        ["Accept-Language"] = "en-us,en;q=0.5"
+        // HLS manifests: AVPro fetches them as plain GETs, typically with a browser-shaped UA
+        // (some AVPro builds use the OS WebView UA for manifest fetches, others use UnityPlayer).
+        // UnityPlayer UA is the more conservative choice — matches what the native-UA deny-list
+        // hosts expect anyway.
+        ["User-Agent"] = VrchatAvProUserAgent,
+        ["Accept"] = "application/vnd.apple.mpegurl, application/x-mpegurl, */*;q=0.8",
+        ["Accept-Language"] = "en-US,en;q=0.9",
+        ["Accept-Encoding"] = "gzip, deflate, identity",
+        ["Connection"] = "keep-alive",
     };
 
-    // Verify a resolved URL is reachable before accepting it.
-    // Uses Range: bytes=0-0 for binary stream URLs (expects 206 or 416), and a plain GET for HLS
-    // manifests since Range is not valid on .m3u8 files (they'd return 400, a false negative).
-    // Prefers curl-impersonate (Chrome TLS fingerprint) so CDNs that reject plain .NET HttpClient
-    // TLS handshakes are handled correctly. Falls back to plain HttpClient when unavailable.
+    // Verify a resolved URL is reachable before accepting it. Designed to be indistinguishable
+    // from AVPro's own first fetch so CDNs that 403 probes won't fingerprint us.
+    // - Binary streams (MP4, DASH, proxy URLs): Range: bytes=0-4095 — same as a real initial
+    //   segment fetch, not the tell-tale bytes=0-0 pattern scanners use.
+    // - HLS manifests: plain GET with manifest Accept header.
+    // Prefers curl-impersonate (Chrome TLS fingerprint). Falls back to HttpClient with matching
+    // headers when curl-impersonate isn't available.
     private async Task<bool> CheckUrlReachable(string url, RequestContext ctx)
     {
         string shortUrl = url.Length > 100 ? url.Substring(0, 100) + "..." : url;
         bool isHls = url.Contains(".m3u8") || url.Contains("m3u8");
-        var headers = isHls ? _hlsReachabilityHeaders : _reachabilityHeaders;
-        string probeMode = isHls ? "GET (HLS, no Range)" : "GET Range:bytes=0-0";
+        var headers = isHls ? BuildHlsProbeHeaders() : BuildBinaryProbeHeaders();
+        string probeMode = isHls ? "HLS manifest GET" : "initial-segment GET (Range 0-4095)";
 
         if (_curlClient?.IsAvailable == true)
         {
-            _logger.Debug("[" + ctx.CorrelationId + "] Probing via curl-impersonate [" + probeMode + "]: " + shortUrl);
+            _logger.Debug("[" + ctx.CorrelationId + "] Reachability check via curl-impersonate [" + probeMode + "]: " + shortUrl);
             int status = await _curlClient.CheckReachabilityAsync(url, headers);
             if (status == -1)
             {
                 // Probe timed out or process error — cannot confirm reachability, but do not reject.
                 // Streaming servers (e.g. private HLS, proxy URLs) often do not respond to probe
                 // requests within 5s. Rejecting on timeout causes valid URLs to cascade needlessly.
-                _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: curl-impersonate probe timed out for " + shortUrl + " — accepting URL (benefit of the doubt).");
+                _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: curl-impersonate timed out for " + shortUrl + " — accepting URL (benefit of the doubt).");
                 return true;
             }
             bool reachable = status is (>= 200 and < 400) or 416;
@@ -191,15 +332,21 @@ public class ResolutionEngine
             return reachable;
         }
 
-        // Fallback: plain HttpClient with yt-dlp-matching headers
-        _logger.Debug("[" + ctx.CorrelationId + "] Probing via HttpClient [" + probeMode + "] (curl-impersonate unavailable): " + shortUrl);
+        // Fallback: plain HttpClient with AVPro-shaped headers. Same request shape curl-impersonate
+        // would send, minus the Chrome TLS fingerprint. Some CDNs will still 403 the plain .NET
+        // handshake — we accept on timeout to avoid false-negative cascading.
+        _logger.Debug("[" + ctx.CorrelationId + "] Reachability check via HttpClient [" + probeMode + "] (curl-impersonate unavailable): " + shortUrl);
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            if (!isHls) req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
-            req.Headers.TryAddWithoutValidation("Accept", "*/*");
-            req.Headers.TryAddWithoutValidation("Accept-Language", "en-us,en;q=0.5");
+            if (!isHls) req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 4095);
+            req.Headers.Remove("User-Agent");
+            foreach (var kv in headers)
+            {
+                if (string.Equals(kv.Key, "Range", StringComparison.OrdinalIgnoreCase)) continue;
+                req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            }
             var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             int status = (int)resp.StatusCode;
             bool reachable = status < 400 || status == 416;
@@ -212,7 +359,7 @@ public class ResolutionEngine
         catch (OperationCanceledException)
         {
             // Probe timed out — accept with warning rather than rejecting a potentially valid URL.
-            _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: HttpClient probe timed out for " + shortUrl + " — accepting URL (benefit of the doubt).");
+            _logger.Warning("[" + ctx.CorrelationId + "] Reachability check: HttpClient timed out for " + shortUrl + " — accepting URL (benefit of the doubt).");
             return true;
         }
         catch (Exception ex)
@@ -272,13 +419,45 @@ public class ResolutionEngine
         catch { return ""; }
     }
 
-    // Scans yt-dlp stderr for well-known YouTube bot-detection phrases.
+    // Scans yt-dlp stderr for well-known YouTube bot-detection phrases. YouTube emits a curly
+    // right single quote (U+2019) in "you're"; normalize to the straight ASCII apostrophe so a
+    // single set of literals covers both the canonical and the wire form. Without this, the
+    // detector silently misses every real bot-detection error and MarkDomainRequiresPot never
+    // fires, so the PO-upgrade flywheel stays cold for youtube.com.
     public static bool IsBotDetectionStderr(string stderr)
     {
         if (string.IsNullOrEmpty(stderr)) return false;
-        return stderr.Contains("Sign in to confirm you're not a bot", StringComparison.OrdinalIgnoreCase)
-            || stderr.Contains("Sign in to confirm you are not a bot", StringComparison.OrdinalIgnoreCase)
-            || stderr.Contains("confirm you're not a bot", StringComparison.OrdinalIgnoreCase);
+        string normalized = stderr.Replace('\u2019', '\'');
+        return normalized.Contains("Sign in to confirm you're not a bot", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("Sign in to confirm you are not a bot", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("confirm you're not a bot", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Build the yt-dlp CLI fragment that wires in the bgutil yt-dlp plugin. yt-dlp loads the plugin
+    // from pluginDir and uses it to resolve the youtubepot-bgutilhttp: extractor-arg by calling the
+    // sidecar at http://localhost:{potPort} at request time. The plugin mints PO tokens bound to
+    // yt-dlp's own visitor_data, which is the only binding YouTube actually accepts.
+    //
+    // Returns an empty list when inputs are not ready (no port, no plugin dir) — caller is expected
+    // to have already confirmed the plugin dir exists on disk; this helper is pure to keep unit
+    // tests focused on the arg shape (and to guard against a regression back to the old broken
+    // "youtube:po_token=web.gvs+TOKEN" manual-injection path).
+    public static List<string> BuildBgutilPluginArgs(string pluginDir, int potPort)
+    {
+        if (potPort <= 0 || string.IsNullOrWhiteSpace(pluginDir)) return new List<string>();
+        return new List<string>
+        {
+            "--plugin-dirs", pluginDir,
+            // player_js_variant=main avoids an 'origin' TypeError in the TV player variant that
+            // yt-dlp otherwise picks.
+            "--extractor-args", "youtube:player_js_variant=main",
+            // bgutil lives under its own extractor scope (youtubepot-bgutilhttp) — it MUST be a
+            // separate --extractor-args flag. Packing it into the youtube: string after a semicolon
+            // makes yt-dlp interpret the whole "youtubepot-bgutilhttp:base_url=..." as a youtube
+            // key, so the plugin never sees our base_url and silently falls back to the hardcoded
+            // 127.0.0.1:4416 default — which is not what we're listening on.
+            "--extractor-args", "youtubepot-bgutilhttp:base_url=http://localhost:" + potPort
+        };
     }
 
     // Runs a tier resolver and measures how long it takes.
@@ -306,35 +485,114 @@ public class ResolutionEngine
     public static bool IsAcceptableQuality(int? resolvedHeight, int floorHeight) =>
         resolvedHeight == null || resolvedHeight >= floorHeight;
 
-    // Hosts where the relay wrap is worth the cost: YouTube-family domains, where
-    // the relay injects PO tokens / curl-impersonate / UA overrides that VRChat's
-    // built-in yt-dlp can't do itself. Everything else — SoundCloud, Twitch, HLS
-    // "movie worlds" like vr-m.net — is hurt by the wrap: our relay strips AVPro's
-    // native headers and the origin 403s us. Keep this list narrow on purpose.
-    private static bool IsRelayBeneficialDomain(string url)
+    // === WHY WE WRAP ===
+    // VRChat enforces a trusted-URL list inside AVPro. Media URLs whose host does not match the
+    // allowlist (e.g. *.youtube.com, youtu.be, vimeo.com, …) are silently rejected with
+    // "[AVProVideo] Error: Loading failed. File not found, codec not supported, video resolution
+    // too high or insufficient system resources." The relay wrap rewrites any URL as
+    //   http://localhost.youtube.com:{port}/play?target=<base64>
+    // which — via the hosts-file mapping `127.0.0.1 localhost.youtube.com` — routes to our local
+    // relay while AVPro sees a trusted *.youtube.com host. This is the ONLY reason untrusted
+    // cloud/proxy URLs (node1.whyknot.dev from tier2:cloud-whyknot, signed-URL CDNs, etc.) play at
+    // all. Wrapping is the DEFAULT; do not "optimize" by skipping it for non-YouTube hosts — every
+    // untrusted URL that reaches AVPro pristine will silently fail playback.
+    //
+    // The single narrow exception is the config-driven deny-list `AppConfig.NativeAvProUaHosts`,
+    // which holds hosts that serve only to AVPro's UnityPlayer UA (VRChat "movie worlds" like
+    // vr-m.net). Wrapping those breaks UA passthrough and the origin 403s us. Every addition to
+    // that list must be backed by a log capture showing the host working pristine but failing
+    // through the relay. See the feedback_relay_purpose memory for history.
+    private bool RequiresNativeAvProUa(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
         string host = uri.Host.ToLowerInvariant();
-        return host.EndsWith("youtube.com")
-            || host.EndsWith("youtu.be")
-            || host.EndsWith("googlevideo.com")
-            || host.EndsWith("ytimg.com")
-            || host.EndsWith("google.com");
+        var denylist = _settings.Config.NativeAvProUaHosts;
+        if (denylist == null || denylist.Count == 0) return false;
+        foreach (var entry in denylist)
+        {
+            if (string.IsNullOrWhiteSpace(entry)) continue;
+            string d = entry.Trim().ToLowerInvariant();
+            if (host == d || host.EndsWith("." + d)) return true;
+        }
+        return false;
     }
 
-    // Wrap a pristine resolved URL in the localhost.youtube.com relay URL so VRChat's yt-dlp reaches
-    // our on-host proxy instead of the public CDN. No-op if bypass is disabled, share mode, or
-    // relay port unassigned. Called from both the normal resolve path and the cache-hit shortcut.
-    // forceWrap: overrides the YouTube-family domain gate. Set by strategies that rely on relay-side
-    // session replay (browser-extract) so the captured cookies/headers reach AVPro's requests.
+    // VRChat's built-in AVPro trusted-URL allowlist (as of 2026-04-23). Hosts matching these
+    // patterns play pristine — AVPro accepts them without any trust-list bypass. Hosts OFF this
+    // list silently fail with "Loading failed" unless relay-wrapped.
+    //
+    // Source: in-game trust check shipped with VRChat. Keep synchronized with the
+    // project_vrchat_trusted_url_list memory file (same table). Adding an entry is a one-way ticket
+    // to skipping the relay wrap on that host, so only add after verifying VRChat trusts it.
+    private static readonly string[] _vrchatTrustedHostPatterns = new[]
+    {
+        "vod-progressive.akamaized.net",
+        "*.facebook.com", "*.fbcdn.net",
+        "*.googlevideo.com",
+        "*.hyperbeam.com", "*.hyperbeam.dev",
+        "*.mixcloud.com",
+        "*.nicovideo.jp",
+        "soundcloud.com", "*.sndcdn.com",
+        "*.topaz.chat",
+        "*.twitch.tv", "*.ttvnw.net", "*.twitchcdn.net",
+        "*.vrcdn.live", "*.vrcdn.video", "*.vrcdn.cloud",
+        "*.vimeo.com",
+        "*.youku.com",
+        "*.youtube.com", "youtu.be",
+    };
+
+    public static bool IsVrchatTrustedHost(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        string host = uri.Host.ToLowerInvariant();
+        foreach (var pattern in _vrchatTrustedHostPatterns)
+        {
+            if (pattern.StartsWith("*."))
+            {
+                string suffix = pattern.Substring(1); // ".youtube.com"
+                string bare = pattern.Substring(2);   // "youtube.com"
+                if (host == bare || host.EndsWith(suffix)) return true;
+            }
+            else
+            {
+                if (host == pattern) return true;
+            }
+        }
+        return false;
+    }
+
+    // Wrap a pristine resolved URL in the localhost.youtube.com relay URL so AVPro sees a trusted
+    // host. Default path: wrap everything. Skipped only when:
+    //   - skipRelayWrap=true (Share mode — user is copying a plain URL out of WKVRCProxy),
+    //   - EnableRelayBypass config flag is off,
+    //   - the hosts-file mapping isn't active (setup declined),
+    //   - the host is in the `NativeAvProUaHosts` config deny-list (movie-world hosts).
+    // `forceWrap` is retained for callers (browser-extract session replay) that want to override
+    // an otherwise-skipped wrap, but with the default now being "wrap", it's mostly redundant.
     private string ApplyRelayWrap(string pristineUrl, bool skipRelayWrap, string correlationId, bool forceWrap = false)
     {
-        if (skipRelayWrap || !_settings.Config.EnableRelayBypass || !_hostsManager.IsBypassActive())
+        if (skipRelayWrap)
             return pristineUrl;
-        if (!forceWrap && !IsRelayBeneficialDomain(pristineUrl))
+        if (!_settings.Config.EnableRelayBypass)
+        {
+            _logger.Warning("[" + correlationId + "] Relay bypass is DISABLED in config — returning pristine URL. Untrusted hosts will likely fail VRChat's trusted-URL check.");
+            return pristineUrl;
+        }
+        if (!_hostsManager.IsBypassActive())
+        {
+            _logger.Warning("[" + correlationId + "] Hosts-file bypass is not active — returning pristine URL. VRChat's AVPro will reject untrusted hosts. Run the hosts setup from Settings.");
+            return pristineUrl;
+        }
+        if (!forceWrap && RequiresNativeAvProUa(pristineUrl))
         {
             string host = Uri.TryCreate(pristineUrl, UriKind.Absolute, out var u) ? u.Host : "<unparseable>";
-            _logger.Info("[" + correlationId + "] Relay wrap skipped for " + host + " — returning pristine URL to AVPro.");
+            _logger.Info("[" + correlationId + "] Relay wrap skipped for " + host + " — host requires AVPro's native UA (NativeAvProUaHosts).");
+            return pristineUrl;
+        }
+        if (!forceWrap && IsVrchatTrustedHost(pristineUrl))
+        {
+            string host = Uri.TryCreate(pristineUrl, UriKind.Absolute, out var u) ? u.Host : "<unparseable>";
+            _logger.Debug("[" + correlationId + "] Relay wrap skipped for " + host + " — already on VRChat's trusted-URL list (pristine passthrough).");
             return pristineUrl;
         }
         try
@@ -342,7 +600,7 @@ public class ResolutionEngine
             int port = _relayPortManager.CurrentPort;
             if (port <= 0)
             {
-                _logger.Warning("[" + correlationId + "] Relay bypass is enabled but relay port is 0 — wrapping skipped. Video may fail to play.");
+                _logger.Warning("[" + correlationId + "] Relay bypass is enabled but relay port is 0 — wrapping skipped. Video will likely fail to play (untrusted host).");
                 return pristineUrl;
             }
             string encodedUrl = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(pristineUrl));
@@ -401,14 +659,15 @@ public class ResolutionEngine
         string cacheKey = ResolveCacheKey(targetUrl, player);
         if (_resolveCache.TryGetValue(cacheKey, out var cached))
         {
-            if (DateTime.UtcNow < cached.Expires)
+            if (DateTime.UtcNow < cached.Expires && cached.Hits < ResolveCacheMaxHits)
             {
+                _resolveCache[cacheKey] = cached with { Hits = cached.Hits + 1 };
                 string cachedFinal = ApplyRelayWrap(cached.Result.Url, skipRelayWrap, ctx.CorrelationId);
                 resolutionSw.Stop();
                 Interlocked.Decrement(ref _activeResolutions);
                 UpdateStatus("Cached resolution via " + cached.Tier.ToUpper(), ctx);
                 string shortCached = cachedFinal.Length > 100 ? cachedFinal.Substring(0, 100) + "..." : cachedFinal;
-                _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + cached.Tier + "] [cache-hit] in " + resolutionSw.ElapsedMilliseconds + "ms: " + shortCached);
+                _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + cached.Tier + "] [cache-hit " + (cached.Hits + 1) + "/" + ResolveCacheMaxHits + "] in " + resolutionSw.ElapsedMilliseconds + "ms: " + shortCached);
                 return cachedFinal;
             }
             _resolveCache.TryRemove(cacheKey, out _);
@@ -421,10 +680,21 @@ public class ResolutionEngine
         // so the relay can replay the captured browser session (cookies + headers) to AVPro.
         bool winnerForcesRelayWrap = false;
         string activeTier = _settings.Config.PreferredTier;
-        var disabled = _settings.Config.DisabledTiers ?? new List<string>();
+        // Clamp: tier4 is the "always return something" backstop. It CANNOT be disabled — the
+        // program must never reach a state where resolution returns null and VRChat gets nothing.
+        // If config lists tier4 as disabled, strip it silently here (warned at startup in
+        // LogActiveTiers).
+        var disabled = (_settings.Config.DisabledTiers ?? new List<string>())
+            .Where(t => !string.Equals(t, "tier4", StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
         int preferredH = ParsePreferredHeight();
         int floorH = ComputeQualityFloor(preferredH);
+
+        // Captured across the try/catch so the recent-resolutions recording after the block can
+        // tie the final URL back to the strategy + host that produced it.
+        string finalMemKey = "";
+        string finalStrategy = "";
 
         try
         {
@@ -447,6 +717,7 @@ public class ResolutionEngine
 
                 bool isStreamlinkLive = !disabled.Contains("tier0") && await StreamlinkCanHandleUrlAsync(targetUrl, ctx);
                 string memKey = StrategyMemory.KeyFor(targetUrl, isStreamlinkLive);
+                finalMemKey = memKey;
 
                 StrategyMemoryEntry? remembered = null;
                 string? rememberedGroup = null;
@@ -535,7 +806,17 @@ public class ResolutionEngine
                             try { fastRes = await specific.Executor(fastSctx); }
                             catch (Exception ex) { _logger.Debug("[" + ctx.CorrelationId + "] Fast-path '" + specific.Name + "' threw: " + ex.Message); }
                             fastSw.Stop();
-                            if (fastRes != null && IsAcceptableQuality(fastRes.Height, floorH))
+                            // Pre-handoff probe: even a "remembered winner" can return a now-dead
+                            // URL (host rotated, token expired, CDN rejected). Verify before
+                            // committing. On probe failure, demote with PlaybackFailed and cold-race.
+                            bool fastProbed = true;
+                            if (fastRes != null && _settings.Config.EnablePreflightProbe && !specific.Group.StartsWith("tier1"))
+                            {
+                                fastProbed = await CheckUrlReachable(fastRes.Url, ctx);
+                                if (!fastProbed)
+                                    _logger.Warning("[" + ctx.CorrelationId + "] [StrategyMemory] Fast-path '" + specific.Name + "' URL failed pre-flight probe.");
+                            }
+                            if (fastRes != null && fastProbed && IsAcceptableQuality(fastRes.Height, floorH))
                             {
                                 winnerResult = fastRes; activeTier = specific.Group; activeStrategy = specific.Name;
                                 winnerForcesRelayWrap = specific.ForceRelayWrap;
@@ -546,11 +827,16 @@ public class ResolutionEngine
                             else
                             {
                                 string reason = fastCts.IsCancellationRequested ? "timed out"
-                                    : (fastRes == null ? "no result" : "below floor (" + fastRes.Height + "p)");
+                                    : (fastRes == null ? "no result"
+                                       : !fastProbed ? "probe rejected"
+                                       : "below floor (" + fastRes.Height + "p)");
                                 _logger.Warning("[" + ctx.CorrelationId + "] [StrategyMemory] Fast-path '" + specific.Name
                                     + "' failed (" + reason + ") in " + fastSw.ElapsedMilliseconds + "ms — demoting and cold-racing.");
-                                RecordStrategyFailure(memKey, specific.Name);
-                                if (fastRes != null && (bestSoFar == null || (fastRes.Height ?? 0) > (bestSoFar.Height ?? 0)))
+                                var failKind = !fastProbed ? StrategyFailureKind.PlaybackFailed : StrategyFailureKind.Unknown;
+                                RecordStrategyFailure(memKey, specific.Name, failKind);
+                                if (failKind == StrategyFailureKind.PlaybackFailed)
+                                    _eventBus?.PublishStrategyDemoted(specific.Name, memKey, "Pre-flight probe rejected URL", ctx.CorrelationId);
+                                if (fastRes != null && fastProbed && (bestSoFar == null || (fastRes.Height ?? 0) > (bestSoFar.Height ?? 0)))
                                 { bestSoFar = fastRes; bestSoFarTier = specific.Name; }
                                 remembered = null; rememberedGroup = null;
                                 cascadeStart = 0; // re-enable cold race + full sequential cascade
@@ -592,6 +878,19 @@ public class ResolutionEngine
                                 if (!raceCts.IsCancellationRequested) RecordStrategyFailure(memKey, strat.Name);
                                 continue;
                             }
+                            // Pre-handoff probe on race winners from non-probed tiers (tier2 cloud,
+                            // tier3). Tier 1 variants already probe in their attempt wrapper.
+                            if (_settings.Config.EnablePreflightProbe && !strat.Group.StartsWith("tier1"))
+                            {
+                                bool reachable = await CheckUrlReachable(res.Url, ctx);
+                                if (!reachable)
+                                {
+                                    _logger.Warning("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' URL failed pre-flight probe — demoting and skipping.");
+                                    RecordStrategyFailure(memKey, strat.Name, StrategyFailureKind.PlaybackFailed);
+                                    _eventBus?.PublishStrategyDemoted(strat.Name, memKey, "Pre-flight probe rejected URL", ctx.CorrelationId);
+                                    continue;
+                                }
+                            }
                             if (IsAcceptableQuality(res.Height, floorH))
                             {
                                 winnerResult = res; activeTier = strat.Group; activeStrategy = strat.Name;
@@ -628,6 +927,25 @@ public class ResolutionEngine
                         else if (tier == "tier2") { tierResult = await AttemptTier2(targetUrl, player, ctx); tierStrategy = "tier2:cloud-whyknot"; }
                         else if (tier == "tier3") { tierResult = await AttemptTier3(payload.Args, ctx); tierStrategy = "tier3:plain"; }
 
+                        if (tierResult != null)
+                        {
+                            // Pre-handoff probe: verify the URL is actually reachable before we
+                            // commit to it. AttemptTier1 already probes its own results, but Tier 2
+                            // (cloud) and Tier 3 (yt-dlp-og) previously trusted whatever the tier
+                            // returned — producing false "successes" that poisoned StrategyMemory.
+                            // Skip if config opts out, or if the probe has already run (Tier 1).
+                            if (_settings.Config.EnablePreflightProbe && tier != "tier1")
+                            {
+                                bool reachable = await CheckUrlReachable(tierResult.Url, ctx);
+                                if (!reachable)
+                                {
+                                    _logger.Warning("[" + ctx.CorrelationId + "] [" + tier + "] URL returned but pre-flight probe rejected it — demoting '" + tierStrategy + "' and cascading.");
+                                    RecordStrategyFailure(memKey, tierStrategy, StrategyFailureKind.PlaybackFailed);
+                                    _eventBus?.PublishStrategyDemoted(tierStrategy, memKey, "Pre-flight probe rejected URL", ctx.CorrelationId);
+                                    tierResult = null;
+                                }
+                            }
+                        }
                         if (tierResult != null)
                         {
                             // Quality heuristic: accept immediately if height is unknown (tier 2/3/streamlink)
@@ -672,12 +990,17 @@ public class ResolutionEngine
                     if (winnerResult != null && !string.IsNullOrEmpty(activeStrategy))
                     {
                         RecordStrategySuccess(memKey, activeStrategy, winnerResult.Height);
+                        finalStrategy = activeStrategy;
                         _logger.Debug("[" + ctx.CorrelationId + "] [StrategyMemory] Recorded success for '" + activeStrategy + "' on " + memKey +
                             (winnerResult.Height is int h ? " at " + h + "p." : "."));
                     }
                 }
 
-                if (winnerResult == null && !disabled.Contains("tier4"))
+                // Tier 4 is guaranteed enabled (clamped in `disabled` construction above), so this
+                // branch always fires when everything above failed. Returning the original URL is
+                // the last-resort "something is better than nothing" contract — AVPro may still
+                // reject it, but the program never returns null/empty.
+                if (winnerResult == null)
                 {
                     _logger.Warning("[" + ctx.CorrelationId + "] All active tiers exhausted — falling back to original URL (passthrough). Video may not play correctly.");
                     winnerResult = new YtDlpResult(targetUrl, null, null, null, null, null);
@@ -690,10 +1013,6 @@ public class ResolutionEngine
                         ActionHint = "Check your internet connection. The video URL may be geo-restricted or require authentication.",
                         IsRecoverable = true
                     }, ctx.CorrelationId);
-                }
-                else if (winnerResult == null)
-                {
-                    _logger.Error("[" + ctx.CorrelationId + "] Resolution failed: all tiers exhausted and Tier 4 passthrough is disabled. No URL will be returned.");
                 }
             }
         }
@@ -718,7 +1037,7 @@ public class ResolutionEngine
         // a fresh cascade attempt next time — we don't want to "remember" a failed cascade.
         if (winnerResult != null && !activeTier.StartsWith("tier4"))
         {
-            _resolveCache[cacheKey] = new ResolveCacheEntry(winnerResult, activeTier, DateTime.UtcNow.Add(ResolveCacheTtl));
+            _resolveCache[cacheKey] = new ResolveCacheEntry(winnerResult, activeTier, DateTime.UtcNow.Add(ResolveCacheTtl), 0);
             if (_resolveCache.Count > 100)
             {
                 var now = DateTime.UtcNow;
@@ -726,6 +1045,13 @@ public class ResolutionEngine
                     if (kv.Value.Expires <= now) _resolveCache.TryRemove(kv.Key, out _);
             }
         }
+
+        // Record in the recent-resolutions ring so an AVPro "Loading failed" can demote the
+        // responsible strategy and flip this history entry's PlaybackVerified flag. Skip for
+        // tier4 passthrough (no strategy, PlaybackVerified stays null).
+        bool canTrackPlayback = winnerResult != null && !activeTier.StartsWith("tier4")
+            && !string.IsNullOrEmpty(finalStrategy) && !string.IsNullOrEmpty(finalMemKey)
+            && !string.IsNullOrEmpty(result);
 
         var tierKey = activeTier.Split('-')[0];
         _tierCounts.AddOrUpdate(tierKey, 1, (_, v) => v + 1);
@@ -741,13 +1067,22 @@ public class ResolutionEngine
             StreamType = streamType,
             ResolutionHeight = winnerResult?.Height,
             ResolutionWidth = winnerResult?.Width,
-            Vcodec = winnerResult?.Vcodec
+            Vcodec = winnerResult?.Vcodec,
+            // Null = pending verification; RecordRecentResolution will flip to true after the
+            // verify delay, or HandleAvProLoadFailure to false on an AVPro reject. Tier4 entries
+            // stay null (nothing to verify against).
+            PlaybackVerified = canTrackPlayback ? (bool?)null : null
         };
 
         _settings.Config.History.Insert(0, entry);
         if (_settings.Config.History.Count > 100) _settings.Config.History.RemoveAt(100);
         try { _settings.Save(); }
         catch (Exception ex) { _logger.Warning("[" + ctx.CorrelationId + "] Failed to persist history after resolution: " + ex.Message); }
+
+        if (canTrackPlayback)
+        {
+            RecordRecentResolution(targetUrl, result!, finalStrategy, finalMemKey, ctx.CorrelationId, entry);
+        }
 
         resolutionSw.Stop();
         Interlocked.Decrement(ref _activeResolutions);
@@ -1068,6 +1403,21 @@ public class ResolutionEngine
         };
         if (_settings.Config.ForceIPv4) args.Add("--force-ipv4");
 
+        // JS runtime + EJS challenge solver: modern YouTube signs stream URLs via JS challenges.
+        // Without a JS runtime registered, yt-dlp prints "Signature solving failed" / "n challenge
+        // solving failed" and drops every SABR-guarded format, ending in "Only images are
+        // available" even when the PO token flow succeeded. Deno ships next to yt-dlp.exe (see
+        // build.ps1). --remote-components ejs:github lets yt-dlp fetch the challenge solver
+        // script at request time; it caches thereafter.
+        string denoPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "deno.exe");
+        if (File.Exists(denoPath))
+        {
+            args.Add("--js-runtimes");
+            args.Add("deno:" + denoPath);
+            args.Add("--remote-components");
+            args.Add("ejs:github");
+        }
+
         // Cloudflare WARP route-through: yt-dlp (and the generic extractor's HTTP probes) go out via
         // our on-host wireproxy SOCKS5 listener, which is user-space WG to the Cloudflare edge. Only
         // this specific yt-dlp subprocess is affected — nothing else on the host routes through WARP.
@@ -1089,24 +1439,24 @@ public class ResolutionEngine
 
         if (injectPot)
         {
-            if (_potProvider == null)
+            // Hand PO resolution off to the bgutil yt-dlp plugin: yt-dlp calls the sidecar at request
+            // time and receives a PO token bound to yt-dlp's own visitor_data, which is what YouTube
+            // actually validates against. The previous manual-fetch path passed a token bound to
+            // a fake visitor_data string, so YouTube rejected it and every Tier 1 strategy fell
+            // through to Tier 2. Plugin path mirrors WhyKnot.dev's server-side wiring, minus cookies.
+            string pluginDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "yt-dlp-plugins");
+            if (_potProvider == null || _potProvider.Port <= 0)
             {
-                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] PotProviderService not wired — PO token cannot be injected.");
+                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] PotProviderService not ready — skipping PO hookup.");
+            }
+            else if (!Directory.Exists(Path.Combine(pluginDir, "bgutil-ytdlp-pot-provider", "yt_dlp_plugins")))
+            {
+                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] bgutil plugin dir missing at '" + pluginDir + "' — yt-dlp will run without PO support.");
             }
             else
             {
-                string potCacheKey = videoId ?? "unknown";
-                string? token = await _potProvider.GetPotTokenAsync("wkvrcproxy", potCacheKey);
-                if (!string.IsNullOrEmpty(token))
-                {
-                    args.Add("--extractor-args");
-                    args.Add("youtube:po_token=web.gvs+" + token);
-                    _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] PO token injected for video: " + potCacheKey);
-                }
-                else
-                {
-                    _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] PO token fetch returned null for video: " + potCacheKey + " — attempting without token.");
-                }
+                args.AddRange(BuildBgutilPluginArgs(pluginDir, _potProvider.Port));
+                _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] bgutil plugin enabled (sidecar port " + _potProvider.Port + ").");
             }
         }
         else

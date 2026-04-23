@@ -21,6 +21,23 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     public string CurrentPlayer { get; private set; } = "AVPro";
     public event Action<string>? OnVrcPathDetected;
 
+    // Fires when VRChat logs "[AVProVideo] Error: Loading failed" within a short window after an
+    // "[AVProVideo] Opening <url>" line. The URL is the one AVPro tried to open (pre-resolution:
+    // the original user URL, not our resolved URL). Subscribers use this to demote the strategy
+    // that produced the URL and invalidate any cache entry keyed on it. Second arg is the timestamp
+    // the failure line was observed (UTC).
+    public event Action<string, DateTime>? OnAvProLoadFailure;
+
+    // Correlation state for the Opening → Error pattern. We only keep the most recent Opening URL
+    // and its observation time; a "Loading failed" within CorrelationWindow demotes. Older Openings
+    // are cleared on state transitions.
+    private string? _lastAvProOpeningUrl;
+    private DateTime _lastAvProOpeningAt;
+    private static readonly TimeSpan AvProOpenFailCorrelationWindow = TimeSpan.FromSeconds(10);
+    private static readonly Regex _avProOpeningRegex = new(
+        @"\[AVProVideo\] Opening\s+(\S+)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
@@ -218,7 +235,28 @@ public class VrcLogMonitor : IProxyModule, IDisposable
 
             if (isRelevant)
             {
-                _logger.LogWithSource(LogLevel.Info, "VRChat", line);
+                _logger?.LogWithSource(LogLevel.Info, "VRChat", line);
+            }
+
+            // Track Opening → Error pairing so the resolution engine can demote the strategy that
+            // produced a URL AVPro couldn't actually play. The "Opening" line carries the URL;
+            // "Error: Loading failed" doesn't — so we match by time proximity.
+            var openingMatch = _avProOpeningRegex.Match(line);
+            if (openingMatch.Success)
+            {
+                _lastAvProOpeningUrl = openingMatch.Groups[1].Value;
+                _lastAvProOpeningAt = DateTime.UtcNow;
+            }
+            else if (line.Contains("[AVProVideo] Error: Loading failed"))
+            {
+                if (_lastAvProOpeningUrl != null
+                    && DateTime.UtcNow - _lastAvProOpeningAt <= AvProOpenFailCorrelationWindow)
+                {
+                    string failedUrl = _lastAvProOpeningUrl;
+                    _lastAvProOpeningUrl = null; // consume to avoid double-firing on retry errors
+                    try { OnAvProLoadFailure?.Invoke(failedUrl, DateTime.UtcNow); }
+                    catch (Exception ex) { _logger?.Warning("[VrcLogMonitor] OnAvProLoadFailure handler threw: " + ex.Message); }
+                }
             }
         }
     }

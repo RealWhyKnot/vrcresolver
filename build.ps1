@@ -115,21 +115,52 @@ if (!$BgutilRelease) {
 
 if ($BgutilRelease) {
     $LatestBgutilCommit = $BgutilRelease.sha.Substring(0, 7)
+    $VendorPluginDir = Join-Path $VendorDir "yt-dlp-plugins"
+    # yt-dlp requires the layout <plugin-dir>/<PACKAGE-NAME>/yt_dlp_plugins/. Without the
+    # intermediate package-name directory it silently reports "Plugin directories: none" and the
+    # bgutil PO provider never registers.
+    $VendorPluginPkg = Join-Path $VendorPluginDir "bgutil-ytdlp-pot-provider"
+    $VendorSidecarExe = Join-Path $VendorDir "bgutil-ytdlp-pot-provider.exe"
+    # Rebuild if SHA drifted OR if either artifact (sidecar exe / plugin dir) is missing —
+    # handles fresh checkouts where the vendor cache exists but the plugin was never staged.
+    $NeedsBgutil = ($Versions.bgutil -ne $LatestBgutilCommit) -or
+                   !(Test-Path $VendorSidecarExe) -or
+                   !(Test-Path (Join-Path $VendorPluginPkg "yt_dlp_plugins"))
 
-    if ($Versions.bgutil -ne $LatestBgutilCommit) {
-        Write-Host "Compiling bgutil-ytdlp-pot-provider server at commit $LatestBgutilCommit..." -ForegroundColor Yellow
+    if ($NeedsBgutil) {
+        Write-Host "Compiling bgutil-ytdlp-pot-provider server + staging plugin at commit $LatestBgutilCommit..." -ForegroundColor Yellow
         $BgutilDir = Join-Path $VendorDir "bgutil_repo"
         if (Test-Path $BgutilDir) { Remove-Item -Path $BgutilDir -Recurse -Force }
-        
-        git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git $BgutilDir
-        
-        Push-Location (Join-Path $BgutilDir "server")
-        & (Join-Path $VendorDir "deno.exe") install
-        & (Join-Path $VendorDir "deno.exe") compile -A --output (Join-Path $VendorDir "bgutil-ytdlp-pot-provider.exe") src/main.ts
-        Pop-Location
-        
+
+        # git clone writes progress to stderr; under PS 5.1 with EAP=Stop that becomes a
+        # terminating NativeCommandError even on exit 0. Same pattern as the npm build step below.
+        $PrevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git $BgutilDir
+            if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit $LASTEXITCODE)" }
+
+            Push-Location (Join-Path $BgutilDir "server")
+            & (Join-Path $VendorDir "deno.exe") install
+            if ($LASTEXITCODE -ne 0) { Pop-Location; throw "deno install failed (exit $LASTEXITCODE)" }
+            & (Join-Path $VendorDir "deno.exe") compile -A --output $VendorSidecarExe src/main.ts
+            if ($LASTEXITCODE -ne 0) { Pop-Location; throw "deno compile failed (exit $LASTEXITCODE)" }
+            Pop-Location
+        } finally {
+            $ErrorActionPreference = $PrevEap
+        }
+
+        # Stage the yt-dlp plugin (pure-Python) into vendor. Shipped alongside yt-dlp.exe and
+        # pointed at with --plugin-dirs so yt-dlp can resolve youtubepot-bgutilhttp:base_url=...
+        # at request time. This is the only path that mints correctly-bound PO tokens on the client.
+        if (Test-Path $VendorPluginDir) { Remove-Item -Path $VendorPluginDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $VendorPluginPkg -Force | Out-Null
+        Copy-Item -Path (Join-Path $BgutilDir "plugin/yt_dlp_plugins") -Destination (Join-Path $VendorPluginPkg "yt_dlp_plugins") -Recurse -Force
+        # SHA marker so the runtime updater can compare without calling `yt-dlp.exe --version`.
+        Set-Content -Path (Join-Path $VendorPluginDir ".version") -Value $LatestBgutilCommit -NoNewline -Encoding ASCII
+
         Remove-Item -Path $BgutilDir -Recurse -Force
-        
+
         if ($null -eq $Versions.psobject.properties['bgutil']) {
             $Versions | Add-Member -NotePropertyName bgutil -NotePropertyValue $LatestBgutilCommit
         } else {
@@ -335,6 +366,17 @@ if (Test-Path (Join-Path $VendorDir "curl-impersonate-win.exe")) {
     Copy-Item (Join-Path $VendorDir "curl-impersonate-win.exe") (Join-Path $ToolsDir "curl-impersonate-win.exe")
 }
 Copy-Item (Join-Path $VendorDir "bgutil-ytdlp-pot-provider.exe") (Join-Path $ToolsDir "bgutil-ytdlp-pot-provider.exe")
+# yt-dlp needs a JS runtime to solve signature and n-challenges on modern YouTube — without one,
+# SABR-guarded formats all get skipped and resolution ends with "Only images are available".
+# Ship deno (already vendored for the bgutil sidecar compile) alongside yt-dlp and point at it
+# via --js-runtimes in ResolutionEngine.
+if (Test-Path (Join-Path $VendorDir "deno.exe")) {
+    Copy-Item (Join-Path $VendorDir "deno.exe") (Join-Path $ToolsDir "deno.exe") -Force
+}
+$VendorPluginDir = Join-Path $VendorDir "yt-dlp-plugins"
+if (Test-Path $VendorPluginDir) {
+    Copy-Item -Path $VendorPluginDir -Destination (Join-Path $ToolsDir "yt-dlp-plugins") -Recurse -Force
+}
 $StreamlinkVendorDir = Join-Path $VendorDir "streamlink"
 if (Test-Path $StreamlinkVendorDir) {
     Copy-Item -Path $StreamlinkVendorDir -Destination (Join-Path $ToolsDir "streamlink") -Recurse -Force

@@ -36,6 +36,12 @@ export interface HistoryEntry {
   ResolutionHeight?: number | null;
   ResolutionWidth?: number | null;
   Vcodec?: string | null;
+  // Playback verification set by the feedback loop. `Success` only means "we returned a URL";
+  // this is the post-hoc truth of whether AVPro accepted it.
+  //   null  — pending or tier4 passthrough (no way to verify)
+  //   true  — no AVPro "Loading failed" observed within verify window
+  //   false — AVPro rejected the URL, or pre-flight probe rejected it
+  PlaybackVerified?: boolean | null;
 }
 
 export interface AppConfig {
@@ -51,6 +57,8 @@ export interface AppConfig {
   enableRelayBypass: boolean;
   disabledTiers: string[];
   autoUpdateYtDlp?: boolean;
+  enablePreflightProbe: boolean;
+  nativeAvProUaHosts: string[];
 }
 
 export interface BypassMemoryEntry {
@@ -84,6 +92,19 @@ export interface AppStatus {
     node: string;
     player: string;
   }
+}
+
+// Emitted when the playback-feedback loop demotes a strategy — either because AVPro rejected the
+// resolved URL (Opening → Error: Loading failed) or because the pre-flight probe returned a bad
+// status. Surfaced to the Logs view as a dismissable chip so the user can see the feedback loop
+// acting without parsing log lines.
+export interface DemotionNotification {
+  id: string;
+  timestamp: string;
+  strategyName: string;
+  memKey: string;
+  reason: string;
+  correlationId?: string;
 }
 
 export const useAppStore = defineStore('app', () => {
@@ -120,7 +141,9 @@ export const useAppStore = defineStore('app', () => {
     userAgent: '',
     bypassHostsSetupDeclined: false,
     enableRelayBypass: true,
-    disabledTiers: []
+    disabledTiers: [],
+    enablePreflightProbe: true,
+    nativeAvProUaHosts: ['vr-m.net']
   })
   
   const showHostsPrompt = ref(false)
@@ -139,7 +162,10 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.21.4-8257')
+  const version = ref('2026.4.23.3-D680')
+
+  const demotions = ref<DemotionNotification[]>([])
+  const DEMOTION_CAP = 20
 
   const bypassMemory = ref<BypassMemoryRow[]>([])
   const ytDlpUpdate = ref<YtDlpUpdateStatus>({
@@ -197,6 +223,18 @@ export const useAppStore = defineStore('app', () => {
         bypassMemory.value = (parsed.data ?? []) as BypassMemoryRow[]
       } else if (parsed.type === 'YTDLP_UPDATE') {
         ytDlpUpdate.value = parsed.data as YtDlpUpdateStatus
+      } else if (parsed.type === 'STRATEGY_DEMOTED') {
+        const p = parsed.data ?? {}
+        const entry: DemotionNotification = {
+          id: (parsed.correlationId ?? '') + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+          timestamp: new Date().toISOString(),
+          strategyName: p.strategyName ?? 'unknown',
+          memKey: p.memKey ?? '',
+          reason: p.reason ?? 'playback feedback',
+          correlationId: parsed.correlationId ?? undefined
+        }
+        demotions.value.unshift(entry)
+        if (demotions.value.length > DEMOTION_CAP) demotions.value.pop()
       }
     } catch (e) { }
   }
@@ -303,6 +341,14 @@ export const useAppStore = defineStore('app', () => {
     sendMessage('GET_YTDLP_UPDATE')
   }
 
+  function dismissDemotion(id: string) {
+    demotions.value = demotions.value.filter(d => d.id !== id)
+  }
+
+  function clearDemotions() {
+    demotions.value = []
+  }
+
   return {
     activeTab,
     logs,
@@ -342,7 +388,10 @@ export const useAppStore = defineStore('app', () => {
     ytDlpUpdate,
     refreshBypassMemory,
     forgetBypassKey,
-    refreshYtDlpUpdate
+    refreshYtDlpUpdate,
+    demotions,
+    dismissDemotion,
+    clearDemotions
   }
 })
 

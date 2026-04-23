@@ -21,6 +21,14 @@ public class HistoryEntry
     public int? ResolutionHeight { get; set; }
     public int? ResolutionWidth { get; set; }
     public string? Vcodec { get; set; }
+
+    // Post-hoc playback verification. `Success` means "resolution returned a URL" — which the old
+    // tier2:cloud-whyknot bug showed isn't the same as "AVPro played it". `PlaybackVerified` is
+    // set by the feedback loop:
+    //   true  — N seconds elapsed after resolution with no AVPro "Loading failed" observed
+    //   false — AVPro emitted "Loading failed" for this entry's URL, OR pre-flight probe rejected
+    //   null  — still pending verification (fresh entry) or we have no way to verify (tier4 passthrough)
+    public bool? PlaybackVerified { get; set; }
 }
 
 public class AppConfig
@@ -88,4 +96,16 @@ public class AppConfig
     // Nothing on the host machine is modified; WARP only applies to our own subprocesses.
     [JsonPropertyName("enableWarp")]
     public bool EnableWarp { get; set; } = false;
+
+    // Hosts that must NOT be relay-wrapped because they only accept AVPro's native UnityPlayer UA
+    // (VRChat "movie worlds" like vr-m.net). Everything else is wrapped by default — the relay wrap
+    // is what bypasses VRChat's trusted-URL allowlist. See feedback_relay_purpose memory.
+    [JsonPropertyName("nativeAvProUaHosts")]
+    public List<string> NativeAvProUaHosts { get; set; } = new() { "vr-m.net" };
+
+    // Before handing a resolved URL to AVPro, HEAD/GET-probe it to confirm it returns 2xx and has
+    // real content. An unhealthy probe demotes the winning strategy and re-cascades. Catches cases
+    // where a tier returns a URL the upstream rejects (403/404) or is unreachable.
+    [JsonPropertyName("enablePreflightProbe")]
+    public bool EnablePreflightProbe { get; set; } = true;
 }

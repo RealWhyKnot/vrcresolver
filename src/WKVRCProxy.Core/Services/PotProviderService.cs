@@ -22,6 +22,10 @@ public class PotProviderService : IProxyModule, IDisposable
     private Logger? _logger;
     private Process? _providerProcess;
     private int _port = 0;
+
+    // Exposed so ResolutionEngine can build the youtubepot-bgutilhttp:base_url=http://localhost:{port}
+    // extractor-arg that yt-dlp's bgutil plugin reads. Zero until InitializeAsync picks a port.
+    public int Port => _port;
     // bgutil sidecar token generation takes 8-15s on fresh cache (it spins up an internal session).
     // Prior 10s timeout was killing valid requests that would have completed within 1-2s.
     private readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };

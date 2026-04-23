@@ -55,4 +55,14 @@ public class BotDetectionStderrTests
         string stderr = "confirm you're not a bot by visiting the link";
         Assert.True(ResolutionEngine.IsBotDetectionStderr(stderr));
     }
+
+    [Fact]
+    public void DetectsCurlyApostropheVariant()
+    {
+        // YouTube's real stderr uses U+2019 (right single quotation mark), not U+0027. Captured
+        // verbatim from a live session log — if the detector regresses to strict ASCII matching,
+        // MarkDomainRequiresPot stops firing and tier 1 keeps racing non-PO strategies forever.
+        string stderr = "ERROR: [youtube] biU0f7DJmGU: Sign in to confirm you\u2019re not a bot. Use --cookies-from-browser or --cookies for the authentication.";
+        Assert.True(ResolutionEngine.IsBotDetectionStderr(stderr));
+    }
 }

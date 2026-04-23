@@ -82,4 +82,16 @@ public class SystemEventBus
             Payload = error
         });
     }
+
+    public void PublishStrategyDemoted(string strategyName, string memKey, string reason, string? correlationId = null)
+    {
+        Publish(new SystemEvent
+        {
+            Type = SystemEventType.StrategyDemoted,
+            Timestamp = DateTime.Now,
+            SourceModule = "ResolutionEngine",
+            CorrelationId = correlationId,
+            Payload = new { strategyName = strategyName, memKey = memKey, reason = reason }
+        });
+    }
 }

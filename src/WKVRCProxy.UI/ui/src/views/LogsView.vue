@@ -90,6 +90,26 @@ function setLevelFilter(level: number | null) {
       </span>
     </div>
 
+    <!-- Playback-feedback demotion chips: emitted when a strategy's resolved URL is rejected by
+         AVPro or the pre-flight probe. Click × to dismiss; all cleared by the button at the end. -->
+    <div v-if="appStore.demotions.length > 0" class="shrink-0 flex items-start gap-2 flex-wrap">
+      <span class="text-[8px] font-black uppercase tracking-[0.3em] text-yellow-400/70 italic mt-2 shrink-0">Demoted</span>
+      <div class="flex gap-2 flex-wrap">
+        <div v-for="d in appStore.demotions" :key="d.id"
+             class="group bg-yellow-500/[0.06] border border-yellow-500/20 rounded-xl px-3 py-1.5 flex items-center gap-2 hover:bg-yellow-500/[0.12] transition-all"
+             :title="`${d.reason}${d.correlationId ? ' · ' + d.correlationId : ''}`">
+          <span class="text-[8px] font-black text-yellow-400/90 uppercase tracking-widest italic">{{ d.strategyName }}</span>
+          <span class="text-[8px] text-white/35 font-mono">@ {{ d.memKey }}</span>
+          <span class="text-[8px] text-white/40 italic">{{ d.reason }}</span>
+          <button @click="appStore.dismissDemotion(d.id)"
+                  class="text-white/30 hover:text-red-400 text-[10px] leading-none ml-1">×</button>
+        </div>
+      </div>
+      <button @click="appStore.clearDemotions()" class="ml-auto text-[8px] font-black uppercase tracking-widest text-white/30 hover:text-red-400 transition-colors italic mt-2">
+        Clear demotions
+      </button>
+    </div>
+
     <div class="flex-grow bg-white/[0.02] border border-white/5 rounded-[32px] overflow-hidden backdrop-blur-3xl shadow-2xl flex flex-col font-mono text-[9px]">
       <!-- Column headers -->
       <div class="px-8 py-4 bg-white/[0.01] border-b border-white/5 grid grid-cols-[7rem_6rem_8rem_1fr] gap-4 text-white/30 font-black uppercase tracking-[0.3em] text-[8px] italic shrink-0 shadow-[0_4px_12px_rgba(0,0,0,0.3)]">

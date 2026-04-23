@@ -153,9 +153,22 @@ function truncate(str: string, len: number) {
               <span v-else class="text-white/25 font-mono text-[9px]">—</span>
             </td>
             <td class="px-6 py-4 text-right">
-              <span :class="entry.Success ? 'text-emerald-400' : 'text-red-400'" class="font-black italic text-[9px]">
-                {{ entry.Success ? 'OK' : 'FAILED' }}
-              </span>
+              <div class="inline-flex items-center gap-2 justify-end">
+                <!-- PlaybackVerified dot: green = AVPro played, red = AVPro rejected, grey =
+                     pending / tier4 passthrough. Hover for the full explanation. -->
+                <span v-if="entry.Success"
+                      :title="entry.PlaybackVerified === true ? 'Playback verified — AVPro accepted the URL'
+                             : entry.PlaybackVerified === false ? 'Playback FAILED — AVPro rejected the URL after resolution'
+                             : 'Playback pending or passthrough (not verified)'"
+                      :class="['w-1.5 h-1.5 rounded-full shrink-0',
+                               entry.PlaybackVerified === true ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.6)]'
+                               : entry.PlaybackVerified === false ? 'bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.6)]'
+                               : 'bg-white/20']"></span>
+                <span :class="entry.Success ? (entry.PlaybackVerified === false ? 'text-red-400' : 'text-emerald-400') : 'text-red-400'"
+                      class="font-black italic text-[9px]">
+                  {{ entry.Success ? (entry.PlaybackVerified === false ? 'BAD URL' : 'OK') : 'FAILED' }}
+                </span>
+              </div>
             </td>
           </tr>
           <!-- Empty state -->

@@ -28,7 +28,8 @@ public enum StrategyFailureKind
     Blocked403,     // 401/403/429. Strong block signal, specific to this IP/fingerprint.
     NotFound404,    // 404/410/451. URL is gone; retrying won't help.
     JsChallenge,    // site served a JS/captcha challenge page instead of the expected media.
-    LowQuality      // resolved a URL but its height was below the acceptable floor.
+    LowQuality,     // resolved a URL but its height was below the acceptable floor.
+    PlaybackFailed  // resolution returned a URL but AVPro/pre-flight probe rejected it (trust list, codec, unreachable).
 }
 
 public class StrategyMemoryEntry
@@ -78,6 +79,7 @@ public class StrategyMemory
     // Asymmetric demote thresholds — a strategy stops being "preferred" once this many consecutive
     // failures of the given kind hit without an intervening success.
     //   404 → 1 (URL is gone; retrying doesn't help)
+    //   PlaybackFailed → 1 (URL "resolved" but AVPro refused it — as terminal as 404 from the user's POV)
     //   403 → 2 (ban signal; give it one retry in case of transient IP reputation)
     //   JsChallenge → 2 (strategy can't pass the gate; browser-extract should take over)
     //   LowQuality → 3 (give the strategy a chance to roll a better format)
@@ -85,6 +87,7 @@ public class StrategyMemory
     public static int DemoteThresholdFor(StrategyFailureKind kind) => kind switch
     {
         StrategyFailureKind.NotFound404 => 1,
+        StrategyFailureKind.PlaybackFailed => 1,
         StrategyFailureKind.Blocked403 => 2,
         StrategyFailureKind.JsChallenge => 2,
         StrategyFailureKind.LowQuality => 3,
@@ -237,8 +240,37 @@ public class StrategyMemory
         return result;
     }
 
+    // Wrap memory in a versioned envelope so we can wipe the file on every app-version change.
+    // Learned ranking is cheap to rebuild (~one cascade per host) but the risk of a stale bad
+    // strategy surviving a behavior-changing update is expensive — e.g. a "success" recorded by
+    // pre-playback-feedback code sticks around forever and keeps the fast-path locked on a broken
+    // strategy. Wiping on every build is the simplest correctness guarantee: each new binary starts
+    // with a clean slate and re-learns from real outcomes under the current logic.
+    internal class MemoryEnvelope
+    {
+        public string? AppVersion { get; set; }
+        public Dictionary<string, List<StrategyMemoryEntry>>? Entries { get; set; }
+    }
+
+    // Read the current app version from version.txt next to the exe. Returns null if the file is
+    // missing or empty (dev builds from `dotnet run` without a version.txt → we won't wipe in that
+    // case, so iterative debugging doesn't lose memory every compile).
+    internal static string? ReadCurrentAppVersion(string basePath)
+    {
+        try
+        {
+            string versionPath = Path.Combine(basePath, "version.txt");
+            if (!File.Exists(versionPath)) return null;
+            string v = File.ReadAllText(versionPath).Trim();
+            return string.IsNullOrWhiteSpace(v) ? null : v;
+        }
+        catch { return null; }
+    }
+
     public void Load()
     {
+        string? currentVersion = ReadCurrentAppVersion(Path.GetDirectoryName(_path) ?? AppDomain.CurrentDomain.BaseDirectory);
+
         // Try primary → .bak fallback. If the primary was corrupted (partial write from a process
         // crash) the backup written before the last successful save is usually still intact.
         foreach (string candidate in new[] { _path, _path + ".bak" })
@@ -248,17 +280,53 @@ public class StrategyMemory
             {
                 string json = File.ReadAllText(candidate);
                 if (string.IsNullOrWhiteSpace(json)) continue;
-                var loaded = JsonSerializer.Deserialize<Dictionary<string, List<StrategyMemoryEntry>>>(json);
-                if (loaded != null)
+
+                // Try the new envelope format first. Fall back to the legacy raw-dictionary format
+                // (pre-version-gate) so users upgrading don't see a parse error — we'll just wipe
+                // because the old format has no version tag.
+                string? storedVersion = null;
+                Dictionary<string, List<StrategyMemoryEntry>>? loaded = null;
+                bool isLegacyFormat = false;
+                try
                 {
-                    foreach (var kvp in loaded)
-                        _entries[kvp.Key] = kvp.Value ?? new List<StrategyMemoryEntry>();
-                    if (candidate.EndsWith(".bak"))
-                        _logger?.Warning("[StrategyMemory] Primary file corrupt; recovered " + _entries.Count + " host entries from backup.");
+                    var envelope = JsonSerializer.Deserialize<MemoryEnvelope>(json);
+                    if (envelope?.Entries != null)
+                    {
+                        storedVersion = envelope.AppVersion;
+                        loaded = envelope.Entries;
+                    }
                     else
-                        _logger?.Debug("[StrategyMemory] Loaded " + _entries.Count + " host entries.");
+                    {
+                        // Envelope deserialized but had no entries — could be a legacy dict. Try raw.
+                        loaded = JsonSerializer.Deserialize<Dictionary<string, List<StrategyMemoryEntry>>>(json);
+                        isLegacyFormat = loaded != null;
+                    }
+                }
+                catch
+                {
+                    loaded = JsonSerializer.Deserialize<Dictionary<string, List<StrategyMemoryEntry>>>(json);
+                    isLegacyFormat = loaded != null;
+                }
+
+                if (loaded == null) continue;
+
+                bool versionMismatch = currentVersion != null
+                    && (isLegacyFormat || storedVersion == null || storedVersion != currentVersion);
+                if (versionMismatch)
+                {
+                    _logger?.Info("[StrategyMemory] App version changed (" + (storedVersion ?? "<none>") + " → " + currentVersion + "). Wiping memory for a clean re-learn.");
+                    _entries.Clear();
+                    Save(); // persist the new envelope + empty entries under the current version
                     return;
                 }
+
+                foreach (var kvp in loaded)
+                    _entries[kvp.Key] = kvp.Value ?? new List<StrategyMemoryEntry>();
+                if (candidate.EndsWith(".bak"))
+                    _logger?.Warning("[StrategyMemory] Primary file corrupt; recovered " + _entries.Count + " host entries from backup.");
+                else
+                    _logger?.Debug("[StrategyMemory] Loaded " + _entries.Count + " host entries (version " + (storedVersion ?? "unversioned") + ").");
+                return;
             }
             catch (Exception ex)
             {
@@ -328,7 +396,9 @@ public class StrategyMemory
                 var snapshot = _entries.ToDictionary(kvp => kvp.Key, kvp => {
                     lock (kvp.Value) return kvp.Value.ToList();
                 });
-                string json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+                string? currentVersion = ReadCurrentAppVersion(Path.GetDirectoryName(_path) ?? AppDomain.CurrentDomain.BaseDirectory);
+                var envelope = new MemoryEnvelope { AppVersion = currentVersion, Entries = snapshot };
+                string json = JsonSerializer.Serialize(envelope, new JsonSerializerOptions { WriteIndented = true });
 
                 // Atomic-ish write: write to a sibling temp file, then move into place. Protects
                 // against torn writes if the process dies mid-save. Before the move, promote the

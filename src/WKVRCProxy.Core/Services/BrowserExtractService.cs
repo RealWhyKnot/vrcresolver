@@ -56,8 +56,14 @@ public class BrowserExtractService : IDisposable
         ("dash",      new Regex(@"\.mpd(\?|$)",                                         RegexOptions.IgnoreCase | RegexOptions.Compiled), 20),
         ("mp4",       new Regex(@"\.mp4(\?|$)",                                         RegexOptions.IgnoreCase | RegexOptions.Compiled), 30),
         ("webm",      new Regex(@"\.webm(\?|$)",                                        RegexOptions.IgnoreCase | RegexOptions.Compiled), 40),
-        ("media-cdn", new Regex(@"(googlevideo\.com|video\.xx\.fbcdn|media\.|/stream/)", RegexOptions.IgnoreCase | RegexOptions.Compiled), 50),
+        ("media-cdn", new Regex(@"(googlevideo\.com/videoplayback|video\.xx\.fbcdn|media\.|/stream/)", RegexOptions.IgnoreCase | RegexOptions.Compiled), 50),
     };
+
+    // Connectivity/telemetry probes that share a host with real media but carry no payload.
+    // YouTube/googlevideo emit /generate_204 to pick the closest CDN edge before streaming starts;
+    // if we hand AVPro one of these it'll get 0 bytes back and silently fail to load.
+    private static readonly Regex NonMediaPathExclusion =
+        new(@"/generate_204(\?|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // AVPro-style UA used for probe-first. Same seed value the Tier 1 vrchat-ua strategy uses.
     private const string ProbeUserAgent = "UnityPlayer/2022.3.22f1 (UnityWebRequest/1.0, libcurl/7.84.0-DEV)";
@@ -217,6 +223,7 @@ public class BrowserExtractService : IDisposable
 
     private static (string Label, int Priority)? MatchMedia(string url)
     {
+        if (NonMediaPathExclusion.IsMatch(url)) return null;
         foreach (var (label, pat, prio) in MediaPatterns)
             if (pat.IsMatch(url)) return (label, prio);
         return null;
@@ -332,10 +339,26 @@ public class BrowserExtractService : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.Warning("[BrowserExtract] Browser launch failed: " + ex.Message);
+            // PuppeteerSharp wraps the real cause (wrong browser version, missing DLLs, exit-code
+            // from the child, etc.) inside InnerException — the outer message is usually just
+            // "Failed to launch browser!". Walk the whole chain so the operator can actually act.
+            _logger.Warning("[BrowserExtract] Browser launch failed: " + FormatExceptionChain(ex));
             return null;
         }
         finally { _browserInitLock.Release(); }
+    }
+
+    private static string FormatExceptionChain(Exception ex)
+    {
+        var sb = new StringBuilder();
+        Exception? cur = ex;
+        while (cur != null)
+        {
+            if (sb.Length > 0) sb.Append(" | inner: ");
+            sb.Append(cur.GetType().Name).Append(": ").Append(cur.Message);
+            cur = cur.InnerException;
+        }
+        return sb.ToString();
     }
 
     // Chromium-family detection. Edge ships on every Win11 box, so we prefer it. We do NOT fall

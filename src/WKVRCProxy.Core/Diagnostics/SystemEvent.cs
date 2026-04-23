@@ -10,7 +10,11 @@ public enum SystemEventType
     Relay,
     Prompt,
     Health,
-    Error
+    Error,
+    // Raised when the playback-feedback loop demotes a strategy that returned a URL AVPro refused
+    // (trust list, codec, unreachable). UI renders this as a dismissable chip so the user can see
+    // which strategy/host pair fell out of the fast-path without parsing log lines.
+    StrategyDemoted
 }
 
 public class SystemEvent

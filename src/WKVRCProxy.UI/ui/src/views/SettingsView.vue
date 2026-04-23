@@ -1,8 +1,28 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useAppStore, TIER_DISPLAY } from '../stores/appStore'
 
 const appStore = useAppStore()
+
+const DEFAULT_NATIVE_AVPRO_UA_HOSTS = ['vr-m.net']
+
+// The config stores the deny-list as a string[]; the UI edits a comma-separated string for
+// simplicity. `saveNativeAvProUaHosts` parses it back and persists, trimming empty entries.
+const nativeAvProUaHostsText = computed<string>({
+  get: () => (appStore.config.nativeAvProUaHosts ?? []).join(', '),
+  set: (v: string) => {
+    appStore.config.nativeAvProUaHosts = v.split(',').map(s => s.trim()).filter(s => s.length > 0)
+  }
+})
+
+function saveNativeAvProUaHosts() {
+  appStore.saveConfig()
+}
+
+function resetNativeAvProUaHosts() {
+  appStore.config.nativeAvProUaHosts = [...DEFAULT_NATIVE_AVPRO_UA_HOSTS]
+  appStore.saveConfig()
+}
 
 function isTierEnabled(tierId: string): boolean {
   return !(appStore.config.disabledTiers ?? []).includes(tierId)
@@ -192,7 +212,45 @@ function clearHistory() {
           </div>
           <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Route video URLs through a local proxy to bypass domain blocking in public VRChat worlds. Required for most public world video players.</p>
         </div>
+
+        <div @click="appStore.config.enablePreflightProbe = !appStore.config.enablePreflightProbe; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Pre-Flight URL Probe</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enablePreflightProbe ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enablePreflightProbe ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Verify resolved URLs are playable before handing them to VRChat. Catches dead CDN URLs and cloud-resolver drift; adds up to 5s on cold resolve.</p>
+        </div>
       </div>
+
+      <!-- Native-UA deny-list (hosts skipped by relay wrap) -->
+      <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-6 hover:border-blue-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl group">
+        <div class="flex items-center gap-4">
+          <div class="w-10 h-10 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500 group-hover:scale-110 transition-transform">
+            <i class="bi bi-shield-lock text-xl"></i>
+          </div>
+          <div>
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Native-UA Hosts (relay skip-list)</h4>
+            <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Comma-separated — hosts that must NOT be relay-wrapped</p>
+          </div>
+        </div>
+        <div class="flex gap-3">
+          <div class="flex-grow">
+            <input
+              v-model="nativeAvProUaHostsText"
+              @blur="saveNativeAvProUaHosts()"
+              type="text"
+              placeholder="vr-m.net, some-other-host.net"
+              class="w-full bg-white/[0.02] border border-white/5 rounded-2xl px-6 py-3 text-[9px] font-mono text-white/60 italic placeholder:text-white/25 focus:outline-none focus:border-blue-500/40 transition-colors group-hover:bg-white/[0.04]"
+            />
+          </div>
+          <button @click="resetNativeAvProUaHosts()" class="px-6 py-3 bg-white/5 hover:bg-blue-500/10 text-white/50 hover:text-blue-400 rounded-2xl font-black text-[9px] uppercase tracking-[0.2em] transition-all italic active:scale-95 border border-white/5 hover:border-blue-500/20">
+            Reset Default
+          </button>
+        </div>
+        <p class="text-[9px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">VRChat "movie world" hosts that only accept AVPro's native UnityPlayer UA (e.g. vr-m.net). Wrapping them breaks playback — every other host is wrapped by default to pass VRChat's trusted-URL check.</p>
+      </section>
 
       <!-- Custom User Agent -->
       <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-6 hover:border-blue-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl group">
