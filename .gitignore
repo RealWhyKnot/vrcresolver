@@ -41,3 +41,8 @@ wrapper_state.json
 version.txt
 system.db
 system.db-journal
+
+# Test / sample media — not for version control
+*.webm
+*.mp4
+*.mkv
