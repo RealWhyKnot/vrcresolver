@@ -1334,25 +1334,50 @@ public class ResolutionEngine
 
         if (!disabled.Contains("tier1"))
         {
-            // Server-aligned YouTube combo. Mirrors WhyKnot.dev's default
-            //   --extractor-args youtube:player_client=web_safari,web,mweb;player_js_variant=main
-            //     ;youtubepot-bgutilhttp:base_url=...
-            // One yt-dlp process, three clients tried internally — drastically lower burst than
-            // firing each client in a separate subprocess. Priority 5 so it sorts ahead of
-            // tier1:default for YouTube. Non-YouTube hosts fall through to tier1:default.
+            // YouTube mega-combo. Replaces the 6+ individual player_client strategies we used to
+            // fire as separate subprocesses. yt-dlp tries each client in `YouTubeComboClientOrder`
+            // sequentially within ONE process, stopping at the first usable format. In the common
+            // case this means:
+            //   * 1 subprocess per YouTube play (not 10+)
+            //   * 1 outbound request to YouTube (yt-dlp stops after first success)
+            //   * N requests only in the worst case where every preceding client is patched
+            // The client order is user-configurable (SettingsManager seeds from
+            // YouTubeComboClientOrderDefault). Power users can surface a known-working client to
+            // position 0 to skip internal retries entirely.
             if (isYouTubeHost)
             {
+                var comboClients = _settings.Config.YouTubeComboClientOrder;
+                if (comboClients == null || comboClients.Count == 0)
+                    comboClients = new List<string>(StrategyDefaults.YouTubeComboClientOrderDefault);
+                string comboClientList = string.Join(",", comboClients);
+                string comboExtractorArgs = comboClientList + ";player_js_variant=main";
+
                 list.Add(new ResolveStrategy("tier1:yt-combo", "tier1", 5, true,
                     sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
                         injectPot: true, injectImpersonate: false,
                         userAgent: null, referer: null,
                         videoId: videoId, variantLabel: "yt-combo",
-                        playerClient: "web_safari,web,mweb;player_js_variant=main")));
+                        playerClient: comboExtractorArgs)));
             }
 
-            // Default variant: auto PO-token + auto impersonate (current live behaviour).
+            // Default variant: auto PO-token + auto impersonate. Primary for non-YouTube hosts;
+            // YouTube URLs use tier1:yt-combo above instead, but this stays in the catalog as a
+            // last-resort tier-1 fallback.
             list.Add(new ResolveStrategy("tier1:default", "tier1", 10, true,
                 sctx => ResolveTier1(sctx.Url, sctx.Player, sctx.RequestContext)));
+
+            // IPv6-forced variant. If YouTube (or any origin) is rate-limiting your IPv4 address
+            // but the flag doesn't apply to IPv6 — common, since CGNAT / residential bot flags
+            // typically target v4 pools — forcing yt-dlp to egress via v6 routes around the
+            // block at the IP layer without any fingerprint changes. Silent no-op on networks
+            // that don't have v6 connectivity (yt-dlp falls back, call still fails cleanly).
+            list.Add(new ResolveStrategy("tier1:ipv6", "tier1", 15, true,
+                sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
+                    injectPot: isYouTubeHost, injectImpersonate: false,
+                    userAgent: null, referer: null,
+                    videoId: videoId, variantLabel: "ipv6",
+                    playerClient: isYouTubeHost ? string.Join(",", _settings.Config.YouTubeComboClientOrder ?? new List<string>(StrategyDefaults.YouTubeComboClientOrderDefault)) + ";player_js_variant=main" : null,
+                    forceIpv6: true)));
 
             // VRChat UA: for movie-world hosts that allowlist UnityPlayer. Tier 1 sees a successful
             // generic-extractor probe instead of the 403 it gets with the default UA.
@@ -1376,56 +1401,13 @@ public class ResolutionEngine
                     userAgent: null, referer: null,
                     videoId: videoId, variantLabel: "plain")));
 
-            // YouTube-only: PO token forced on (no impersonate). Useful when impersonate confuses youtube.com.
-            if (isYouTubeHost)
-            {
-                list.Add(new ResolveStrategy("tier1:po-only", "tier1", 25, true,
-                    sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
-                        injectPot: true, injectImpersonate: false,
-                        userAgent: null, referer: null,
-                        videoId: videoId, variantLabel: "po-only")));
-
-                // Alternate YouTube player clients. Each yt-dlp YouTube "client" has its own bot-detection
-                // profile and format set. Memory learns which one wins per video/host; if none of the
-                // default/impersonate/po variants succeed (YouTube rolled a new bot-check signature),
-                // one of these typically still works. Priority higher than 40 means they fire last in the
-                // concurrent race — they're fallbacks, not primaries. Each carries its own memory entry
-                // so we can see per-client W/L in the Bypass Health view.
-                //   ios_music   — audio-focused, often passes when main clients are gated
-                //   tv_embedded — TV cast client, historically bypasses age gates
-                //   android_vr  — Oculus VR client, rarely gated, weaker format selection
-                //   web_safari  — Safari variant, different fingerprint from plain 'web'
-                //   mweb        — mobile web, lightweight format set
-                list.Add(new ResolveStrategy("tier1:ios-music", "tier1", 50, true,
-                    sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
-                        injectPot: false, injectImpersonate: false,
-                        userAgent: null, referer: null,
-                        videoId: videoId, variantLabel: "ios-music", playerClient: "ios_music")));
-
-                list.Add(new ResolveStrategy("tier1:tv-embedded", "tier1", 55, true,
-                    sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
-                        injectPot: false, injectImpersonate: false,
-                        userAgent: null, referer: null,
-                        videoId: videoId, variantLabel: "tv-embedded", playerClient: "tv_embedded")));
-
-                list.Add(new ResolveStrategy("tier1:android-vr", "tier1", 60, true,
-                    sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
-                        injectPot: false, injectImpersonate: false,
-                        userAgent: null, referer: null,
-                        videoId: videoId, variantLabel: "android-vr", playerClient: "android_vr")));
-
-                list.Add(new ResolveStrategy("tier1:web-safari", "tier1", 65, true,
-                    sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
-                        injectPot: false, injectImpersonate: false,
-                        userAgent: null, referer: null,
-                        videoId: videoId, variantLabel: "web-safari", playerClient: "web_safari")));
-
-                list.Add(new ResolveStrategy("tier1:mweb", "tier1", 70, true,
-                    sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
-                        injectPot: false, injectImpersonate: false,
-                        userAgent: null, referer: null,
-                        videoId: videoId, variantLabel: "mweb", playerClient: "mweb")));
-            }
+            // NOTE: Per-player_client YouTube strategies (po-only, ios-music, tv-embedded,
+            // android-vr, web-safari, mweb) were REMOVED in v2 defaults. They're now rolled into
+            // tier1:yt-combo above as one subprocess with all clients in YouTubeComboClientOrder.
+            // yt-dlp tries each client in order internally, stops at first success, so one
+            // YouTube play = 1 request to YouTube instead of 10. To change which client gets tried
+            // first, edit AppConfig.YouTubeComboClientOrder — don't re-introduce per-client
+            // strategies.
         }
 
         if (!disabled.Contains("tier2"))
@@ -1589,7 +1571,7 @@ public class ResolutionEngine
     // multiple clients in --extractor-args is legal (comma-separated); we keep one per strategy
     // so the memory ranker can learn which specific client wins per host.
     private async Task<YtDlpResult?> RunTier1Attempt(string url, string player, RequestContext ctx,
-        bool injectPot, bool injectImpersonate, string? userAgent, string? referer, string? videoId, string variantLabel, string? playerClient = null, bool useWarp = false)
+        bool injectPot, bool injectImpersonate, string? userAgent, string? referer, string? videoId, string variantLabel, string? playerClient = null, bool useWarp = false, bool forceIpv6 = false)
     {
         // --print replaces legacy --get-url and lets us capture format metadata (height/vcodec) on the side.
         // Two sentinel-prefixed lines are emitted so the parser can distinguish URL from meta line.
@@ -1598,7 +1580,15 @@ public class ResolutionEngine
             "--print", "meta:%(height)s|%(width)s|%(vcodec)s|%(format_id)s|%(protocol)s",
             "--no-warnings", "--playlist-items", "1"
         };
-        if (_settings.Config.ForceIPv4) args.Add("--force-ipv4");
+        // forceIpv6 wins over ForceIPv4 when the ipv6 strategy is explicitly selected — the whole
+        // point of that variant is to route around v4 rate limits. If v6 connectivity is missing,
+        // yt-dlp surfaces a network error and the strategy records a normal failure.
+        if (forceIpv6)
+        {
+            args.Add("--force-ipv6");
+            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] Forcing IPv6 egress (v4 rate-limit bypass).");
+        }
+        else if (_settings.Config.ForceIPv4) args.Add("--force-ipv4");
 
         // JS runtime + EJS challenge solver: modern YouTube signs stream URLs via JS challenges.
         // Without a JS runtime registered, yt-dlp prints "Signature solving failed" / "n challenge

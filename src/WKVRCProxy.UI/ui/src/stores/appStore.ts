@@ -71,22 +71,17 @@ export interface AppConfig {
 // Canonical default StrategyPriority list + version, mirrored from AppConfig.cs. When the
 // backend bumps StrategyPriorityDefaultsVersion with a new list, users whose saved priority
 // exactly equals a prior default get auto-migrated on next load. Customized lists are preserved.
-export const STRATEGY_PRIORITY_DEFAULTS_VERSION = 1
+export const STRATEGY_PRIORITY_DEFAULTS_VERSION = 2
 export const STRATEGY_PRIORITY_DEFAULTS: string[] = [
-  'tier1:yt-combo',
-  'tier2:cloud-whyknot',
-  'tier1:po-only',
-  'tier1:web-safari',
-  'tier1:ios-music',
-  'tier1:mweb',
-  'tier1:tv-embedded',
-  'tier1:android-vr',
-  'tier1:default',
-  'tier1:vrchat-ua',
-  'tier1:impersonate-only',
-  'tier1:plain',
-  'tier1:browser-extract',
-  'tier3:plain',
+  'tier1:yt-combo',        // one subprocess tries every YouTube player_client internally
+  'tier2:cloud-whyknot',   // cross-IP fallback
+  'tier1:ipv6',            // route around v4-only rate flags
+  'tier1:default',         // non-YouTube hosts (auto PO + impersonate)
+  'tier1:vrchat-ua',       // VRChat-looking traffic for hosts that gate on it
+  'tier1:impersonate-only',// TLS-fingerprint-sensitive origins
+  'tier1:plain',           // bare yt-dlp last-resort
+  'tier1:browser-extract', // JS-gated sites
+  'tier3:plain',           // VRChat's pinned yt-dlp-og
 ]
 
 export interface BypassMemoryEntry {
@@ -209,7 +204,7 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.23.7-2A71')
+  const version = ref('2026.4.23.8-9E88')
 
   const demotions = ref<DemotionNotification[]>([])
   const DEMOTION_CAP = 20

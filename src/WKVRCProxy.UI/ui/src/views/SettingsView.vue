@@ -51,21 +51,16 @@ interface StrategyDescriptor {
 }
 const STRATEGY_CATALOG: Record<string, StrategyDescriptor[]> = {
   'Local (Tier 1)': [
-    { name: 'tier1:yt-combo',         label: 'YouTube combo',    description: 'Server-aligned: web_safari,web,mweb tried internally in one yt-dlp call + PO token. Low-burst and empirically the best opening move for YouTube.', youtubeOnly: true },
+    { name: 'tier1:yt-combo',         label: 'YouTube combo',    description: 'One yt-dlp call that tries every YouTube player_client (tv_simply, tv_embedded, tv, web_safari, web, mweb, ios, ios_music, android, android_vr, android_music) internally, stopping at the first that works. Low-burst — the primary YouTube strategy.', youtubeOnly: true },
+    { name: 'tier1:ipv6',             label: 'IPv6 forced',      description: 'Same as default but forces v6 egress. Routes around residential/CGNAT rate flags that target v4 only. No-op on networks without v6.' },
     { name: 'tier1:default',          label: 'Default',          description: 'yt-dlp with auto PO token + curl-impersonate. First pick for non-YouTube hosts.' },
-    { name: 'tier1:vrchat-ua',        label: 'VRChat UA',        description: 'UnityPlayer User-Agent for hosts that allowlist the in-game player.' },
+    { name: 'tier1:vrchat-ua',        label: 'VRChat UA',        description: 'UnityPlayer User-Agent for hosts that need traffic to look like it came from VRChat itself.' },
     { name: 'tier1:impersonate-only', label: 'Impersonate only', description: 'curl-impersonate TLS fingerprint, no PO token — for sites where PO fetch itself flags us.' },
     { name: 'tier1:plain',            label: 'Plain',            description: 'Bare yt-dlp, no extras. Last-resort variant.' },
     { name: 'tier1:browser-extract',  label: 'Browser extract',  description: 'Headless Edge/Chrome for JS-gated sites. Can serve decoy URLs on YouTube when detected.' },
-    { name: 'tier1:po-only',          label: 'PO token only',    description: 'PO token, no impersonate. Useful when impersonate confuses youtube.com.', youtubeOnly: true },
-    { name: 'tier1:ios-music',        label: 'iOS Music client', description: 'Alternate YouTube client; audio-focused, often bypasses gates.', youtubeOnly: true },
-    { name: 'tier1:tv-embedded',      label: 'TV embedded',      description: 'YouTube TV client; historically bypasses age gates.', youtubeOnly: true },
-    { name: 'tier1:android-vr',       label: 'Android VR',       description: 'Oculus VR YouTube client; rarely gated, weaker format selection.', youtubeOnly: true },
-    { name: 'tier1:web-safari',       label: 'Web Safari',       description: 'Safari YouTube variant; different fingerprint than the default web client.', youtubeOnly: true },
-    { name: 'tier1:mweb',             label: 'Mobile web',       description: 'Mobile YouTube client; lightweight format set.', youtubeOnly: true },
   ],
   'Cloud (Tier 2)': [
-    { name: 'tier2:cloud-whyknot',    label: 'WhyKnot.dev cloud', description: 'Cloud resolver fallback when all local strategies fail.' },
+    { name: 'tier2:cloud-whyknot',    label: 'WhyKnot.dev cloud', description: 'Cloud resolver fallback. Hits YouTube from a different IP so it works when your IP is rate-flagged.' },
   ],
   'Original yt-dlp (Tier 3)': [
     { name: 'tier3:plain',            label: 'Plain yt-dlp-og',   description: 'VRChat-pinned yt-dlp.exe, no extras. Sequential fallback only.' },

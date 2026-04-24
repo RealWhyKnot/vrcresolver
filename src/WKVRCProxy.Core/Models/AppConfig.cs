@@ -121,29 +121,22 @@ public class AppConfig
     // StrategyPriorityDefaultsVersion and users whose config still holds a stale default migrate
     // automatically (customized lists are preserved).
     [JsonPropertyName("strategyPriority")]
-    public List<string> StrategyPriority { get; set; } = new() {
-        "tier1:yt-combo",
-        "tier2:cloud-whyknot",
-        "tier1:po-only",
-        "tier1:web-safari",
-        "tier1:ios-music",
-        "tier1:mweb",
-        "tier1:tv-embedded",
-        "tier1:android-vr",
-        "tier1:default",
-        "tier1:vrchat-ua",
-        "tier1:impersonate-only",
-        "tier1:plain",
-        "tier1:browser-extract",
-        "tier3:plain",
-    };
+    public List<string> StrategyPriority { get; set; } = new(StrategyDefaults.PriorityDefaultsV2);
 
     // Auto-migration version for StrategyPriority. Store the version that produced the current
     // defaults; on load, if StrategyPriority exactly equals the embedded defaults for an older
     // version, overwrite with the new defaults. Customized lists (that don't match any known
-    // default) are preserved untouched.
+    // default) are preserved untouched. See StrategyDefaults for the version history.
     [JsonPropertyName("strategyPriorityDefaultsVersion")]
-    public int StrategyPriorityDefaultsVersion { get; set; } = 1;
+    public int StrategyPriorityDefaultsVersion { get; set; } = StrategyDefaults.CurrentVersion;
+
+    // Ordered YouTube player_client list the `tier1:yt-combo` strategy passes to yt-dlp. yt-dlp
+    // tries these in order and stops at the first client that returns a usable format, so we get
+    // exactly ONE subprocess per YouTube play in the common case. Power users can reorder to put
+    // a known-working client first for their network (e.g. if tv_simply always wins on YouTube
+    // for them, moving it to position 0 saves ~50ms of internal retries).
+    [JsonPropertyName("youtubeComboClientOrder")]
+    public List<string> YouTubeComboClientOrder { get; set; } = new(StrategyDefaults.YouTubeComboClientOrderDefault);
 
     // Wave-based dispatch parameters for the cold race. Wave N fires WaveSize strategies in
     // parallel; if none win within WaveStageDeadlineSeconds, the next wave kicks off (carrying

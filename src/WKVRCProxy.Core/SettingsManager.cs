@@ -46,6 +46,10 @@ public class SettingsManager
             {
                 string json = File.ReadAllText(_filePath);
                 var config = JsonSerializer.Deserialize(json, CoreJsonContext.Default.AppConfig);
+                if (config != null)
+                {
+                    ApplyStrategyPriorityMigration(config);
+                }
                 return config ?? new AppConfig();
             }
             catch (Exception ex)
@@ -59,6 +63,34 @@ public class SettingsManager
                 catch { }
                 return new AppConfig();
             }
+        }
+    }
+
+    // Auto-upgrade a stored StrategyPriority list from an older default to the current default,
+    // but ONLY if the user hadn't customized it. See Models/StrategyDefaults.cs for version
+    // semantics. Runs inline during Load — no separate user action required.
+    private void ApplyStrategyPriorityMigration(AppConfig config)
+    {
+        if (StrategyDefaults.TryMigratePriorityList(
+                config.StrategyPriority,
+                config.StrategyPriorityDefaultsVersion,
+                out var migrated))
+        {
+            _logger?.Info("[Settings] Strategy priority defaults migrated v"
+                + config.StrategyPriorityDefaultsVersion + " → v" + StrategyDefaults.CurrentVersion
+                + " (your list matched the old default, so it's been updated; customized lists are preserved).");
+            config.StrategyPriority = migrated;
+        }
+        // Always stamp the current version forward so we don't re-check the migration next load.
+        config.StrategyPriorityDefaultsVersion = StrategyDefaults.CurrentVersion;
+
+        // Defensive fill: older configs predate YouTubeComboClientOrder entirely. Seed with
+        // current default so yt-combo can run the new broad client list without the user editing
+        // JSON by hand.
+        if (config.YouTubeComboClientOrder == null || config.YouTubeComboClientOrder.Count == 0)
+        {
+            config.YouTubeComboClientOrder = new System.Collections.Generic.List<string>(
+                StrategyDefaults.YouTubeComboClientOrderDefault);
         }
     }
 
