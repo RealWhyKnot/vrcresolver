@@ -39,6 +39,53 @@ function toggleTier(tierId: string) {
   appStore.saveConfig()
 }
 
+// Individual strategy variants that can be toggled off without disabling a whole tier.
+// Mirrors ResolutionEngine.BuildColdRaceStrategies — keep in sync when adding variants there.
+// Using the same disabledTiers list on the backend (it accepts both "tier1" group names and
+// "tier1:browser-extract" full strategy names).
+interface StrategyDescriptor {
+  name: string          // full name, e.g. "tier1:browser-extract" — what gets put in disabledTiers
+  label: string         // UI label
+  description: string   // short "when it helps" blurb
+  youtubeOnly?: boolean // only meaningful for YouTube URLs
+}
+const STRATEGY_CATALOG: Record<string, StrategyDescriptor[]> = {
+  'Local (Tier 1)': [
+    { name: 'tier1:default',          label: 'Default',          description: 'yt-dlp with auto PO token + curl-impersonate. First pick for most hosts.' },
+    { name: 'tier1:vrchat-ua',        label: 'VRChat UA',        description: 'UnityPlayer User-Agent for hosts that allowlist the in-game player.' },
+    { name: 'tier1:impersonate-only', label: 'Impersonate only', description: 'curl-impersonate TLS fingerprint, no PO token — for sites where PO fetch itself flags us.' },
+    { name: 'tier1:plain',            label: 'Plain',            description: 'Bare yt-dlp, no extras. Last-resort variant.' },
+    { name: 'tier1:browser-extract',  label: 'Browser extract',  description: 'Headless Edge/Chrome for JS-gated sites. Can serve decoy URLs on YouTube when detected.' },
+    { name: 'tier1:po-only',          label: 'PO token only',    description: 'PO token, no impersonate. YouTube-specific — useful when impersonate confuses youtube.com.', youtubeOnly: true },
+    { name: 'tier1:ios-music',        label: 'iOS Music client', description: 'Alternate YouTube client; audio-focused, often bypasses gates.', youtubeOnly: true },
+    { name: 'tier1:tv-embedded',      label: 'TV embedded',      description: 'YouTube TV client; historically bypasses age gates.', youtubeOnly: true },
+    { name: 'tier1:android-vr',       label: 'Android VR',       description: 'Oculus VR YouTube client; rarely gated, weaker format selection.', youtubeOnly: true },
+    { name: 'tier1:web-safari',       label: 'Web Safari',       description: 'Safari YouTube variant; different fingerprint than the default web client.', youtubeOnly: true },
+    { name: 'tier1:mweb',             label: 'Mobile web',       description: 'Mobile YouTube client; lightweight format set.', youtubeOnly: true },
+  ],
+  'Cloud (Tier 2)': [
+    { name: 'tier2:cloud-whyknot',    label: 'WhyKnot.dev cloud', description: 'Cloud resolver fallback when all local strategies fail.' },
+  ],
+  'Original yt-dlp (Tier 3)': [
+    { name: 'tier3:plain',            label: 'Plain yt-dlp-og',   description: 'VRChat-pinned yt-dlp.exe, no extras. Sequential fallback only.' },
+  ],
+}
+
+function isStrategyEnabled(name: string): boolean {
+  const list = appStore.config.disabledTiers ?? []
+  return !list.includes(name)
+}
+
+function toggleStrategy(name: string) {
+  if (!appStore.config.disabledTiers) appStore.config.disabledTiers = []
+  const idx = appStore.config.disabledTiers.indexOf(name)
+  if (idx >= 0) appStore.config.disabledTiers.splice(idx, 1)
+  else appStore.config.disabledTiers.push(name)
+  appStore.saveConfig()
+}
+
+const showAdvancedStrategies = ref(false)
+
 const showSystemInfo = ref(false)
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -138,6 +185,49 @@ function clearHistory() {
           </div>
         </div>
         <p class="text-[8px] text-white/25 font-bold uppercase tracking-widest italic">Passthrough always activates on unrecoverable error regardless of this setting.</p>
+      </section>
+
+      <!-- Advanced: per-strategy toggles. Users can disable a single variant without taking down
+           the whole tier — handy when one path regresses on a specific host (e.g. browser-extract
+           serving decoy URLs on YouTube) and you need to work around it while the fix lands. -->
+      <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-5 hover:border-blue-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl">
+        <div class="flex items-center justify-between cursor-pointer" @click="showAdvancedStrategies = !showAdvancedStrategies">
+          <div class="flex items-center gap-4">
+            <div class="w-10 h-10 bg-purple-500/10 rounded-2xl flex items-center justify-center text-purple-400">
+              <i class="bi bi-sliders text-xl"></i>
+            </div>
+            <div>
+              <h4 class="text-lg font-black uppercase tracking-tighter italic">Advanced — Individual Strategies</h4>
+              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Toggle specific variants inside each tier</p>
+            </div>
+          </div>
+          <i :class="['bi transition-transform text-white/45 text-lg', showAdvancedStrategies ? 'bi-chevron-up rotate-0' : 'bi-chevron-down']"></i>
+        </div>
+
+        <div v-if="showAdvancedStrategies" class="space-y-5 pt-2">
+          <p class="text-[8px] text-white/40 font-bold uppercase tracking-widest leading-relaxed italic">Use these to mute a single variant that's misbehaving for a host. Disabling all variants in a tier has the same effect as disabling the whole tier.</p>
+          <div v-for="(strategies, groupLabel) in STRATEGY_CATALOG" :key="groupLabel" class="space-y-2">
+            <h5 class="text-[9px] font-black uppercase tracking-[0.3em] text-white/45 italic">{{ groupLabel }}</h5>
+            <div class="space-y-1.5">
+              <div v-for="s in strategies" :key="s.name"
+                   @click="toggleStrategy(s.name)"
+                   class="flex items-center gap-3 p-3 bg-white/[0.015] border border-white/5 rounded-xl cursor-pointer hover:bg-white/[0.04] transition-all"
+                   :class="isStrategyEnabled(s.name) ? '' : 'opacity-50'">
+                <div class="flex-grow min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-black uppercase tracking-widest italic text-white/75">{{ s.label }}</span>
+                    <span v-if="s.youtubeOnly" class="px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-widest bg-red-500/10 border border-red-500/20 text-red-400/75 italic">YouTube</span>
+                    <span class="text-[8px] font-mono text-white/25">{{ s.name }}</span>
+                  </div>
+                  <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">{{ s.description }}</p>
+                </div>
+                <div :class="['w-8 h-4 rounded-full relative transition-all duration-500 shrink-0', isStrategyEnabled(s.name) ? 'bg-blue-600' : 'bg-white/10 border border-white/10']">
+                  <div :class="['absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all duration-500', isStrategyEnabled(s.name) ? 'left-[18px]' : 'left-0.5']"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Preferred Tier -->

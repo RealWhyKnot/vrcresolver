@@ -106,6 +106,45 @@ public class BrowserExtractService : IDisposable
             // the media URL we want.
             await page.SetViewportAsync(new ViewPortOptions { Width = 1920, Height = 1080 });
 
+            // Override the UA so we don't ship "HeadlessChrome" in requests — YouTube and friends
+            // treat that token as a hard bot signal and immediately serve decoy videoplayback URLs
+            // (absurd-future expire timestamps, placeholder ip=...). Real Chrome UA makes the
+            // session indistinguishable from a genuine desktop visit at the Network-tab layer.
+            await page.SetUserAgentAsync(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+
+            // Stealth patches applied before any page script runs. The main tells headless
+            // Chromium leaves that sites (especially YouTube) use to identify automation:
+            //   - navigator.webdriver === true
+            //   - window.chrome missing
+            //   - navigator.plugins.length === 0 / empty PluginArray
+            //   - navigator.languages === []
+            // We patch each to a plausible real-Chrome value. These aren't a silver bullet — the
+            // arms race continues — but they stop the trivial classifier that was serving us
+            // decoy /videoplayback URLs with far-future expires.
+            await page.EvaluateFunctionOnNewDocumentAsync(@"() => {
+                try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (_) {}
+                try {
+                    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                } catch (_) {}
+                try {
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5].map(() => ({ name: 'Chrome PDF Plugin' }))
+                    });
+                } catch (_) {}
+                if (!window.chrome) { window.chrome = { runtime: {} }; }
+                // Permissions query spoof — real Chrome returns 'prompt' for notifications unless
+                // explicitly granted/denied. Headless returns 'denied' which is a tell.
+                const origQuery = navigator.permissions && navigator.permissions.query;
+                if (origQuery) {
+                    navigator.permissions.query = (p) =>
+                        p && p.name === 'notifications'
+                            ? Promise.resolve({ state: Notification.permission })
+                            : origQuery.call(navigator.permissions, p);
+                }
+            }");
+
             var capturedCts = new CancellationTokenSource();
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(capturedCts.Token, ct);
 
@@ -221,12 +260,54 @@ public class BrowserExtractService : IDisposable
         }
     }
 
-    private static (string Label, int Priority)? MatchMedia(string url)
+    private (string Label, int Priority)? MatchMedia(string url)
     {
         if (NonMediaPathExclusion.IsMatch(url)) return null;
+        if (IsDecoySignedUrl(url)) return null;
         foreach (var (label, pat, prio) in MediaPatterns)
             if (pat.IsMatch(url)) return (label, prio);
         return null;
+    }
+
+    // When YouTube (and likely others in the future) detect an automated client, they serve a
+    // page whose embedded /videoplayback URL has placeholder fields — far-future expire, a random
+    // ip= that isn't the requester's, etc. — so the scraper's Network tab looks successful even
+    // though any GET will return 403. Real YouTube videoplayback URLs expire ~6 h out; anything
+    // more than a day out is a reliable decoy signal. Rejecting those keeps browser-extract from
+    // "winning" the cold race with a fake URL and letting another strategy deliver a real one.
+    private bool IsDecoySignedUrl(string url)
+    {
+        const long DecoyExpireHorizonSeconds = 24 * 60 * 60; // 1 day — comfortably past any real CDN lifetime
+        try
+        {
+            int q = url.IndexOf('?');
+            if (q < 0 || q == url.Length - 1) return false;
+            string query = url.Substring(q + 1);
+            foreach (var pair in query.Split('&'))
+            {
+                int eq = pair.IndexOf('=');
+                if (eq <= 0) continue;
+                string key = pair.Substring(0, eq);
+                if (!string.Equals(key, "expire", StringComparison.OrdinalIgnoreCase)) continue;
+                string value = pair.Substring(eq + 1);
+                if (!long.TryParse(value, out long expireUnix)) return false;
+                long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                long delta = expireUnix - nowUnix;
+                if (delta > DecoyExpireHorizonSeconds)
+                {
+                    _logger.Warning("[BrowserExtract] Rejecting decoy media URL (expire=" + expireUnix +
+                        " is " + (delta / 3600) + "h out; real signed URLs expire <24h). Host appears to be serving anti-scrape placeholders.");
+                    return true;
+                }
+                return false;
+            }
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug("[BrowserExtract] Decoy-expire check failed: " + ex.Message);
+            return false;
+        }
     }
 
     private async Task<string> BuildCookieHeaderAsync(IPage page, string url)
@@ -322,15 +403,20 @@ public class BrowserExtractService : IDisposable
             {
                 Headless = true,
                 ExecutablePath = exe,
+                // new headless mode has fewer automation tells (real Chromium runtime, real GPU
+                // stack, WebGL that doesn't scream "puppeteer"). Old headless sets enough
+                // webdriver-ish flags that YouTube serves decoy videoplayback URLs on sight.
                 Args = new[]
                 {
+                    "--headless=new",
                     "--disable-blink-features=AutomationControlled",
                     "--mute-audio",
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-extensions",
                     "--disable-dev-shm-usage",
-                    "--disable-gpu"
+                    // Keep GPU enabled — the previous --disable-gpu was another fingerprint signal
+                    // that clearly marks us as headless/automation to sites that WebGL-probe.
                 }
             };
             _browser = await Puppeteer.LaunchAsync(options);

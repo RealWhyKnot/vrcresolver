@@ -844,8 +844,15 @@ public class ResolutionEngine
                         }
                         else
                         {
+                            // Either the remembered strategy no longer exists in the catalog (code
+                            // change) or the user explicitly disabled it via config. Either way,
+                            // clear the memory pointer and let the cold race pick a replacement.
+                            bool userDisabled = IsStrategyDisabled(remembered.StrategyName, rememberedGroup, disabled);
                             _logger.Debug("[" + ctx.CorrelationId + "] [StrategyMemory] Remembered strategy '"
-                                + remembered.StrategyName + "' not in current catalog — cold-racing instead.");
+                                + remembered.StrategyName + "' "
+                                + (userDisabled ? "is disabled by user config" : "not in current catalog")
+                                + " — cold-racing instead.");
+                            remembered = null; rememberedGroup = null;
                         }
                     }
 
@@ -922,10 +929,23 @@ public class ResolutionEngine
                         string tier = cascade[i];
                         YtDlpResult? tierResult = null;
                         string tierStrategy = tier + ":default";
+                        if (tier == "tier1") tierStrategy = "tier1:default";
+                        else if (tier == "tier2") tierStrategy = "tier2:cloud-whyknot";
+                        else if (tier == "tier3") tierStrategy = "tier3:plain";
 
-                        if (tier == "tier1") { tierResult = await AttemptTier1(targetUrl, player, ctx); tierStrategy = "tier1:default"; }
-                        else if (tier == "tier2") { tierResult = await AttemptTier2(targetUrl, player, ctx); tierStrategy = "tier2:cloud-whyknot"; }
-                        else if (tier == "tier3") { tierResult = await AttemptTier3(payload.Args, ctx); tierStrategy = "tier3:plain"; }
+                        // Honour specific-strategy disables in the sequential fallback too. If the
+                        // user disabled "tier2:cloud-whyknot" but kept "tier2" active, we have no
+                        // other tier-2 strategy to try — so this tier is effectively muted.
+                        if (IsStrategyDisabled(tierStrategy, tier, disabled))
+                        {
+                            _logger.Debug("[" + ctx.CorrelationId + "] [" + tier + "] Skipped — '" + tierStrategy + "' is disabled by user config.");
+                            i++;
+                            continue;
+                        }
+
+                        if (tier == "tier1") { tierResult = await AttemptTier1(targetUrl, player, ctx); }
+                        else if (tier == "tier2") { tierResult = await AttemptTier2(targetUrl, player, ctx); }
+                        else if (tier == "tier3") { tierResult = await AttemptTier3(payload.Args, ctx); }
 
                         if (tierResult != null)
                         {
@@ -1155,6 +1175,23 @@ public class ResolutionEngine
     // hit). The catalog is request-aware: YouTube URLs get the PO-token variant; non-YouTube URLs
     // get the impersonate-only and vrchat-ua variants (aimed at movie-world hosts). Tier 2 is always
     // included because it runs on a WebSocket (no subprocess).
+    // The disabled list accepts two shapes:
+    //   - tier group names:    "tier0", "tier1", "tier2", "tier3", "tier4"  (disables the whole tier)
+    //   - specific strategies: "tier1:browser-extract", "tier2:cloud-whyknot", ...  (disables one variant)
+    // Both live in the same flat list for simplicity. A strategy is skipped iff its full name
+    // OR its tier group is in the list. Users who only want to temporarily turn off a buggy
+    // strategy (e.g. browser-extract on YouTube) can untick just that entry in Settings and keep
+    // the rest of tier 1 active.
+    private static bool IsStrategyDisabled(string strategyName, string group, List<string> disabled)
+    {
+        if (disabled.Contains(group)) return true;
+        foreach (var entry in disabled)
+        {
+            if (string.Equals(entry, strategyName, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
     private List<ResolveStrategy> BuildColdRaceStrategies(string url, string player, string[] originalArgs, List<string> disabled)
     {
         var list = new List<ResolveStrategy>();
@@ -1281,6 +1318,17 @@ public class ResolutionEngine
             list.Add(new ResolveStrategy("tier1:browser-extract", "tier1", 80, false,
                 sctx => RunBrowserExtract(sctx.Url, sctx.RequestContext, sctx.Cancellation),
                 ForceRelayWrap: true));
+        }
+
+        // Filter out any specific strategy the user has disabled by full name. The tier-group
+        // Contains checks above already handled whole-tier disables, but a user may want to keep
+        // tier 1 active while muting one buggy variant (e.g. "tier1:browser-extract" while that
+        // path is producing decoy URLs for a host).
+        int before = list.Count;
+        list = list.Where(s => !IsStrategyDisabled(s.Name, s.Group, disabled)).ToList();
+        if (list.Count < before)
+        {
+            _logger.Debug("[ColdRace] Filtered out " + (before - list.Count) + " strategy variant(s) by user config.");
         }
         return list;
     }
