@@ -101,6 +101,15 @@ public class ResolutionEngine
     private readonly ConcurrentDictionary<string, RecentResolution> _recentByUrl = new();
     private static readonly TimeSpan RecentResolutionTtl = TimeSpan.FromSeconds(60);
     private const int RecentResolutionCap = 64;
+
+    // Per-host rolling-window budget for tier-1 (yt-dlp) spawns. Prevents the cold race from
+    // machine-gunning a single host (e.g. YouTube) when the user plays videos in quick succession
+    // or iterates on builds. When budget is exhausted for a host, tier-1 strategies are skipped
+    // and the race falls through to tier-2 cloud — which egresses from a different IP and doesn't
+    // count against the local-IP rate limit. Budget size + window are config-driven
+    // (PerHostRequestBudget / PerHostRequestWindowSeconds).
+    private readonly ConcurrentDictionary<string, Queue<DateTime>> _hostRequestLog = new();
+    private readonly object _hostRequestLogLock = new();
     // How long to wait before promoting a history entry from "pending" to "verified". AVPro
     // typically logs "Loading failed" within 1-3 seconds of Opening; 8s is comfortable headroom
     // without making the UI feel stuck.
@@ -867,52 +876,125 @@ public class ResolutionEngine
                     if (canRace)
                     {
                         var strategies = BuildColdRaceStrategies(targetUrl, player, payload.Args, disabled);
-                        _logger.Info("[" + ctx.CorrelationId + "] [Race] Cold-start across " + strategies.Count + " strategies: [" + string.Join(", ", strategies.Select(s => s.Name)) + "] (concurrency cap 5, first past " + floorH + "p floor wins).");
+                        strategies = OrderStrategiesForRace(strategies, memKey);
+                        string hostForBudget = HostFromUrl(targetUrl);
+                        bool useWaves = _settings.Config.EnableWaveRace;
+                        int waveSize = Math.Max(1, _settings.Config.WaveSize);
+                        int stageMs = Math.Max(1, _settings.Config.WaveStageDeadlineSeconds) * 1000;
+
+                        _logger.Info("[" + ctx.CorrelationId + "] [Race] Cold-start across " + strategies.Count + " strategies: ["
+                            + string.Join(", ", strategies.Select(s => s.Name)) + "]" +
+                            (useWaves
+                                ? " (waves of " + waveSize + ", " + (stageMs / 1000.0).ToString("0.0") + "s per stage, budget=" + _settings.Config.PerHostRequestBudget + "/" + _settings.Config.PerHostRequestWindowSeconds + "s per host)"
+                                : " (legacy mode: fire all at once, first past " + floorH + "p floor wins)"));
                         var raceSw = Stopwatch.StartNew();
 
                         using var raceCts = new System.Threading.CancellationTokenSource();
-                        using var sem = new System.Threading.SemaphoreSlim(5);
+                        using var sem = new System.Threading.SemaphoreSlim(useWaves ? Math.Max(waveSize + 1, 3) : 5);
                         var sctx = new StrategyRunContext(targetUrl, player, payload.Args, ctx, floorH, raceCts.Token);
-                        var launches = strategies.Select(s => RunStrategySlot(s, sctx, sem, raceCts.Token)).ToList();
 
-                        while (launches.Count > 0 && winnerResult == null)
+                        // Pending in-flight tasks. In legacy mode all strategies are launched up
+                        // front; in wave mode we launch `waveSize` at a time and kick off the next
+                        // wave after stageMs elapses (or immediately if all pending tasks completed).
+                        var pending = new List<Task<(ResolveStrategy Strategy, YtDlpResult? Result)>>();
+                        int nextIdx = 0;
+                        int waveNumber = 0;
+                        int budgetSkipped = 0;
+
+                        // Launch helper: launches up to N more strategies, honouring the per-host
+                        // tier-1 budget (cloud strategies bypass it). Returns the count launched.
+                        int LaunchMore(int max)
                         {
-                            var done = await Task.WhenAny(launches);
-                            launches.Remove(done);
-                            var (strat, res) = await done;
-                            if (res == null)
+                            int launched = 0;
+                            while (launched < max && nextIdx < strategies.Count && winnerResult == null)
                             {
-                                if (!raceCts.IsCancellationRequested) RecordStrategyFailure(memKey, strat.Name);
-                                continue;
-                            }
-                            // Pre-handoff probe on race winners from non-probed tiers (tier2 cloud,
-                            // tier3). Tier 1 variants already probe in their attempt wrapper.
-                            if (_settings.Config.EnablePreflightProbe && !strat.Group.StartsWith("tier1"))
-                            {
-                                bool reachable = await CheckUrlReachable(res.Url, ctx);
-                                if (!reachable)
+                                var s = strategies[nextIdx++];
+                                bool countsAgainstBudget = s.Group == "tier1";
+                                if (countsAgainstBudget && !TryConsumeHostBudget(hostForBudget))
                                 {
-                                    _logger.Warning("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' URL failed pre-flight probe — demoting and skipping.");
-                                    RecordStrategyFailure(memKey, strat.Name, StrategyFailureKind.PlaybackFailed);
-                                    _eventBus?.PublishStrategyDemoted(strat.Name, memKey, "Pre-flight probe rejected URL", ctx.CorrelationId);
+                                    budgetSkipped++;
+                                    _logger.Warning("[" + ctx.CorrelationId + "] [Race] Per-host budget for " + hostForBudget + " exhausted — skipping '" + s.Name + "' (rate-limit guard).");
                                     continue;
                                 }
+                                pending.Add(RunStrategySlot(s, sctx, sem, raceCts.Token));
+                                launched++;
                             }
-                            if (IsAcceptableQuality(res.Height, floorH))
+                            if (launched > 0)
                             {
-                                winnerResult = res; activeTier = strat.Group; activeStrategy = strat.Name;
-                                winnerForcesRelayWrap = strat.ForceRelayWrap;
-                                _logger.Info("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' cleared floor in " + raceSw.ElapsedMilliseconds + "ms — winner.");
-                                try { raceCts.Cancel(); } catch { }
+                                waveNumber++;
+                                _logger.Debug("[" + ctx.CorrelationId + "] [Race/Wave " + waveNumber + "] Launched " + launched + " strategy(ies). " +
+                                    "Pending=" + pending.Count + " Remaining=" + (strategies.Count - nextIdx));
                             }
-                            else
+                            return launched;
+                        }
+
+                        if (useWaves) LaunchMore(waveSize);
+                        else LaunchMore(strategies.Count);
+
+                        while (pending.Count > 0 && winnerResult == null)
+                        {
+                            Task<Task<(ResolveStrategy, YtDlpResult?)>> anyCompleted = Task.WhenAny(pending);
+                            Task stageTimer = useWaves ? Task.Delay(stageMs) : Task.Delay(-1);
+                            await Task.WhenAny(anyCompleted, stageTimer);
+
+                            // Drain any tasks that finished. Multiple can complete in one pass.
+                            for (int pi = pending.Count - 1; pi >= 0; pi--)
                             {
-                                _logger.Info("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' returned " + res.Height + "p < " + floorH + "p floor — keeping as fallback.");
-                                if (bestSoFar == null || (res.Height ?? 0) > (bestSoFar.Height ?? 0))
-                                { bestSoFar = res; bestSoFarTier = strat.Name; }
+                                if (!pending[pi].IsCompleted) continue;
+                                var finished = pending[pi];
+                                pending.RemoveAt(pi);
+                                var (strat, res) = await finished;
+                                if (res == null)
+                                {
+                                    if (!raceCts.IsCancellationRequested) RecordStrategyFailure(memKey, strat.Name);
+                                    continue;
+                                }
+                                if (_settings.Config.EnablePreflightProbe && !strat.Group.StartsWith("tier1"))
+                                {
+                                    bool reachable = await CheckUrlReachable(res.Url, ctx);
+                                    if (!reachable)
+                                    {
+                                        _logger.Warning("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' URL failed pre-flight probe — demoting and skipping.");
+                                        RecordStrategyFailure(memKey, strat.Name, StrategyFailureKind.PlaybackFailed);
+                                        _eventBus?.PublishStrategyDemoted(strat.Name, memKey, "Pre-flight probe rejected URL", ctx.CorrelationId);
+                                        continue;
+                                    }
+                                }
+                                if (IsAcceptableQuality(res.Height, floorH))
+                                {
+                                    winnerResult = res; activeTier = strat.Group; activeStrategy = strat.Name;
+                                    winnerForcesRelayWrap = strat.ForceRelayWrap;
+                                    _logger.Info("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' cleared floor in " + raceSw.ElapsedMilliseconds + "ms — winner.");
+                                    try { raceCts.Cancel(); } catch { }
+                                }
+                                else
+                                {
+                                    _logger.Info("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' returned " + res.Height + "p < " + floorH + "p floor — keeping as fallback.");
+                                    if (bestSoFar == null || (res.Height ?? 0) > (bestSoFar.Height ?? 0))
+                                    { bestSoFar = res; bestSoFarTier = strat.Name; }
+                                }
+                            }
+
+                            // If the stage timer fired (no completion), launch the next wave.
+                            // If everything completed this pass with no winner, also launch more.
+                            if (useWaves && winnerResult == null && nextIdx < strategies.Count)
+                            {
+                                if (stageTimer.IsCompleted || pending.Count == 0)
+                                {
+                                    if (LaunchMore(waveSize) == 0 && pending.Count == 0)
+                                    {
+                                        // All remaining were budget-skipped — nothing left to wait for.
+                                        break;
+                                    }
+                                }
                             }
                         }
                         raceSw.Stop();
+
+                        if (budgetSkipped > 0)
+                        {
+                            _logger.Info("[" + ctx.CorrelationId + "] [Race] " + budgetSkipped + " tier-1 strategy(ies) skipped due to per-host budget.");
+                        }
 
                         // Skip past the groups we covered in the race; Tier 3 is the remaining sequential fallback.
                         if (winnerResult == null)
@@ -1175,6 +1257,57 @@ public class ResolutionEngine
     // hit). The catalog is request-aware: YouTube URLs get the PO-token variant; non-YouTube URLs
     // get the impersonate-only and vrchat-ua variants (aimed at movie-world hosts). Tier 2 is always
     // included because it runs on a WebSocket (no subprocess).
+    // Rate-limit helpers: prevent the cold race from firing more than
+    // AppConfig.PerHostRequestBudget yt-dlp processes per AppConfig.PerHostRequestWindowSeconds
+    // against the same host. Match yt-dlp maintainer guidance of ≤2–3 concurrent requests per
+    // origin. Cloud (tier 2) is exempt — it hits whyknot.dev from a different IP.
+    private static string HostFromUrl(string url)
+    {
+        try { return new Uri(url).Host.ToLowerInvariant(); }
+        catch { return ""; }
+    }
+
+    // Best-effort reservation of a slot in the rolling window. Returns true if the spawn is
+    // allowed and records the timestamp; false if over budget. Old entries are pruned on each call.
+    private bool TryConsumeHostBudget(string host)
+    {
+        if (string.IsNullOrEmpty(host)) return true;
+        int budget = Math.Max(1, _settings.Config.PerHostRequestBudget);
+        int windowSec = Math.Max(1, _settings.Config.PerHostRequestWindowSeconds);
+        var cutoff = DateTime.UtcNow.AddSeconds(-windowSec);
+        var queue = _hostRequestLog.GetOrAdd(host, _ => new Queue<DateTime>());
+        lock (_hostRequestLogLock)
+        {
+            while (queue.Count > 0 && queue.Peek() < cutoff) queue.Dequeue();
+            if (queue.Count >= budget) return false;
+            queue.Enqueue(DateTime.UtcNow);
+            return true;
+        }
+    }
+
+    // Reorder a strategy catalog by: (1) user's StrategyPriority list (explicit), (2) memory
+    // net-score for this host, (3) built-in priority number. Strategies not in the user list
+    // inherit a rank of int.MaxValue so they follow everything explicitly ordered.
+    private List<ResolveStrategy> OrderStrategiesForRace(List<ResolveStrategy> catalog, string memKey)
+    {
+        var priorityList = _settings.Config.StrategyPriority ?? new List<string>();
+        var priorityIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < priorityList.Count; i++)
+            if (!priorityIndex.ContainsKey(priorityList[i]))
+                priorityIndex[priorityList[i]] = i;
+
+        var memoryEntries = string.IsNullOrEmpty(memKey)
+            ? new List<StrategyMemoryEntry>()
+            : _strategyMemory.GetAll(memKey).ToList();
+        var netScore = memoryEntries.ToDictionary(e => e.StrategyName, e => e.NetScore, StringComparer.OrdinalIgnoreCase);
+
+        return catalog
+            .OrderBy(s => priorityIndex.TryGetValue(s.Name, out var pi) ? pi : int.MaxValue)
+            .ThenByDescending(s => netScore.TryGetValue(s.Name, out var score) ? score : 0)
+            .ThenBy(s => s.Priority)
+            .ToList();
+    }
+
     // The disabled list accepts two shapes:
     //   - tier group names:    "tier0", "tier1", "tier2", "tier3", "tier4"  (disables the whole tier)
     //   - specific strategies: "tier1:browser-extract", "tier2:cloud-whyknot", ...  (disables one variant)
@@ -1201,6 +1334,22 @@ public class ResolutionEngine
 
         if (!disabled.Contains("tier1"))
         {
+            // Server-aligned YouTube combo. Mirrors WhyKnot.dev's default
+            //   --extractor-args youtube:player_client=web_safari,web,mweb;player_js_variant=main
+            //     ;youtubepot-bgutilhttp:base_url=...
+            // One yt-dlp process, three clients tried internally — drastically lower burst than
+            // firing each client in a separate subprocess. Priority 5 so it sorts ahead of
+            // tier1:default for YouTube. Non-YouTube hosts fall through to tier1:default.
+            if (isYouTubeHost)
+            {
+                list.Add(new ResolveStrategy("tier1:yt-combo", "tier1", 5, true,
+                    sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
+                        injectPot: true, injectImpersonate: false,
+                        userAgent: null, referer: null,
+                        videoId: videoId, variantLabel: "yt-combo",
+                        playerClient: "web_safari,web,mweb;player_js_variant=main")));
+            }
+
             // Default variant: auto PO-token + auto impersonate (current live behaviour).
             list.Add(new ResolveStrategy("tier1:default", "tier1", 10, true,
                 sctx => ResolveTier1(sctx.Url, sctx.Player, sctx.RequestContext)));

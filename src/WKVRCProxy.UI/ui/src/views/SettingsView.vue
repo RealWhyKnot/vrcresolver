@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useAppStore, TIER_DISPLAY } from '../stores/appStore'
+import { useAppStore, TIER_DISPLAY, STRATEGY_PRIORITY_DEFAULTS, STRATEGY_PRIORITY_DEFAULTS_VERSION } from '../stores/appStore'
 
 const appStore = useAppStore()
 
@@ -51,12 +51,13 @@ interface StrategyDescriptor {
 }
 const STRATEGY_CATALOG: Record<string, StrategyDescriptor[]> = {
   'Local (Tier 1)': [
-    { name: 'tier1:default',          label: 'Default',          description: 'yt-dlp with auto PO token + curl-impersonate. First pick for most hosts.' },
+    { name: 'tier1:yt-combo',         label: 'YouTube combo',    description: 'Server-aligned: web_safari,web,mweb tried internally in one yt-dlp call + PO token. Low-burst and empirically the best opening move for YouTube.', youtubeOnly: true },
+    { name: 'tier1:default',          label: 'Default',          description: 'yt-dlp with auto PO token + curl-impersonate. First pick for non-YouTube hosts.' },
     { name: 'tier1:vrchat-ua',        label: 'VRChat UA',        description: 'UnityPlayer User-Agent for hosts that allowlist the in-game player.' },
     { name: 'tier1:impersonate-only', label: 'Impersonate only', description: 'curl-impersonate TLS fingerprint, no PO token — for sites where PO fetch itself flags us.' },
     { name: 'tier1:plain',            label: 'Plain',            description: 'Bare yt-dlp, no extras. Last-resort variant.' },
     { name: 'tier1:browser-extract',  label: 'Browser extract',  description: 'Headless Edge/Chrome for JS-gated sites. Can serve decoy URLs on YouTube when detected.' },
-    { name: 'tier1:po-only',          label: 'PO token only',    description: 'PO token, no impersonate. YouTube-specific — useful when impersonate confuses youtube.com.', youtubeOnly: true },
+    { name: 'tier1:po-only',          label: 'PO token only',    description: 'PO token, no impersonate. Useful when impersonate confuses youtube.com.', youtubeOnly: true },
     { name: 'tier1:ios-music',        label: 'iOS Music client', description: 'Alternate YouTube client; audio-focused, often bypasses gates.', youtubeOnly: true },
     { name: 'tier1:tv-embedded',      label: 'TV embedded',      description: 'YouTube TV client; historically bypasses age gates.', youtubeOnly: true },
     { name: 'tier1:android-vr',       label: 'Android VR',       description: 'Oculus VR YouTube client; rarely gated, weaker format selection.', youtubeOnly: true },
@@ -85,6 +86,62 @@ function toggleStrategy(name: string) {
 }
 
 const showAdvancedStrategies = ref(false)
+
+// Build a flat, catalog-ordered list of every known strategy. The priority panel below renders
+// in the user's StrategyPriority order; this flat list is used for the "Any strategy not in
+// priority list" section so users can see and include newly-added catalog entries.
+const ALL_STRATEGIES: StrategyDescriptor[] = Object.values(STRATEGY_CATALOG).flat()
+
+function findDescriptor(name: string): StrategyDescriptor | null {
+  return ALL_STRATEGIES.find(s => s.name === name) ?? null
+}
+
+const priorityOrderedStrategies = computed(() => {
+  const priority = appStore.config.strategyPriority ?? []
+  const ordered = priority.map(findDescriptor).filter((d): d is StrategyDescriptor => d !== null)
+  const present = new Set(ordered.map(d => d.name))
+  const orphans = ALL_STRATEGIES.filter(s => !present.has(s.name))
+  return { ordered, orphans }
+})
+
+function moveStrategy(name: string, delta: number) {
+  const list = [...(appStore.config.strategyPriority ?? [])]
+  const idx = list.indexOf(name)
+  if (idx < 0) {
+    // Not in list yet — append at the tail. Delta is ignored for first insertion.
+    list.push(name)
+    appStore.config.strategyPriority = list
+    appStore.saveConfig()
+    return
+  }
+  const target = idx + delta
+  if (target < 0 || target >= list.length) return
+  list.splice(idx, 1)
+  list.splice(target, 0, name)
+  appStore.config.strategyPriority = list
+  appStore.saveConfig()
+}
+
+function addToPriority(name: string) {
+  const list = [...(appStore.config.strategyPriority ?? [])]
+  if (!list.includes(name)) {
+    list.push(name)
+    appStore.config.strategyPriority = list
+    appStore.saveConfig()
+  }
+}
+
+function removeFromPriority(name: string) {
+  const list = (appStore.config.strategyPriority ?? []).filter(n => n !== name)
+  appStore.config.strategyPriority = list
+  appStore.saveConfig()
+}
+
+function resetStrategyPriority() {
+  appStore.config.strategyPriority = [...STRATEGY_PRIORITY_DEFAULTS]
+  appStore.config.strategyPriorityDefaultsVersion = STRATEGY_PRIORITY_DEFAULTS_VERSION
+  appStore.saveConfig()
+}
 
 const showSystemInfo = ref(false)
 
@@ -228,6 +285,74 @@ function clearHistory() {
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- Strategy priority: ordered list of strategy names, drives wave-1 pick + ties broken by
+           StrategyMemory net-score + built-in priority. Up/down arrows reorder; × removes from
+           the priority list (strategies not in the list still run, just at the tail). -->
+      <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-5 hover:border-blue-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-4">
+            <div class="w-10 h-10 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-emerald-400">
+              <i class="bi bi-sort-down-alt text-xl"></i>
+            </div>
+            <div>
+              <h4 class="text-lg font-black uppercase tracking-tighter italic">Strategy Priority</h4>
+              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Which strategies run first in the cold race (wave 1)</p>
+            </div>
+          </div>
+          <button @click="resetStrategyPriority()" class="px-4 py-2 bg-white/5 hover:bg-emerald-500/10 text-white/50 hover:text-emerald-400 rounded-xl font-black text-[8px] uppercase tracking-[0.2em] transition-all italic active:scale-95 border border-white/5 hover:border-emerald-500/20">
+            Reset default
+          </button>
+        </div>
+
+        <div class="space-y-1.5">
+          <div v-for="(s, index) in priorityOrderedStrategies.ordered" :key="s.name"
+               class="flex items-center gap-3 p-2.5 bg-white/[0.015] border border-white/5 rounded-xl">
+            <span class="text-[9px] font-black text-white/35 tabular-nums w-6 text-center">{{ index + 1 }}</span>
+            <div class="flex-grow min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-[10px] font-black uppercase tracking-widest italic text-white/75">{{ s.label }}</span>
+                <span v-if="s.youtubeOnly" class="px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-widest bg-red-500/10 border border-red-500/20 text-red-400/75 italic">YouTube</span>
+                <span class="text-[8px] font-mono text-white/25">{{ s.name }}</span>
+              </div>
+              <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">{{ s.description }}</p>
+            </div>
+            <button @click="moveStrategy(s.name, -1)" :disabled="index === 0"
+                    class="w-7 h-7 rounded-lg bg-white/5 hover:bg-blue-500/10 text-white/50 hover:text-blue-400 transition-all flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed">
+              <i class="bi bi-chevron-up text-xs"></i>
+            </button>
+            <button @click="moveStrategy(s.name, 1)" :disabled="index === priorityOrderedStrategies.ordered.length - 1"
+                    class="w-7 h-7 rounded-lg bg-white/5 hover:bg-blue-500/10 text-white/50 hover:text-blue-400 transition-all flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed">
+              <i class="bi bi-chevron-down text-xs"></i>
+            </button>
+            <button @click="removeFromPriority(s.name)"
+                    class="w-7 h-7 rounded-lg bg-white/5 hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-all flex items-center justify-center">
+              <i class="bi bi-x text-sm"></i>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="priorityOrderedStrategies.orphans.length > 0" class="space-y-1.5 pt-3 border-t border-white/5">
+          <p class="text-[8px] font-black uppercase tracking-[0.3em] text-white/30 italic">Not in priority list (run at the tail)</p>
+          <div v-for="s in priorityOrderedStrategies.orphans" :key="s.name"
+               class="flex items-center gap-3 p-2.5 bg-white/[0.01] border border-white/[0.03] rounded-xl opacity-70">
+            <span class="text-[9px] font-black text-white/25 w-6 text-center">—</span>
+            <div class="flex-grow min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-[10px] font-black uppercase tracking-widest italic text-white/60">{{ s.label }}</span>
+                <span v-if="s.youtubeOnly" class="px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-widest bg-red-500/10 border border-red-500/20 text-red-400/60 italic">YouTube</span>
+                <span class="text-[8px] font-mono text-white/20">{{ s.name }}</span>
+              </div>
+            </div>
+            <button @click="addToPriority(s.name)"
+                    class="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-emerald-500/10 text-white/40 hover:text-emerald-400 text-[8px] font-black uppercase tracking-widest transition-all italic active:scale-95">
+              Add to list
+            </button>
+          </div>
+        </div>
+
+        <p class="text-[8px] text-white/25 font-bold uppercase tracking-widest italic leading-relaxed">Wave 1 launches the top <span class="text-emerald-400/60">{{ appStore.config.waveSize ?? 2 }}</span> entries (skipping any disabled above). Each wave waits <span class="text-emerald-400/60">{{ appStore.config.waveStageDeadlineSeconds ?? 3 }}s</span> for a winner before launching the next.</p>
       </section>
 
       <!-- Preferred Tier -->

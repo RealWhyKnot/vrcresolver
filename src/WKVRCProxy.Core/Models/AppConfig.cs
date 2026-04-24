@@ -108,4 +108,62 @@ public class AppConfig
     // where a tier returns a URL the upstream rejects (403/404) or is unreachable.
     [JsonPropertyName("enablePreflightProbe")]
     public bool EnablePreflightProbe { get; set; } = true;
+
+    // Ordered list of strategy names the cold-race consults before falling back to memory ranking
+    // or the built-in priority numbers. Users can reorder this in Settings to make a specific
+    // strategy wave-1 primary. Strategies missing from this list still run (at the tail, ordered
+    // by their built-in priority). Strategies in the list that aren't in the current catalog are
+    // ignored.
+    //
+    // The default ordering tracks what empirically works best — currently `tier1:yt-combo`
+    // (server-aligned `web_safari,web,mweb` combo) first, then `tier2:cloud-whyknot` as the
+    // cross-IP fallback. When the community-wise "best working" order changes, bump
+    // StrategyPriorityDefaultsVersion and users whose config still holds a stale default migrate
+    // automatically (customized lists are preserved).
+    [JsonPropertyName("strategyPriority")]
+    public List<string> StrategyPriority { get; set; } = new() {
+        "tier1:yt-combo",
+        "tier2:cloud-whyknot",
+        "tier1:po-only",
+        "tier1:web-safari",
+        "tier1:ios-music",
+        "tier1:mweb",
+        "tier1:tv-embedded",
+        "tier1:android-vr",
+        "tier1:default",
+        "tier1:vrchat-ua",
+        "tier1:impersonate-only",
+        "tier1:plain",
+        "tier1:browser-extract",
+        "tier3:plain",
+    };
+
+    // Auto-migration version for StrategyPriority. Store the version that produced the current
+    // defaults; on load, if StrategyPriority exactly equals the embedded defaults for an older
+    // version, overwrite with the new defaults. Customized lists (that don't match any known
+    // default) are preserved untouched.
+    [JsonPropertyName("strategyPriorityDefaultsVersion")]
+    public int StrategyPriorityDefaultsVersion { get; set; } = 1;
+
+    // Wave-based dispatch parameters for the cold race. Wave N fires WaveSize strategies in
+    // parallel; if none win within WaveStageDeadlineSeconds, the next wave kicks off (carrying
+    // still-pending strategies along). Lower burst factor against rate-limited APIs like YouTube.
+    // Disabling reverts to the legacy "fire everything at once" race.
+    [JsonPropertyName("enableWaveRace")]
+    public bool EnableWaveRace { get; set; } = true;
+
+    [JsonPropertyName("waveSize")]
+    public int WaveSize { get; set; } = 2;
+
+    [JsonPropertyName("waveStageDeadlineSeconds")]
+    public int WaveStageDeadlineSeconds { get; set; } = 3;
+
+    // Per-host rate limit: max yt-dlp (tier-1) spawns per this window before cold-race skips
+    // tier 1 entirely and goes straight to cloud. Cloud + already-in-flight requests don't count.
+    // Matches yt-dlp maintainer guidance of 2–3 concurrent max.
+    [JsonPropertyName("perHostRequestBudget")]
+    public int PerHostRequestBudget { get; set; } = 3;
+
+    [JsonPropertyName("perHostRequestWindowSeconds")]
+    public int PerHostRequestWindowSeconds { get; set; } = 10;
 }

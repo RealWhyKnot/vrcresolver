@@ -59,7 +59,35 @@ export interface AppConfig {
   autoUpdateYtDlp?: boolean;
   enablePreflightProbe: boolean;
   nativeAvProUaHosts: string[];
+  strategyPriority: string[];
+  strategyPriorityDefaultsVersion: number;
+  enableWaveRace: boolean;
+  waveSize: number;
+  waveStageDeadlineSeconds: number;
+  perHostRequestBudget: number;
+  perHostRequestWindowSeconds: number;
 }
+
+// Canonical default StrategyPriority list + version, mirrored from AppConfig.cs. When the
+// backend bumps StrategyPriorityDefaultsVersion with a new list, users whose saved priority
+// exactly equals a prior default get auto-migrated on next load. Customized lists are preserved.
+export const STRATEGY_PRIORITY_DEFAULTS_VERSION = 1
+export const STRATEGY_PRIORITY_DEFAULTS: string[] = [
+  'tier1:yt-combo',
+  'tier2:cloud-whyknot',
+  'tier1:po-only',
+  'tier1:web-safari',
+  'tier1:ios-music',
+  'tier1:mweb',
+  'tier1:tv-embedded',
+  'tier1:android-vr',
+  'tier1:default',
+  'tier1:vrchat-ua',
+  'tier1:impersonate-only',
+  'tier1:plain',
+  'tier1:browser-extract',
+  'tier3:plain',
+]
 
 export interface BypassMemoryEntry {
   strategy: string;
@@ -155,7 +183,14 @@ export const useAppStore = defineStore('app', () => {
     enableRelayBypass: true,
     disabledTiers: [],
     enablePreflightProbe: true,
-    nativeAvProUaHosts: ['vr-m.net']
+    nativeAvProUaHosts: ['vr-m.net'],
+    strategyPriority: [...STRATEGY_PRIORITY_DEFAULTS],
+    strategyPriorityDefaultsVersion: STRATEGY_PRIORITY_DEFAULTS_VERSION,
+    enableWaveRace: true,
+    waveSize: 2,
+    waveStageDeadlineSeconds: 3,
+    perHostRequestBudget: 3,
+    perHostRequestWindowSeconds: 10,
   })
   
   const showHostsPrompt = ref(false)
@@ -174,7 +209,7 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.23.6-8EF3')
+  const version = ref('2026.4.23.7-2A71')
 
   const demotions = ref<DemotionNotification[]>([])
   const DEMOTION_CAP = 20
@@ -252,7 +287,20 @@ export const useAppStore = defineStore('app', () => {
           if (logs.value.length > 1000) logs.value.shift()
         }
       } else if (parsed.type === 'CONFIG') {
-        config.value = parsed.data
+        // Defensive fill for fields an older backend may not have sent; lets the UI render
+        // immediately without waiting for the user to touch Settings. Keeps new config
+        // surface area backward-compatible.
+        const incoming = parsed.data as AppConfig
+        if (!incoming.strategyPriority || incoming.strategyPriority.length === 0) {
+          incoming.strategyPriority = [...STRATEGY_PRIORITY_DEFAULTS]
+          incoming.strategyPriorityDefaultsVersion = STRATEGY_PRIORITY_DEFAULTS_VERSION
+        }
+        if (incoming.enableWaveRace === undefined) incoming.enableWaveRace = true
+        if (!incoming.waveSize || incoming.waveSize < 1) incoming.waveSize = 2
+        if (!incoming.waveStageDeadlineSeconds || incoming.waveStageDeadlineSeconds < 1) incoming.waveStageDeadlineSeconds = 3
+        if (!incoming.perHostRequestBudget || incoming.perHostRequestBudget < 1) incoming.perHostRequestBudget = 3
+        if (!incoming.perHostRequestWindowSeconds || incoming.perHostRequestWindowSeconds < 1) incoming.perHostRequestWindowSeconds = 10
+        config.value = incoming
         if (_pendingSaveToast) {
           enqueueToast({ variant: 'success', title: 'Settings saved' })
           _pendingSaveToast = false

@@ -493,6 +493,16 @@ class Program
                             _settings.Config.EnableRelayBypass = newConfig.EnableRelayBypass;
                             _settings.Config.EnablePreflightProbe = newConfig.EnablePreflightProbe;
                             _settings.Config.NativeAvProUaHosts = newConfig.NativeAvProUaHosts ?? new List<string> { "vr-m.net" };
+                            if (newConfig.StrategyPriority != null)
+                            {
+                                _settings.Config.StrategyPriority = newConfig.StrategyPriority;
+                                _settings.Config.StrategyPriorityDefaultsVersion = newConfig.StrategyPriorityDefaultsVersion;
+                            }
+                            _settings.Config.EnableWaveRace = newConfig.EnableWaveRace;
+                            if (newConfig.WaveSize > 0) _settings.Config.WaveSize = newConfig.WaveSize;
+                            if (newConfig.WaveStageDeadlineSeconds > 0) _settings.Config.WaveStageDeadlineSeconds = newConfig.WaveStageDeadlineSeconds;
+                            if (newConfig.PerHostRequestBudget > 0) _settings.Config.PerHostRequestBudget = newConfig.PerHostRequestBudget;
+                            if (newConfig.PerHostRequestWindowSeconds > 0) _settings.Config.PerHostRequestWindowSeconds = newConfig.PerHostRequestWindowSeconds;
                             _settings.Save();
                         }
                     }
