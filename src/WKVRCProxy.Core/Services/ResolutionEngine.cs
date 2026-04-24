@@ -962,10 +962,24 @@ public class ResolutionEngine
                                 }
                                 if (IsAcceptableQuality(res.Height, floorH))
                                 {
+                                    if (winnerResult != null)
+                                    {
+                                        // Earlier task in this same drain pass already won. Record
+                                        // the also-ran's success for memory ranking purposes, but
+                                        // do NOT overwrite the winner — otherwise a second-place
+                                        // strategy that happened to finish milliseconds later
+                                        // would replace the true first-past-the-post result. This
+                                        // is the "double winner" bug that previously caused a
+                                        // demoted strategy's URL to replace cloud's on retry.
+                                        _logger.Debug("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' also succeeded in the same pass, but '" + activeStrategy + "' already won — discarding.");
+                                        RecordStrategySuccess(memKey, strat.Name, res.Height);
+                                        continue;
+                                    }
                                     winnerResult = res; activeTier = strat.Group; activeStrategy = strat.Name;
                                     winnerForcesRelayWrap = strat.ForceRelayWrap;
                                     _logger.Info("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' cleared floor in " + raceSw.ElapsedMilliseconds + "ms — winner.");
                                     try { raceCts.Cancel(); } catch { }
+                                    break; // stop draining — any remaining completed tasks are also-rans.
                                 }
                                 else
                                 {
@@ -1285,9 +1299,37 @@ public class ResolutionEngine
         }
     }
 
-    // Reorder a strategy catalog by: (1) user's StrategyPriority list (explicit), (2) memory
-    // net-score for this host, (3) built-in priority number. Strategies not in the user list
-    // inherit a rank of int.MaxValue so they follow everything explicitly ordered.
+    // How long a playback-failure demotion keeps a strategy at the tail of the race. After this
+    // window, demoted strategies re-enter their normal priority position and get another chance.
+    // Playback failures are often transient (IP rate flag clears in minutes, CDN rotates keys,
+    // user switches networks) — a permanent ban would be too aggressive.
+    private static readonly TimeSpan DemotedStrategyCooldown = TimeSpan.FromMinutes(30);
+
+    // A strategy is "currently demoted" if its last failure crossed the demote threshold AND that
+    // failure happened within the cooldown window. Matches StrategyMemory's own definition used
+    // in the fast-path (GetPreferred), so cold race and fast path agree on who's benched.
+    private static bool IsStrategyCurrentlyDemoted(StrategyMemoryEntry? entry)
+    {
+        if (entry == null) return false;
+        int threshold = StrategyMemory.DemoteThresholdFor(entry.LastFailureKind);
+        if (entry.ConsecutiveFailures < threshold) return false;
+        if (entry.LastFailure is DateTime lf && DateTime.UtcNow - lf > DemotedStrategyCooldown)
+            return false;
+        return true;
+    }
+
+    // Reorder a strategy catalog by:
+    //   (1) healthy-vs-demoted bucket — strategies with a recent PlaybackFailed/Blocked403/etc go
+    //       to the tail REGARDLESS of their priority position, so a known-bad strategy can't
+    //       keep winning wave 1 just because the user put it at the top. Without this, the cold
+    //       race would re-fire the same failing strategy on every retry, which is exactly what
+    //       happened with tier1:yt-combo returning AVPro-rejected googlevideo URLs.
+    //   (2) user's StrategyPriority list (explicit) — within each bucket.
+    //   (3) memory net-score for this host — tiebreaker when two strategies share priority.
+    //   (4) built-in priority number — final fallback.
+    // Demotion is time-bound (see DemotedStrategyCooldown): after the cooldown, demoted
+    // strategies rejoin the healthy pool. Prevents a one-off transient from permanently
+    // benching a normally-working strategy.
     private List<ResolveStrategy> OrderStrategiesForRace(List<ResolveStrategy> catalog, string memKey)
     {
         var priorityList = _settings.Config.StrategyPriority ?? new List<string>();
@@ -1299,10 +1341,12 @@ public class ResolutionEngine
         var memoryEntries = string.IsNullOrEmpty(memKey)
             ? new List<StrategyMemoryEntry>()
             : _strategyMemory.GetAll(memKey).ToList();
+        var memoryByName = memoryEntries.ToDictionary(e => e.StrategyName, e => e, StringComparer.OrdinalIgnoreCase);
         var netScore = memoryEntries.ToDictionary(e => e.StrategyName, e => e.NetScore, StringComparer.OrdinalIgnoreCase);
 
         return catalog
-            .OrderBy(s => priorityIndex.TryGetValue(s.Name, out var pi) ? pi : int.MaxValue)
+            .OrderBy(s => IsStrategyCurrentlyDemoted(memoryByName.GetValueOrDefault(s.Name)) ? 1 : 0)
+            .ThenBy(s => priorityIndex.TryGetValue(s.Name, out var pi) ? pi : int.MaxValue)
             .ThenByDescending(s => netScore.TryGetValue(s.Name, out var score) ? score : 0)
             .ThenBy(s => s.Priority)
             .ToList();
