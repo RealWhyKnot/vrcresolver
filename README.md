@@ -13,7 +13,7 @@ VRChat's in-game video players resolve URLs with a bundled `yt-dlp.exe` and play
 
 WKVRCProxy sits in front of VRChat's resolver pipeline and fixes both problems:
 
-- A **hosts-file mapping** `127.0.0.1 localhost.youtube.com` routes any URL we "wrap" through a **local relay**. AVPro sees the trusted `*.youtube.com` host and plays it; our relay proxies the real target. Hosts already on VRChat's allowlist pass through pristine. A narrow deny-list handles hosts (like `vr-m.net`) that must see AVPro's native UA.
+- A **hosts-file mapping** `127.0.0.1 localhost.youtube.com` routes any URL we "wrap" through a **local relay**. AVPro sees the trusted `*.youtube.com` host and plays it; our relay proxies the real target. Hosts already on VRChat's allowlist pass through pristine. A narrow deny-list handles hosts (like `vr-m.net`) that need to see traffic coming directly from the in-game player.
 - A **tiered resolution cascade** (local yt-dlp → cloud resolver → VRChat's pinned yt-dlp → passthrough) tries multiple strategies in parallel for each URL, with per-host learning that remembers which strategy worked for which host. PO-token minting (via the `bgutil-ytdlp-pot-provider` sidecar + its yt-dlp plugin), `curl-impersonate` TLS fingerprinting, and an optional headless browser strategy cover the bot-detection cases.
 - A **playback-feedback loop** watches VRChat's output log. When AVPro reports `Loading failed` on a URL we resolved, the responsible strategy is demoted immediately, the cache entry is evicted, and the next request re-cascades. This prevents the engine from locking onto a strategy that "returned a URL" but whose URLs don't actually play.
 - A **pre-flight probe** verifies each resolved URL is reachable (using the same UA/headers AVPro would send) before we hand it back to VRChat.
@@ -166,7 +166,7 @@ Runtime state lives next to the exe — for dev runs that's `src/WKVRCProxy.UI/b
 
 Runtime knobs live under **Settings → Network**:
 - **Pre-Flight URL Probe** — verify URLs before handoff (catches dead cloud URLs; adds up to 5s on cold resolve).
-- **Native-UA Hosts** — comma-separated deny-list for hosts that refuse relay-wrapped requests.
+- **Direct-Connect Hosts** — comma-separated deny-list for hosts that need to see traffic coming directly from the in-game player.
 
 ## Contributing
 

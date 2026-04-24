@@ -232,8 +232,8 @@ function clearHistory() {
             <i class="bi bi-shield-lock text-xl"></i>
           </div>
           <div>
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Native-UA Hosts (relay skip-list)</h4>
-            <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Comma-separated — hosts that must NOT be relay-wrapped</p>
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Direct-Connect Hosts (relay skip-list)</h4>
+            <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Comma-separated — hosts that need a direct connection from the player</p>
           </div>
         </div>
         <div class="flex gap-3">
@@ -250,7 +250,7 @@ function clearHistory() {
             Reset Default
           </button>
         </div>
-        <p class="text-[9px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">VRChat "movie world" hosts that only accept AVPro's native UnityPlayer UA (e.g. vr-m.net). Wrapping them breaks playback — every other host is wrapped by default to pass VRChat's trusted-URL check.</p>
+        <p class="text-[9px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">Hosts that need to see traffic coming directly from VRChat's player (e.g. vr-m.net). These are skipped by the relay; every other host is routed through it by default.</p>
       </section>
 
       <!-- Custom User Agent -->
