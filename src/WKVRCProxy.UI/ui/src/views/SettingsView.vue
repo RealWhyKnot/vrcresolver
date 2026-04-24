@@ -225,7 +225,7 @@ function clearHistory() {
         </div>
       </div>
 
-      <!-- Native-UA deny-list (hosts skipped by relay wrap) -->
+      <!-- Direct-connect hosts (skipped by the relay wrap) -->
       <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-6 hover:border-blue-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl group">
         <div class="flex items-center gap-4">
           <div class="w-10 h-10 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500 group-hover:scale-110 transition-transform">
