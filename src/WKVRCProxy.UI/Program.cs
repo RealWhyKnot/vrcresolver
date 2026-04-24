@@ -210,6 +210,7 @@ class Program
 
         _resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient, potProvider, browserExtractService, warpService);
         _resEngine.SetEventBus(_coordinator.EventBus);
+        _resEngine.AttachRelayAbortDetector(relayServer);
 
         ipcServer.OnResolveRequested += async (payload) => await _resEngine.ResolveAsync(payload);
         logMonitor.OnVrcPathDetected += (path) => {

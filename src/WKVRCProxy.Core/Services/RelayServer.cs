@@ -26,6 +26,18 @@ public class RelayServer : IProxyModule, IDisposable
     public string Name => "RelayServer";
     public event Action<RelayEvent>? OnRelayEvent;
 
+    // Fires when a downstream client (AVPro/Unity) closes the relay connection mid-write with
+    // fewer than AbortBytesThreshold bytes served. This is the "the player can't parse this
+    // format" signal — legitimate seeks happen after the player has already received hundreds of
+    // KB of payload, so a sub-256KB abort is almost always a format rejection.
+    //
+    // ResolutionEngine subscribes, counts aborts per target URL in a rolling window, and when
+    // N aborts hit inside the window, triggers the same PlaybackFailed demotion path used for
+    // AVPro "Loading failed" events. This is what catches Unity-player failures, which don't
+    // emit the AVPro-style log line.
+    public event Action<string /*targetUrl*/, long /*bytesAtAbort*/>? OnClientAbortedEarly;
+    private const long AbortBytesThreshold = 256 * 1024; // 256 KB — below this = format rejection
+
     private Logger? _logger;
     private IModuleContext? _context;
     private HttpListener? _listener;
@@ -406,7 +418,20 @@ public class RelayServer : IProxyModule, IDisposable
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
-                    await context.Response.OutputStream.WriteAsync(manifestBytes, 0, manifestBytes.Length, _cts.Token);
+                    try
+                    {
+                        await context.Response.OutputStream.WriteAsync(manifestBytes, 0, manifestBytes.Length, _cts.Token);
+                    }
+                    catch (HttpListenerException)
+                    {
+                        // Player closed connection while reading the manifest — typically means
+                        // the player parsed the manifest header (or its Content-Type) and
+                        // decided it's unplayable. Almost certainly a Unity player refusing HLS.
+                        try { OnClientAbortedEarly?.Invoke(targetUrl, 0); } catch { }
+                    }
+                    catch (IOException) { try { OnClientAbortedEarly?.Invoke(targetUrl, 0); } catch { } }
+                    catch (TaskCanceledException) { /* shutdown */ }
+                    catch (OperationCanceledException) { /* shutdown */ }
                     relayEvent.StatusCode = context.Response.StatusCode;
                     relayEvent.BytesTransferred = manifestBytes.Length;
                     OnRelayEvent?.Invoke(relayEvent);
@@ -488,7 +513,14 @@ public class RelayServer : IProxyModule, IDisposable
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
                     try { context.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
-                    await context.Response.OutputStream.WriteAsync(manifestBytes, 0, manifestBytes.Length, _cts.Token);
+                    try
+                    {
+                        await context.Response.OutputStream.WriteAsync(manifestBytes, 0, manifestBytes.Length, _cts.Token);
+                    }
+                    catch (HttpListenerException) { try { OnClientAbortedEarly?.Invoke(targetUrl, 0); } catch { } }
+                    catch (IOException) { try { OnClientAbortedEarly?.Invoke(targetUrl, 0); } catch { } }
+                    catch (TaskCanceledException) { /* shutdown */ }
+                    catch (OperationCanceledException) { /* shutdown */ }
                     relayEvent.StatusCode = context.Response.StatusCode;
                     relayEvent.BytesTransferred = manifestBytes.Length;
                     OnRelayEvent?.Invoke(relayEvent);
@@ -499,6 +531,11 @@ public class RelayServer : IProxyModule, IDisposable
             }
 
             // Non-HLS binary streaming path: fire one final event with status + bytes once done.
+            // A HttpListenerException here means the player closed the connection mid-stream.
+            // Legit seeks happen after substantial playback (hundreds of KB), while format
+            // rejections abort within the first few KB as the player reads enough to decide
+            // "I can't play this." We fire OnClientAbortedEarly only below AbortBytesThreshold.
+            bool clientAbortedShort = false;
             try
             {
                 byte[] buffer = new byte[81920];
@@ -509,10 +546,15 @@ public class RelayServer : IProxyModule, IDisposable
                     relayEvent.BytesTransferred += bytesRead;
                 }
             }
-            catch (HttpListenerException) { /* Player closed connection (e.g., to seek) — normal */ }
-            catch (IOException) { /* Socket closed abruptly */ }
+            catch (HttpListenerException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; }
+            catch (IOException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; }
             catch (TaskCanceledException) { /* System shutting down */ }
             catch (OperationCanceledException) { /* System shutting down */ }
+
+            if (clientAbortedShort)
+            {
+                try { OnClientAbortedEarly?.Invoke(targetUrl, relayEvent.BytesTransferred); } catch { }
+            }
 
             relayEvent.StatusCode = context.Response.StatusCode;
             OnRelayEvent?.Invoke(relayEvent);

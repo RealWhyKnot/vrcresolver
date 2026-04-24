@@ -26,8 +26,24 @@ public class StrategyMemoryTests : IDisposable
     [Fact]
     public void KeyFor_NormalisesHostAndStripsWww()
     {
-        Assert.Equal("youtube.com:vod", StrategyMemory.KeyFor("https://www.YOUTUBE.com/watch?v=abc", false));
-        Assert.Equal("vr-m.net:live", StrategyMemory.KeyFor("https://vr-m.net/p/9851.m3u8", true));
+        // Legacy 2-arg overload — player is implicit "unknown". Kept for call sites that don't
+        // know the player yet (migrations, external callers). Real resolution flow uses the
+        // 3-arg overload (see KeyFor_IncludesPlayer).
+        Assert.Equal("youtube.com:vod:unknown", StrategyMemory.KeyFor("https://www.YOUTUBE.com/watch?v=abc", false));
+        Assert.Equal("vr-m.net:live:unknown", StrategyMemory.KeyFor("https://vr-m.net/p/9851.m3u8", true));
+    }
+
+    [Fact]
+    public void KeyFor_IncludesPlayer()
+    {
+        // AVPro and Unity need different formats, so their fast-path memories must not collide.
+        // The 3-arg KeyFor is the real production path — ResolutionEngine threads the player
+        // through. Confirm the player segment is lowercased and slotted in as the third token.
+        Assert.Equal("youtube.com:vod:avpro", StrategyMemory.KeyFor("https://www.youtube.com/watch?v=abc", false, "AVPro"));
+        Assert.Equal("youtube.com:vod:unity", StrategyMemory.KeyFor("https://www.youtube.com/watch?v=abc", false, "Unity"));
+        Assert.NotEqual(
+            StrategyMemory.KeyFor("https://www.youtube.com/watch?v=abc", false, "AVPro"),
+            StrategyMemory.KeyFor("https://www.youtube.com/watch?v=abc", false, "Unity"));
     }
 
     [Fact]

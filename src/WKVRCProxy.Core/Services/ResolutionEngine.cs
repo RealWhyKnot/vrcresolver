@@ -149,6 +149,60 @@ public class ResolutionEngine
         LogActiveTiers();
     }
 
+    // Subscribe to RelayServer's OnClientAbortedEarly so Unity playback failures (which don't
+    // emit AVPro error lines) also feed the playback-feedback demotion loop. Called once at
+    // startup after both services are constructed. Keeps RelayServer unaware of the engine.
+    public void AttachRelayAbortDetector(RelayServer relayServer)
+    {
+        if (relayServer == null) return;
+        relayServer.OnClientAbortedEarly += HandleRelayClientAbort;
+    }
+
+    // Rolling-window tracker of "player aborted mid-stream before playback could have started"
+    // events, keyed by the UPSTREAM target URL (not the relay-wrapped URL the player fetched).
+    // When the same target URL is aborted `RelayAbortThreshold` times inside the window, treat
+    // it as a Unity PlaybackFailed — demote the strategy that produced it, evict the cache, and
+    // fire the same StrategyDemoted event the AVPro path uses. Mirrors VRChat's retry cadence:
+    // Unity reopens a failing URL every 5-8s, so 3 aborts inside 30s is a reliable signal with
+    // zero false positives on normal playback (normal playback never aborts short).
+    private readonly ConcurrentDictionary<string, Queue<DateTime>> _relayAbortLog = new();
+    private readonly object _relayAbortLogLock = new();
+    private static readonly TimeSpan RelayAbortWindow = TimeSpan.FromSeconds(30);
+    private const int RelayAbortThreshold = 3;
+
+    private void HandleRelayClientAbort(string targetUrl, long bytesAtAbort)
+    {
+        if (string.IsNullOrEmpty(targetUrl)) return;
+        var now = DateTime.UtcNow;
+        var cutoff = now - RelayAbortWindow;
+        Queue<DateTime> queue;
+        int abortCountInWindow;
+        lock (_relayAbortLogLock)
+        {
+            queue = _relayAbortLog.GetOrAdd(targetUrl, _ => new Queue<DateTime>());
+            while (queue.Count > 0 && queue.Peek() < cutoff) queue.Dequeue();
+            queue.Enqueue(now);
+            abortCountInWindow = queue.Count;
+        }
+
+        _logger.Debug("[Playback] Relay abort for " + (targetUrl.Length > 80 ? targetUrl.Substring(0, 80) + "..." : targetUrl) +
+            " (bytes=" + bytesAtAbort + ", count in " + RelayAbortWindow.TotalSeconds + "s window=" + abortCountInWindow + "/" + RelayAbortThreshold + ")");
+
+        if (abortCountInWindow < RelayAbortThreshold) return;
+
+        // Threshold hit — the player has repeatedly rejected this URL's format. Reuse the AVPro
+        // failure handler, which already knows how to: match the URL to a recent resolution,
+        // demote the strategy with PlaybackFailed, evict resolve cache, publish the event, and
+        // flip the history entry's PlaybackVerified flag.
+        lock (_relayAbortLogLock)
+        {
+            _relayAbortLog.TryRemove(targetUrl, out _);
+        }
+        _logger.Warning("[Playback] [Relay] Unity/AVPro aborted " + abortCountInWindow + "× within " + RelayAbortWindow.TotalSeconds + "s on " +
+            (targetUrl.Length > 80 ? targetUrl.Substring(0, 80) + "..." : targetUrl) + " — treating as PlaybackFailed.");
+        HandleAvProLoadFailure(targetUrl, now);
+    }
+
     private void HandleAvProLoadFailure(string failedUrl, DateTime observedAt)
     {
         if (string.IsNullOrWhiteSpace(failedUrl)) return;
@@ -725,7 +779,10 @@ public class ResolutionEngine
                 var cascade = allTiers.Skip(startIdx).Where(t => !disabled.Contains(t)).ToList();
 
                 bool isStreamlinkLive = !disabled.Contains("tier0") && await StreamlinkCanHandleUrlAsync(targetUrl, ctx);
-                string memKey = StrategyMemory.KeyFor(targetUrl, isStreamlinkLive);
+                // Include the player in the memory key — AVPro and Unity need different formats,
+                // so what wins for one loses for the other. Sharing memory across them poisoned
+                // Unity's fast-path with AVPro-validated strategies whose output Unity can't play.
+                string memKey = StrategyMemory.KeyFor(targetUrl, isStreamlinkLive, player);
                 finalMemKey = memKey;
 
                 StrategyMemoryEntry? remembered = null;
@@ -1722,9 +1779,17 @@ public class ResolutionEngine
         }
         else
         {
-            // Unity player: prefer MP4 for VODs (better seeking), fall back to HLS for live streams,
-            // and explicitly avoid raw DASH which Unity cannot decode.
-            formatStr = "best[ext=mp4][height<=" + res + "]/best[ext=mp4]/best[protocol^=m3u8_native]/bestaudio/best[protocol!=http_dash_segments]/best";
+            // Unity player: progressive HTTP MP4 only. yt-dlp's `protocol^=http` matches `http`
+            // and `https` but NOT `http_dash_segments` or `m3u8_native`, so this filters out
+            // DASH and HLS that Unity silently chokes on. Matches VRChat's own native yt-dlp
+            // selector ((mp4/best)[protocol^=http]) — copying the one yt-dlp knows Unity can
+            // actually play. bestaudio at the tail keeps audio-only hosts resolvable.
+            formatStr = "best[protocol^=http][ext=mp4][height<=" + res + "]/"
+                      + "best[protocol^=http][ext=mp4]/"
+                      + "best[protocol^=http][height<=" + res + "]/"
+                      + "best[protocol^=http]/"
+                      + "bestaudio[protocol^=http]/"
+                      + "best";
         }
         args.Add("-f");
         args.Add(formatStr);

@@ -472,16 +472,32 @@ public class StrategyMemory
             _entries.TryRemove(oldestHost.Key, out _);
     }
 
-    public static string KeyFor(string url, bool isLive)
+    // Player is part of the key because AVPro and Unity have incompatible format requirements —
+    // AVPro happily plays HLS/DASH, Unity needs progressive MP4. Without this split, a cloud-
+    // based strategy that works great for AVPro on youtube.com:vod would poison Unity's
+    // fast-path: memory says "cloud wins, use it first" but cloud's Unity output gets rejected
+    // by the player. Keep the (url, isLive) overload for call sites that don't know the player
+    // yet (migration path / legacy callers); it normalises to "unknown" which still segregates
+    // from real entries.
+    public static string KeyFor(string url, bool isLive, string? player)
     {
         try
         {
             string host = new Uri(url).Host.ToLowerInvariant();
             if (host.StartsWith("www.")) host = host.Substring(4);
-            return host + (isLive ? ":live" : ":vod");
+            string streamType = isLive ? "live" : "vod";
+            string playerSegment = string.IsNullOrWhiteSpace(player)
+                ? "unknown"
+                : player.ToLowerInvariant();
+            return host + ":" + streamType + ":" + playerSegment;
         }
         catch { return ""; }
     }
+
+    // Legacy 2-arg overload — preserved so tests and any external callers that don't thread the
+    // player through still compile. Resolves to the "unknown" player bucket, which is fine
+    // because those entries can't mismatch AVPro's or Unity's specific learning.
+    public static string KeyFor(string url, bool isLive) => KeyFor(url, isLive, null);
 
     // Heuristic classifier. Maps raw error signals (exception + optional stderr/process exit
     // context) to a StrategyFailureKind. Keeps dispatcher call sites short and consistent.
