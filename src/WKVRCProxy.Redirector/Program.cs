@@ -56,7 +56,11 @@ class Program
             string json = JsonSerializer.Serialize(payload, CoreJsonContext.Default.ResolvePayload);
 
             using var ws = new ClientWebSocket();
-            var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            // 75 s covers Tier 2's 60 s cloud-resolver budget (AppConfig.Tier2TimeoutSeconds)
+            // plus headroom for the cascade to fall through to Tier 3 if Tier 2 times out.
+            // Old 15 s deadline killed the IPC call before Tier 2 could finish, so the wrapper
+            // returned the original URL via Fallback() and AVPro tried to play raw YouTube /live/.
+            var cts = new CancellationTokenSource(TimeSpan.FromSeconds(75));
 
             try
             {

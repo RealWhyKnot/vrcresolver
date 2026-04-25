@@ -499,6 +499,27 @@ public class StrategyMemory
     // because those entries can't mismatch AVPro's or Unity's specific learning.
     public static string KeyFor(string url, bool isLive) => KeyFor(url, isLive, null);
 
+    // Pre-resolution live-stream heuristic. The cascade previously set the memory key's
+    // live-flag based solely on `streamlink --can-handle-url`, which says nothing about
+    // *liveness* — only "streamlink has a plugin". When streamlink isn't installed (or
+    // doesn't claim YouTube), every URL bucketed as `:vod:` and a YouTube /live/ URL
+    // would inherit the VOD fast-path memory (e.g. tier2:cloud-whyknot) that hangs on
+    // live formats. URL-pattern check catches the common live shapes before resolution.
+    public static bool LooksLikeLive(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return false;
+        try
+        {
+            var uri = new Uri(url);
+            string path = uri.AbsolutePath.ToLowerInvariant();
+            // youtube.com/live/<id>, /@handle/live, /channel/<id>/live, /c/<name>/live
+            if (path.StartsWith("/live/")) return true;
+            if (path.EndsWith("/live")) return true;
+        }
+        catch { }
+        return false;
+    }
+
     // Heuristic classifier. Maps raw error signals (exception + optional stderr/process exit
     // context) to a StrategyFailureKind. Keeps dispatcher call sites short and consistent.
     public static StrategyFailureKind ClassifyFailure(Exception? ex, string? stderr, bool timedOut = false)

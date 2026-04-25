@@ -89,11 +89,15 @@ public class CurlImpersonateClient : IProxyModule
         return Task.FromResult(process.StandardOutput.BaseStream);
     }
 
-    // Checks whether a URL is reachable by sending a byte-range GET request and parsing
-    // the HTTP status from the response headers. Uses curl's -D stdout / -o NUL trick so
-    // only headers are captured — body is discarded via the Windows null device.
-    // Follows redirects (-L) and enforces a hard timeout via --max-time.
-    // Returns the final HTTP status code, or -1 on failure/timeout.
+    // Checks whether a URL is reachable by sending a GET and parsing the HTTP status from
+    // the response headers. The bundled curl-impersonate-win.exe is a minimal wrapper that
+    // ONLY accepts: --impersonate, -s, -i, -X, -H, <url>. Anything else (-L, -D, -o,
+    // --max-time) is silently dropped, which previously caused 100% of probes to "time out":
+    // -D - was ignored so no HTTP/ status line ever hit stdout, the body went to stdout
+    // instead of the discarded null device, and we read until EOF looking for a header that
+    // never came. Use -i (supported) and parse the first HTTP/ line, then early-out at the
+    // header/body separator so we don't drain the whole body. Timeout is enforced by the
+    // C# CancellationToken since --max-time isn't available.
     public async Task<int> CheckReachabilityAsync(string url, Dictionary<string, string>? headers = null, int timeoutSeconds = 5)
     {
         if (!IsAvailable) return -1;
@@ -109,10 +113,7 @@ public class CurlImpersonateClient : IProxyModule
 
         psi.ArgumentList.Add("--impersonate"); psi.ArgumentList.Add("chrome116");
         psi.ArgumentList.Add("-s");             // silent — no progress meter
-        psi.ArgumentList.Add("-L");             // follow redirects
-        psi.ArgumentList.Add("-D"); psi.ArgumentList.Add("-");   // dump response headers to stdout
-        psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("NUL"); // discard body (Windows null device)
-        psi.ArgumentList.Add("--max-time"); psi.ArgumentList.Add(timeoutSeconds.ToString());
+        psi.ArgumentList.Add("-i");             // include response headers in stdout (then body)
         psi.ArgumentList.Add("-X"); psi.ArgumentList.Add("GET");
 
         if (headers != null)
@@ -133,25 +134,39 @@ public class CurlImpersonateClient : IProxyModule
             if (process == null) return -1;
             ProcessGuard.Register(process);
 
-            // Read header dump from stdout. With -L there may be multiple HTTP status lines
-            // (one per redirect hop); we want the last one (the final response).
-            string? lastStatusLine = null;
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds + 2));
+            int? statusCode = null;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
             using var reader = new StreamReader(process.StandardOutput.BaseStream);
             string? line;
             while ((line = await reader.ReadLineAsync(cts.Token)) != null)
             {
-                if (line.StartsWith("HTTP/"))
-                    lastStatusLine = line;
+                if (statusCode == null && line.StartsWith("HTTP/"))
+                {
+                    var parts = line.Split(' ');
+                    if (parts.Length >= 2 && int.TryParse(parts[1], out int s)) statusCode = s;
+                }
+                // Empty line marks end of headers — kill the process so we don't drain the
+                // (potentially huge) response body just to discard it.
+                else if (statusCode != null && line.Length == 0)
+                {
+                    break;
+                }
             }
 
-            // Log non-zero exit codes for debugging
-            if (process != null && process.HasExited && process.ExitCode != 0)
+            if (process != null && !process.HasExited)
+            {
+                try { process.Kill(); } catch { /* Already gone */ }
+            }
+            else if (process != null && process.ExitCode != 0)
+            {
                 _logger?.Debug("curl-impersonate exited with code " + process.ExitCode + " for " + url.Substring(0, Math.Min(80, url.Length)));
+            }
 
-            if (lastStatusLine == null) return -1;
-            var parts = lastStatusLine.Split(' ');
-            return parts.Length >= 2 && int.TryParse(parts[1], out int status) ? status : -1;
+            return statusCode ?? -1;
+        }
+        catch (OperationCanceledException)
+        {
+            return -1;
         }
         catch (Exception ex)
         {

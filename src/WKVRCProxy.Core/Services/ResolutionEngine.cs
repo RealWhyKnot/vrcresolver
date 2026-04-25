@@ -97,7 +97,7 @@ public class ResolutionEngine
     //
     // HistoryEntryRef lets us flip the matching history row's PlaybackVerified flag on the
     // feedback signal — without it, the UI's Success column would still lie about dead URLs.
-    private record RecentResolution(string StrategyName, string MemKey, string OriginalUrl, string ResolvedUrl, DateTime CreatedAt, string CorrelationId, HistoryEntry? HistoryEntryRef);
+    private record RecentResolution(string StrategyName, string MemKey, string OriginalUrl, string ResolvedUrl, string? UpstreamUrl, DateTime CreatedAt, string CorrelationId, HistoryEntry? HistoryEntryRef);
     private readonly ConcurrentDictionary<string, RecentResolution> _recentByUrl = new();
     private static readonly TimeSpan RecentResolutionTtl = TimeSpan.FromSeconds(60);
     private const int RecentResolutionCap = 64;
@@ -248,15 +248,25 @@ public class ResolutionEngine
         _recentByUrl.TryRemove(failedUrl, out _);
         if (recent.ResolvedUrl != failedUrl) _recentByUrl.TryRemove(recent.ResolvedUrl, out _);
         if (recent.OriginalUrl != failedUrl) _recentByUrl.TryRemove(recent.OriginalUrl, out _);
+        if (!string.IsNullOrEmpty(recent.UpstreamUrl) && recent.UpstreamUrl != failedUrl)
+            _recentByUrl.TryRemove(recent.UpstreamUrl!, out _);
     }
 
-    private void RecordRecentResolution(string originalUrl, string resolvedUrl, string strategyName, string memKey, string correlationId, HistoryEntry? historyEntry = null)
+    private void RecordRecentResolution(string originalUrl, string resolvedUrl, string strategyName, string memKey, string correlationId, HistoryEntry? historyEntry = null, string? upstreamUrl = null)
     {
         if (string.IsNullOrEmpty(strategyName) || string.IsNullOrEmpty(memKey)) return;
-        var rec = new RecentResolution(strategyName, memKey, originalUrl, resolvedUrl, DateTime.UtcNow, correlationId, historyEntry);
+        var rec = new RecentResolution(strategyName, memKey, originalUrl, resolvedUrl, upstreamUrl, DateTime.UtcNow, correlationId, historyEntry);
         _recentByUrl[originalUrl] = rec;
         if (!string.Equals(resolvedUrl, originalUrl, StringComparison.Ordinal))
             _recentByUrl[resolvedUrl] = rec;
+        // Relay-abort detector reports the *upstream* URL (decoded `target` param), not the
+        // wrapped /play?target=… URL the player sees. Without this third key, threshold-hit
+        // aborts on relay-wrapped strategies (tier2 cloud, etc.) miss the ring lookup and
+        // never demote — the resolve cache then keeps serving the same dead URL.
+        if (!string.IsNullOrEmpty(upstreamUrl)
+            && !string.Equals(upstreamUrl, originalUrl, StringComparison.Ordinal)
+            && !string.Equals(upstreamUrl, resolvedUrl, StringComparison.Ordinal))
+            _recentByUrl[upstreamUrl] = rec;
         PruneRecentResolutions();
 
         // Schedule the optimistic "verified" promotion. If no AVPro failure arrives within the
@@ -779,10 +789,15 @@ public class ResolutionEngine
                 var cascade = allTiers.Skip(startIdx).Where(t => !disabled.Contains(t)).ToList();
 
                 bool isStreamlinkLive = !disabled.Contains("tier0") && await StreamlinkCanHandleUrlAsync(targetUrl, ctx);
+                // Live classification for memory keying: streamlink-handles is a *capability*
+                // signal, not a liveness signal. URL-pattern check catches /live/ paths even
+                // when streamlink isn't installed or doesn't claim the host — without it, a
+                // YouTube /live/ URL inherits the VOD fast-path memory and hangs on tier2.
+                bool isLiveForMemory = isStreamlinkLive || StrategyMemory.LooksLikeLive(targetUrl);
                 // Include the player in the memory key — AVPro and Unity need different formats,
                 // so what wins for one loses for the other. Sharing memory across them poisoned
                 // Unity's fast-path with AVPro-validated strategies whose output Unity can't play.
-                string memKey = StrategyMemory.KeyFor(targetUrl, isStreamlinkLive, player);
+                string memKey = StrategyMemory.KeyFor(targetUrl, isLiveForMemory, player);
                 finalMemKey = memKey;
 
                 StrategyMemoryEntry? remembered = null;
@@ -1254,7 +1269,9 @@ public class ResolutionEngine
 
         if (canTrackPlayback)
         {
-            RecordRecentResolution(targetUrl, result!, finalStrategy, finalMemKey, ctx.CorrelationId, entry);
+            // Pass the pre-wrap upstream URL too — the relay-abort detector reports that, not
+            // the wrapped /play?target=… URL the player actually fetched.
+            RecordRecentResolution(targetUrl, result!, finalStrategy, finalMemKey, ctx.CorrelationId, entry, upstreamUrl: winnerResult!.Url);
         }
 
         resolutionSw.Stop();
