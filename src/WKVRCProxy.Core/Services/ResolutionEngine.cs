@@ -1051,7 +1051,31 @@ public class ResolutionEngine
                                     winnerForcesRelayWrap = strat.ForceRelayWrap;
                                     _logger.Info("[" + ctx.CorrelationId + "] [Race] '" + strat.Name + "' cleared floor in " + raceSw.ElapsedMilliseconds + "ms — winner.");
                                     try { raceCts.Cancel(); } catch { }
-                                    break; // stop draining — any remaining completed tasks are also-rans.
+
+                                    // Sweep already-completed pending tasks so StrategyMemory sees their outcomes.
+                                    // Without this, a loser that finished BEFORE the winner (e.g. tier1:ipv6 dying
+                                    // fast on a getaddrinfo failure) is silently dropped — the demote threshold
+                                    // never fires and cold-start re-runs the same broken strategy forever.
+                                    // IsCompleted == true here means the slot ran under its own steam, so the
+                                    // outcome is genuine and we bypass the cancellation guard at the top of the
+                                    // for-loop.
+                                    for (int sj = pending.Count - 1; sj >= 0; sj--)
+                                    {
+                                        if (!pending[sj].IsCompleted) continue;
+                                        var sweptTask = pending[sj];
+                                        pending.RemoveAt(sj);
+                                        var (sweptStrat, sweptRes) = await sweptTask;
+                                        if (sweptRes == null)
+                                        {
+                                            RecordStrategyFailure(memKey, sweptStrat.Name);
+                                        }
+                                        else
+                                        {
+                                            _logger.Debug("[" + ctx.CorrelationId + "] [Race] '" + sweptStrat.Name + "' also succeeded but '" + activeStrategy + "' already won — discarding.");
+                                            RecordStrategySuccess(memKey, sweptStrat.Name, sweptRes.Height);
+                                        }
+                                    }
+                                    break; // stop draining — any still-pending tasks are mid-cancellation.
                                 }
                                 else
                                 {
