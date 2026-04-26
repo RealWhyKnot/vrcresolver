@@ -38,6 +38,16 @@ public class RelayServer : IProxyModule, IDisposable
     public event Action<string /*targetUrl*/, long /*bytesAtAbort*/>? OnClientAbortedEarly;
     private const long AbortBytesThreshold = 256 * 1024; // 256 KB — below this = format rejection
 
+    // Smoothness diagnostics thresholds. A "slow" segment is anything an AVPro reader could feel:
+    //   - TTFB > 750ms   — the upstream took noticeable wall-clock time before the first byte
+    //   - throughput < 384 KB/s on a transfer >= 256 KB — sustained slow delivery, will starve buffer
+    // Above 2x these (1500ms / 192 KB/s on >=256 KB) we escalate to WARN so it stands out.
+    private const long SmoothnessSlowTtfbMs = 750;
+    private const long SmoothnessStallTtfbMs = 1500;
+    private const long SmoothnessThroughputBytesPerSec = 384 * 1024;
+    private const long SmoothnessStallThroughputBytesPerSec = 192 * 1024;
+    private const long SmoothnessMinBytesForThroughputCheck = 256 * 1024;
+
     private Logger? _logger;
     private IModuleContext? _context;
     private HttpListener? _listener;
@@ -535,13 +545,21 @@ public class RelayServer : IProxyModule, IDisposable
             // Legit seeks happen after substantial playback (hundreds of KB), while format
             // rejections abort within the first few KB as the player reads enough to decide
             // "I can't play this." We fire OnClientAbortedEarly only below AbortBytesThreshold.
+            //
+            // Smoothness probe: time the upstream's TTFB (first byte from sourceStream) and the
+            // overall throughput of the body copy. Slow segments here translate directly to
+            // AVPro buffer underruns — the user sees stutter even though the request "worked".
             bool clientAbortedShort = false;
+            bool smoothness = _context?.Settings.Config.EnableRelaySmoothnessDebug ?? false;
+            var bodySw = smoothness ? System.Diagnostics.Stopwatch.StartNew() : null;
+            long? ttfbMs = null;
             try
             {
                 byte[] buffer = new byte[81920];
                 int bytesRead;
                 while ((bytesRead = await sourceStream!.ReadAsync(buffer, 0, buffer.Length, _cts.Token)) > 0)
                 {
+                    if (smoothness && ttfbMs == null) ttfbMs = bodySw!.ElapsedMilliseconds;
                     await context.Response.OutputStream.WriteAsync(buffer, 0, bytesRead, _cts.Token);
                     relayEvent.BytesTransferred += bytesRead;
                 }
@@ -554,6 +572,12 @@ public class RelayServer : IProxyModule, IDisposable
             if (clientAbortedShort)
             {
                 try { OnClientAbortedEarly?.Invoke(targetUrl, relayEvent.BytesTransferred); } catch { }
+            }
+
+            if (smoothness)
+            {
+                bodySw!.Stop();
+                LogSmoothness(ctx.CorrelationId, shortUrl, ttfbMs, bodySw.ElapsedMilliseconds, relayEvent.BytesTransferred, clientAbortedShort);
             }
 
             relayEvent.StatusCode = context.Response.StatusCode;
@@ -570,6 +594,37 @@ public class RelayServer : IProxyModule, IDisposable
             try { response?.Dispose(); } catch { }
             try { context.Response.Close(); } catch { }
         }
+    }
+
+    // Emit a one-line smoothness report for a completed segment relay. Quiet on healthy segments
+    // (DEBUG-level pass-through), louder when TTFB or throughput cross the slow/stall thresholds.
+    // Only the body-copy span is timed; the upstream's response-headers latency is hidden inside
+    // the surrounding curl/HttpClient call and not measured here. TTFB is the gap between starting
+    // the body read and receiving the first byte from sourceStream, which is the user-perceptible
+    // "buffer is empty waiting for upstream" interval.
+    private void LogSmoothness(string correlationId, string shortUrl, long? ttfbMs, long totalMs, long bytes, bool clientAborted)
+    {
+        if (_logger == null) return;
+        // Skip aborts and zero-byte transfers — they are reported via OnClientAbortedEarly already
+        // and a "0 KB in 5ms" line just adds noise.
+        if (clientAborted || bytes == 0) return;
+
+        long durationMs = Math.Max(1, totalMs);
+        long bps = (long)(bytes * 1000.0 / durationMs);
+        long kbps = bps / 1024;
+        long ttfb = ttfbMs ?? 0;
+        long kb = bytes / 1024;
+
+        bool stalled = ttfb >= SmoothnessStallTtfbMs
+                    || (bytes >= SmoothnessMinBytesForThroughputCheck && bps < SmoothnessStallThroughputBytesPerSec);
+        bool slow = !stalled && (
+                       ttfb >= SmoothnessSlowTtfbMs
+                    || (bytes >= SmoothnessMinBytesForThroughputCheck && bps < SmoothnessThroughputBytesPerSec));
+
+        string line = "[" + correlationId + "] [Playback] segment ttfb=" + ttfb + "ms throughput=" + kbps + " KB/s size=" + kb + " KB dur=" + totalMs + "ms — " + shortUrl;
+        if (stalled) _logger.Warning(line + "  (STALLED)");
+        else if (slow) _logger.Info(line + "  (slow)");
+        else _logger.Debug(line);
     }
 
     public ModuleHealthReport GetHealthReport()

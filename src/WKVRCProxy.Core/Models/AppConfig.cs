@@ -159,4 +159,21 @@ public class AppConfig
 
     [JsonPropertyName("perHostRequestWindowSeconds")]
     public int PerHostRequestWindowSeconds { get; set; } = 10;
+
+    // Twitch ad-segment handling for the Tier 0 (Streamlink) path. Streamlink can either:
+    //   false (default) — pass the ad segments through. The viewer sees Twitch ads play, then the
+    //                     real stream resumes seamlessly with no pause.
+    //   true            — filter the ad segments out and emit an HLS discontinuity in their place.
+    //                     AVPro stalls on the last good frame for the duration of the ad break,
+    //                     then resumes with the real stream. Note: this does NOT skip ahead in
+    //                     time; the player simply freezes the picture until ads are over.
+    [JsonPropertyName("streamlinkDisableTwitchAds")]
+    public bool StreamlinkDisableTwitchAds { get; set; } = false;
+
+    // Log per-segment relay timing (TTFB + throughput) at debug level, and surface stalls/slow
+    // segments at warning level. Helps diagnose stutter that isn't a hard playback failure —
+    // long upstream TTFB or low throughput on a CDN segment will show up here even when the
+    // stream eventually resumes.
+    [JsonPropertyName("enableRelaySmoothnessDebug")]
+    public bool EnableRelaySmoothnessDebug { get; set; } = true;
 }

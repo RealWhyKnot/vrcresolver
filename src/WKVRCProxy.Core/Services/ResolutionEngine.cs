@@ -2031,7 +2031,17 @@ public class ResolutionEngine
     private async Task<YtDlpResult?> ResolveStreamlink(string url, RequestContext ctx)
     {
         _logger.Debug("[" + ctx.CorrelationId + "] [Tier 0] Attempting Streamlink resolution...");
-        var args = new List<string> { "--stream-url", "--quiet", url, "best" };
+        var args = new List<string> { "--stream-url", "--quiet" };
+        // When opted in, ask Streamlink to filter Twitch ad segments. AVPro will stall on the last
+        // good frame for the duration of the ad break (no time-skip); ads themselves are not shown.
+        // Default off — ads pass through and play, no pause.
+        if (_settings.Config.StreamlinkDisableTwitchAds && url.Contains("twitch.tv", StringComparison.OrdinalIgnoreCase))
+        {
+            args.Add("--twitch-disable-ads");
+            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 0] Twitch ad filter ON — playback will stall during ad breaks.");
+        }
+        args.Add(url);
+        args.Add("best");
         var (result, _) = await RunYtDlp("streamlink.exe", args, ctx, timeoutMs: 9000);
         return result;
     }
