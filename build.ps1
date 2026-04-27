@@ -1,3 +1,11 @@
+param(
+    # When set, this overrides the auto-derived YYYY.M.D.N-XXXX stamp. The Release workflow
+    # passes the git tag here (with the leading "v" stripped) so the published release's tag,
+    # zip filename, and embedded assembly version are all the same string. Local builds leave
+    # this empty and get the auto-derived stamp from $Today + $BuildCount + a fresh GUID prefix.
+    [string]$Version = ""
+)
+
 $ErrorActionPreference = "Stop"
 
 # Pin the working directory to the script's own root so relative paths (src/..., dist/...)
@@ -395,19 +403,29 @@ try {
 $Versions | ConvertTo-Json | Out-File $VersionFile
 
 # --- Daily Versioning Logic ---
-$Today = Get-Date -Format "yyyy.M.d"
-$BuildCount = 0
-$UID = [Guid]::NewGuid().ToString().Substring(0, 4).ToUpper()
-
-if (Test-Path $LocalVersionState) {
-    $State = Get-Content $LocalVersionState | ConvertFrom-Json
-    if ($State.Date -eq $Today) {
-        $BuildCount = $State.Count + 1
+if ($Version) {
+    # Caller-supplied version (release pipeline). Validate the shape so a malformed tag fails the
+    # build cleanly instead of producing a release with a bad version baked into the assembly.
+    if ($Version -notmatch '^\d{4}\.\d+\.\d+\.\d+-[A-Fa-f0-9]{4}$') {
+        throw "Invalid -Version '$Version'. Expected YYYY.M.D.N-XXXX (XXXX = 4 hex chars)."
     }
-}
+    $FullVersion = $Version
+    Write-Host "Using caller-supplied version (skipping local-state increment)." -ForegroundColor DarkGray
+} else {
+    $Today = Get-Date -Format "yyyy.M.d"
+    $BuildCount = 0
+    $UID = [Guid]::NewGuid().ToString().Substring(0, 4).ToUpper()
 
-$FullVersion = "$Today.$BuildCount-$UID"
-@{ "Date" = $Today; "Count" = $BuildCount } | ConvertTo-Json | Out-File $LocalVersionState
+    if (Test-Path $LocalVersionState) {
+        $State = Get-Content $LocalVersionState | ConvertFrom-Json
+        if ($State.Date -eq $Today) {
+            $BuildCount = $State.Count + 1
+        }
+    }
+
+    $FullVersion = "$Today.$BuildCount-$UID"
+    @{ "Date" = $Today; "Count" = $BuildCount } | ConvertTo-Json | Out-File $LocalVersionState
+}
 
 Write-Host "Building Version: $FullVersion" -ForegroundColor Magenta
 

@@ -1,7 +1,9 @@
 name: Release
 
-# Triggered by pushing a tag like v2026.4.27.7-4974 (matches the YYYY.M.d.<count>-<UID>
-# version stamp that build.ps1 writes, with a leading "v" so the tag glob anchors cleanly).
+# Triggered by pushing a tag like v2026.4.27.7-4974. The tag (minus the leading "v") drives the
+# build's version: it's passed to build.ps1 -Version so the assembly version, version.txt, and the
+# zip filename all match the tag. build.ps1 validates the shape (YYYY.M.D.N-XXXX with a 4-char hex
+# UID) and fails fast on a malformed tag.
 # Builds the full distribution via build.ps1 on a Windows runner — required because the build
 # produces win-x64 single-file exes and uses PowerShell-only cmdlets — then attaches the zip
 # from release/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
@@ -43,7 +45,13 @@ jobs:
 
       - name: Build distribution
         shell: pwsh
-        run: ./build.ps1
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # Strip the leading "v" so the version baked into the build matches the tag.
+          # build.ps1 validates the shape (YYYY.M.D.N-XXXX) and fails fast on a bad tag.
+          $version = $env:TAG_NAME -replace '^v', ''
+          ./build.ps1 -Version $version
 
       - name: Locate release zip
         id: zip
