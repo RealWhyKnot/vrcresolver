@@ -36,39 +36,73 @@ New-Item -ItemType Directory $BuildDir -Force | Out-Null
 if (!(Test-Path $VendorDir)) { New-Item -ItemType Directory $VendorDir }
 
 # --- Dependency Tracking ---
-$Versions = @{ "ytdlp" = ""; "deno" = ""; "curlimp" = ""; "bgutil" = ""; "streamlink" = "" }
+# Use a hashtable, not the PSCustomObject ConvertFrom-Json hands back. PSCustomObject silently
+# refuses property assignment for keys that didn't exist in the source JSON (PS 5.1 behaviour),
+# which previously caused curlimp / ytdlp / deno version stamps to never persist for users whose
+# versions.json predated those keys — every build re-fetched even when nothing changed. Hashtables
+# accept new keys via simple `=`, so each fetcher's `$Versions.X = $latest` survives the round-trip.
+$Versions = @{ ytdlp = ""; deno = ""; curlimp = ""; bgutil = ""; streamlink = ""; wgcf = ""; wireproxy = "" }
 if (Test-Path $VersionFile) {
-    $Versions = Get-Content $VersionFile | ConvertFrom-Json
+    $Loaded = Get-Content $VersionFile | ConvertFrom-Json
+    foreach ($prop in $Loaded.psobject.properties) {
+        $Versions[$prop.Name] = $prop.Value
+    }
 }
 
 Write-Host "--- Checking Dependencies ---" -ForegroundColor Cyan
 
-# 1. Fetch Latest yt-dlp
-$YtDlpRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
-$LatestYtDlpVersion = $YtDlpRelease.tag_name
-
-if ($Versions.ytdlp -ne $LatestYtDlpVersion) {
-    Write-Host "Updating yt-dlp to $LatestYtDlpVersion..." -ForegroundColor Yellow
-    $DownloadUrl = ($YtDlpRelease.assets | Where-Object { $_.name -eq "yt-dlp.exe" }).browser_download_url
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile (Join-Path $VendorDir "yt-dlp.exe")
-    $Versions.ytdlp = $LatestYtDlpVersion
+# 1. Fetch Latest yt-dlp. Skipped when the cached vendor binary already matches the latest tag —
+# previously this section re-checked GitHub on every build but the *binary* download was guarded
+# only by the version-string compare; if the cached exe was missing, the deploy step at the end
+# would fail. Now also Test-Path-gates the re-download and falls back to the cached binary on
+# offline runs (matches the other fetchers).
+$YtDlpVendorPath = Join-Path $VendorDir "yt-dlp.exe"
+try {
+    $YtDlpRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" -ErrorAction Stop
+    $LatestYtDlpVersion = $YtDlpRelease.tag_name
+    if ($Versions.ytdlp -ne $LatestYtDlpVersion -or !(Test-Path $YtDlpVendorPath)) {
+        Write-Host "Updating yt-dlp to $LatestYtDlpVersion..." -ForegroundColor Yellow
+        $DownloadUrl = ($YtDlpRelease.assets | Where-Object { $_.name -eq "yt-dlp.exe" }).browser_download_url
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $YtDlpVendorPath
+        $Versions.ytdlp = $LatestYtDlpVersion
+        Write-Host "yt-dlp.exe ready ($LatestYtDlpVersion)." -ForegroundColor Green
+    } else {
+        Write-Host "yt-dlp.exe is up-to-date ($LatestYtDlpVersion)." -ForegroundColor Green
+    }
+} catch {
+    if (Test-Path $YtDlpVendorPath) {
+        Write-Host "yt-dlp.exe found in vendor/ (offline - could not check for updates)." -ForegroundColor Green
+    } else {
+        throw "yt-dlp.exe not vendored and could not fetch from GitHub. Aborting build."
+    }
 }
 
-# 2. Fetch Latest Deno
-$DenoRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/denoland/deno/releases/latest"
-$LatestDenoVersion = $DenoRelease.tag_name
-
-if ($Versions.deno -ne $LatestDenoVersion) {
-    Write-Host "Updating Deno to $LatestDenoVersion..." -ForegroundColor Yellow
-    $DownloadUrl = ($DenoRelease.assets | Where-Object { $_.name -eq "deno-x86_64-pc-windows-msvc.zip" }).browser_download_url
-    if (!$DownloadUrl) {
-        $DownloadUrl = ($DenoRelease.assets | Where-Object { $_.name -match "x86_64-pc-windows-msvc\.zip" } | Select-Object -First 1).browser_download_url
+# 2. Fetch Latest Deno. Same skip-when-current pattern as yt-dlp; deno extracts to deno.exe in vendor/.
+$DenoVendorPath = Join-Path $VendorDir "deno.exe"
+try {
+    $DenoRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/denoland/deno/releases/latest" -ErrorAction Stop
+    $LatestDenoVersion = $DenoRelease.tag_name
+    if ($Versions.deno -ne $LatestDenoVersion -or !(Test-Path $DenoVendorPath)) {
+        Write-Host "Updating Deno to $LatestDenoVersion..." -ForegroundColor Yellow
+        $DownloadUrl = ($DenoRelease.assets | Where-Object { $_.name -eq "deno-x86_64-pc-windows-msvc.zip" }).browser_download_url
+        if (!$DownloadUrl) {
+            $DownloadUrl = ($DenoRelease.assets | Where-Object { $_.name -match "x86_64-pc-windows-msvc\.zip" } | Select-Object -First 1).browser_download_url
+        }
+        $ZipPath = Join-Path $VendorDir "deno.zip"
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath
+        Expand-Archive -Path $ZipPath -DestinationPath $VendorDir -Force
+        Remove-Item $ZipPath
+        $Versions.deno = $LatestDenoVersion
+        Write-Host "deno.exe ready ($LatestDenoVersion)." -ForegroundColor Green
+    } else {
+        Write-Host "deno.exe is up-to-date ($LatestDenoVersion)." -ForegroundColor Green
     }
-    $ZipPath = Join-Path $VendorDir "deno.zip"
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath
-    Expand-Archive -Path $ZipPath -DestinationPath $VendorDir -Force
-    Remove-Item $ZipPath
-    $Versions.deno = $LatestDenoVersion
+} catch {
+    if (Test-Path $DenoVendorPath) {
+        Write-Host "deno.exe found in vendor/ (offline - could not check for updates)." -ForegroundColor Green
+    } else {
+        throw "deno.exe not vendored and could not fetch from GitHub. Aborting build (the bgutil sidecar compile and the JS-runtime hookup both depend on it)."
+    }
 }
 # 3. Fetch Latest curl-impersonate-win (RealWhyKnot/curl-impersonate-win)
 # Go-based Windows CLI wrapper around bogdanfinn/tls-client for Chrome TLS fingerprint impersonation.
@@ -127,6 +161,9 @@ if ($BgutilRelease) {
                    !(Test-Path $VendorSidecarExe) -or
                    !(Test-Path (Join-Path $VendorPluginPkg "yt_dlp_plugins"))
 
+    if (-not $NeedsBgutil) {
+        Write-Host "bgutil-ytdlp-pot-provider is up-to-date (commit $LatestBgutilCommit)." -ForegroundColor Green
+    }
     if ($NeedsBgutil) {
         Write-Host "Compiling bgutil-ytdlp-pot-provider server + staging plugin at commit $LatestBgutilCommit..." -ForegroundColor Yellow
         $BgutilDir = Join-Path $VendorDir "bgutil_repo"
@@ -161,11 +198,7 @@ if ($BgutilRelease) {
 
         Remove-Item -Path $BgutilDir -Recurse -Force
 
-        if ($null -eq $Versions.psobject.properties['bgutil']) {
-            $Versions | Add-Member -NotePropertyName bgutil -NotePropertyValue $LatestBgutilCommit
-        } else {
-            $Versions.bgutil = $LatestBgutilCommit
-        }
+        $Versions.bgutil = $LatestBgutilCommit
     }
 }
 
@@ -174,11 +207,6 @@ $StreamlinkVendorDir = Join-Path $VendorDir "streamlink"
 try {
     $StreamlinkRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/streamlink/streamlink/releases/latest" -ErrorAction Stop
     $LatestStreamlinkVersion = $StreamlinkRelease.tag_name
-
-    if ($null -eq $Versions.psobject.properties['streamlink']) {
-        $Versions | Add-Member -NotePropertyName streamlink -NotePropertyValue ""
-    }
-
     $SlExePath = Join-Path $StreamlinkVendorDir "bin\streamlink.exe"
     if ($Versions.streamlink -ne $LatestStreamlinkVersion -or !(Test-Path $SlExePath)) {
         Write-Host "Updating Streamlink to $LatestStreamlinkVersion..." -ForegroundColor Yellow
@@ -219,9 +247,6 @@ $WgcfVendorPath = Join-Path $VendorDir "wgcf.exe"
 try {
     $WgcfRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ViRb3/wgcf/releases/latest" -ErrorAction Stop
     $LatestWgcfVersion = $WgcfRelease.tag_name
-    if ($null -eq $Versions.psobject.properties['wgcf']) {
-        $Versions | Add-Member -NotePropertyName wgcf -NotePropertyValue ""
-    }
     if ($Versions.wgcf -ne $LatestWgcfVersion -or !(Test-Path $WgcfVendorPath)) {
         Write-Host "Updating wgcf to $LatestWgcfVersion..." -ForegroundColor Yellow
         # Pick the windows amd64 asset — release asset naming uses wgcf_<ver>_windows_amd64.exe
@@ -249,9 +274,6 @@ $WireproxyVendorPath = Join-Path $VendorDir "wireproxy.exe"
 try {
     $WireproxyRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/pufferffish/wireproxy/releases/latest" -ErrorAction Stop
     $LatestWireproxyVersion = $WireproxyRelease.tag_name
-    if ($null -eq $Versions.psobject.properties['wireproxy']) {
-        $Versions | Add-Member -NotePropertyName wireproxy -NotePropertyValue ""
-    }
     if ($Versions.wireproxy -ne $LatestWireproxyVersion -or !(Test-Path $WireproxyVendorPath)) {
         Write-Host "Updating wireproxy to $LatestWireproxyVersion..." -ForegroundColor Yellow
         # Pick the Windows amd64 asset. Upstream currently ships wireproxy_windows_amd64.tar.gz
