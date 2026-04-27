@@ -47,8 +47,9 @@ public class ProxyRuleManager : IProxyModule
             // Create default
             _config.Domains["youtube.com"] = new ProxyRule {
                 ForwardReferer = "always",
-                OverrideUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                UsePoTokenProvider = true
+                OverrideUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                // PO tokens are now obtained inside yt-dlp via the bgutil plugin at resolution
+                // time, not at relay time. No per-rule flag is needed here.
             };
             _config.Domains["googlevideo.com"] = new ProxyRule {
                 ForwardReferer = "always",

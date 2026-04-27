@@ -10,7 +10,13 @@ public class ProxyRule
     public string ForwardReferer { get; set; } = "same-origin"; // never, always, same-origin
     public string? OverrideUserAgent { get; set; } = null;
     public bool UseCurlImpersonate { get; set; } = false;
-    public bool UsePoTokenProvider { get; set; } = false;
+    // Note: a `UsePoTokenProvider` flag used to live here. It drove a relay-side branch in
+    // RelayServer that minted PO tokens with a fabricated visitor_data — broken by design,
+    // because YouTube binds tokens to the visitor_data the request is made with, and ours
+    // didn't match yt-dlp's. The working PO path is now inside yt-dlp via the bgutil plugin
+    // (ResolutionEngine.BuildBgutilPluginArgs). Existing proxy-rules.json files that still
+    // contain the field are tolerated by JSON deserialization and lose the value on the next
+    // save — there is no UI surface for it.
 
     // Additional static headers injected onto every relayed request for this rule. Applied AFTER
     // header forwarding and UA override, so values here take precedence. Use an empty-string value

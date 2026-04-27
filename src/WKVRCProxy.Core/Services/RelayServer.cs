@@ -19,7 +19,6 @@ namespace WKVRCProxy.Core.Services;
 [DependsOn(typeof(RelayPortManager), critical: true)]
 [DependsOn(typeof(ProxyRuleManager))]
 [DependsOn(typeof(CurlImpersonateClient))]
-[DependsOn(typeof(PotProviderService))]
 [DependsOn(typeof(BrowserSessionCache))]
 public class RelayServer : IProxyModule, IDisposable
 {
@@ -64,7 +63,6 @@ public class RelayServer : IProxyModule, IDisposable
     private RelayPortManager? _portManager;
     private ProxyRuleManager? _ruleManager;
     private CurlImpersonateClient? _curlClient;
-    private PotProviderService? _potProvider;
     private BrowserSessionCache? _browserSessionCache;
     private SystemEventBus? _eventBus;
     private readonly HttpClient _httpClient = new HttpClient(
@@ -103,7 +101,6 @@ public class RelayServer : IProxyModule, IDisposable
             _portManager = context.GetModule<RelayPortManager>();
             _ruleManager = context.GetModule<ProxyRuleManager>();
             _curlClient = context.GetModule<CurlImpersonateClient>();
-            _potProvider = context.GetModule<PotProviderService>();
             try { _browserSessionCache = context.GetModule<BrowserSessionCache>(); } catch { /* optional — may not be registered if browser-extract disabled */ }
             _eventBus = context.EventBus;
 
@@ -263,16 +260,15 @@ public class RelayServer : IProxyModule, IDisposable
             var uri = new Uri(targetUrl);
             ProxyRule rule = _ruleManager?.GetRuleForDomain(uri.Host) ?? new ProxyRule();
 
-            if (rule.UsePoTokenProvider && _potProvider != null)
-            {
-                string? videoId = System.Web.HttpUtility.ParseQueryString(uri.Query).Get("id") ?? "unknown";
-                string? visitorData = "dummy-visitor-data";
-                string? token = await _potProvider.GetPotTokenAsync(visitorData, videoId);
-                if (!string.IsNullOrEmpty(token))
-                {
-                    targetUrl += (targetUrl.Contains("?") ? "&" : "?") + "pot=" + token;
-                }
-            }
+            // Note: there is intentionally no relay-side PO token injection. The earlier
+            // implementation here minted a PO token with a fabricated visitor_data string and
+            // appended ?pot=<token>, which YouTube rejected because the binding didn't match
+            // yt-dlp's real visitor_data. PO token resolution now happens at request time
+            // inside yt-dlp via the bgutil plugin (see ResolutionEngine.BuildBgutilPluginArgs),
+            // which mints tokens bound to yt-dlp's own visitor_data — the only binding YouTube
+            // actually accepts. Don't reintroduce a relay-side branch here; the regression test
+            // BgutilPluginArgsTests.NeverEmitsManualPoTokenString exists precisely to keep the
+            // old shape from creeping back in.
 
             using var outboundRequest = new HttpRequestMessage(new HttpMethod(context.Request.HttpMethod), targetUrl);
 
