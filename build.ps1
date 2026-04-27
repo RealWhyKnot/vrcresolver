@@ -254,32 +254,52 @@ try {
     }
     if ($Versions.wireproxy -ne $LatestWireproxyVersion -or !(Test-Path $WireproxyVendorPath)) {
         Write-Host "Updating wireproxy to $LatestWireproxyVersion..." -ForegroundColor Yellow
-        # Pick the windows amd64 asset — release naming varies; match broadly.
-        $WpAsset = ($WireproxyRelease.assets | Where-Object { $_.name -match "windows.*amd64" -and $_.name -match "\.zip$" } | Select-Object -First 1)
+        # Pick the Windows amd64 asset. Upstream currently ships wireproxy_windows_amd64.tar.gz
+        # (older releases used .zip; some forks publish a bare .exe). Try formats in that order.
+        $WpAsset = ($WireproxyRelease.assets | Where-Object { $_.name -match "windows.*amd64.*\.tar\.gz$" } | Select-Object -First 1)
+        if (-not $WpAsset) {
+            $WpAsset = ($WireproxyRelease.assets | Where-Object { $_.name -match "windows.*amd64.*\.zip$" } | Select-Object -First 1)
+        }
+        $WpExeAsset = $null
+        if (-not $WpAsset) {
+            $WpExeAsset = ($WireproxyRelease.assets | Where-Object { $_.name -match "windows.*amd64.*\.exe$" } | Select-Object -First 1)
+        }
         if ($WpAsset) {
-            $ZipPath = Join-Path $VendorDir "wireproxy.zip"
-            Invoke-WebRequest -Uri $WpAsset.browser_download_url -OutFile $ZipPath
+            $ArchivePath = Join-Path $VendorDir $WpAsset.name
+            Invoke-WebRequest -Uri $WpAsset.browser_download_url -OutFile $ArchivePath
             $TempExtract = Join-Path $VendorDir "wireproxy_extract"
             if (Test-Path $TempExtract) { Remove-Item -Path $TempExtract -Recurse -Force }
-            Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
-            Remove-Item $ZipPath
-            $WpExtractedExe = Get-ChildItem -Path $TempExtract -Filter "wireproxy*.exe" -Recurse | Select-Object -First 1
-            if ($WpExtractedExe) {
-                Copy-Item -Path $WpExtractedExe.FullName -Destination $WireproxyVendorPath -Force
+            New-Item -ItemType Directory -Path $TempExtract | Out-Null
+            $extractOk = $false
+            if ($WpAsset.name -match "\.tar\.gz$") {
+                # Windows 10 1803+ ships tar.exe (libarchive). It handles .tar.gz natively, no
+                # external dependency. -C sets the working directory; -xzf does extract+gunzip.
+                & tar.exe -xzf $ArchivePath -C $TempExtract
+                $extractOk = ($LASTEXITCODE -eq 0)
+            } else {
+                try { Expand-Archive -Path $ArchivePath -DestinationPath $TempExtract -Force; $extractOk = $true }
+                catch { $extractOk = $false }
+            }
+            Remove-Item $ArchivePath -ErrorAction SilentlyContinue
+            if ($extractOk) {
+                $WpExtractedExe = Get-ChildItem -Path $TempExtract -Filter "wireproxy*.exe" -Recurse | Select-Object -First 1
+                if ($WpExtractedExe) {
+                    Copy-Item -Path $WpExtractedExe.FullName -Destination $WireproxyVendorPath -Force
+                    $Versions.wireproxy = $LatestWireproxyVersion
+                    Write-Host "wireproxy.exe ready ($LatestWireproxyVersion)." -ForegroundColor Green
+                } else {
+                    Write-Host "Warning: no wireproxy*.exe found inside $($WpAsset.name). WARP disabled in this build." -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "Warning: failed to extract $($WpAsset.name). WARP disabled in this build." -ForegroundColor Yellow
             }
             Remove-Item -Path $TempExtract -Recurse -Force -ErrorAction SilentlyContinue
+        } elseif ($WpExeAsset) {
+            Invoke-WebRequest -Uri $WpExeAsset.browser_download_url -OutFile $WireproxyVendorPath
             $Versions.wireproxy = $LatestWireproxyVersion
             Write-Host "wireproxy.exe ready ($LatestWireproxyVersion)." -ForegroundColor Green
         } else {
-            # Some wireproxy releases publish a bare .exe. Try that too.
-            $WpExeAsset = ($WireproxyRelease.assets | Where-Object { $_.name -match "windows.*amd64.*\.exe$" } | Select-Object -First 1)
-            if ($WpExeAsset) {
-                Invoke-WebRequest -Uri $WpExeAsset.browser_download_url -OutFile $WireproxyVendorPath
-                $Versions.wireproxy = $LatestWireproxyVersion
-                Write-Host "wireproxy.exe ready ($LatestWireproxyVersion)." -ForegroundColor Green
-            } else {
-                Write-Host "Warning: wireproxy windows amd64 asset not found in release. WARP disabled in this build." -ForegroundColor Yellow
-            }
+            Write-Host "Warning: no wireproxy windows amd64 asset found in release (looked for .tar.gz, .zip, .exe). WARP disabled in this build." -ForegroundColor Yellow
         }
     } else {
         Write-Host "wireproxy.exe is up-to-date ($LatestWireproxyVersion)." -ForegroundColor Green
@@ -383,8 +403,8 @@ if (Test-Path $StreamlinkVendorDir) {
 }
 
 # WARP (Cloudflare) binaries — ship in tools/warp/ if vendored. Missing binaries cause WarpService
-# to stay Disabled with a warning; no crash. Users who don't want WARP can ignore; users who enable
-# the EnableWarp setting rely on these being present.
+# to stay BinariesMissing with a warning; no crash. The two warp+ strategies in the cold race
+# fail-fast in that state and skip without affecting other resolution paths.
 $WarpToolsDir = Join-Path $ToolsDir "warp"
 if (!(Test-Path $WarpToolsDir)) { New-Item -ItemType Directory $WarpToolsDir | Out-Null }
 if (Test-Path (Join-Path $VendorDir "wireproxy.exe")) {
