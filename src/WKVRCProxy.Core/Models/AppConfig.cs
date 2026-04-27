@@ -63,11 +63,8 @@ public class AppConfig
     [JsonPropertyName("enableRelayBypass")]
     public bool EnableRelayBypass { get; set; } = true;
 
-    // WARP strategy variants are off by default — they require wireproxy + a one-time wgcf account
-    // registration, and most users don't need them. Users opt in by toggling them on in the
-    // Strategy Panel (which removes them from this list).
     [JsonPropertyName("disabledTiers")]
-    public List<string> DisabledTiers { get; set; } = new() { "tier1:warp+default", "tier1:warp+vrchat-ua" };
+    public List<string> DisabledTiers { get; set; } = new();
 
     [JsonPropertyName("enableTierMemory")]
     public bool EnableTierMemory { get; set; } = true;

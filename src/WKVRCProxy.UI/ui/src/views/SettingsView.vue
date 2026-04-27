@@ -94,8 +94,8 @@ const STRATEGY_CATALOG: Record<string, StrategyDescriptor[]> = {
     { name: 'tier1:impersonate-only', label: 'Impersonate only', description: "Real-browser TLS fingerprint with no extra YouTube tokens. For sites that flag the standard token fetch but accept normal-looking browser traffic." },
     { name: 'tier1:plain',            label: 'Plain',            description: 'Bare yt-dlp, no impersonation, no tokens. Kept as a last-resort sanity check.' },
     { name: 'tier1:browser-extract',  label: 'Browser extract',  description: "Spins up a headless Edge/Chrome to handle sites that need full JavaScript. Used when yt-dlp can't crack the page on its own." },
-    { name: 'tier1:warp+default',     label: 'Default via WARP',  description: 'Same as Default, but routes the request through Cloudflare WARP first. Useful when the host blocks or rate-limits your home IP. Off by default — first run starts a local WireGuard helper.' },
-    { name: 'tier1:warp+vrchat-ua',   label: 'VRChat UA via WARP',description: 'Same as VRChat UA, but via Cloudflare WARP. Off by default; combines the in-game UA with a different egress IP.' },
+    { name: 'tier1:warp+default',     label: 'Default via WARP',  description: 'Same as Default, but routes the request through Cloudflare WARP first so the host sees a different IP. The WireGuard helper starts on first use.' },
+    { name: 'tier1:warp+vrchat-ua',   label: 'VRChat UA via WARP',description: "Same as VRChat UA, but via Cloudflare WARP. Combines the in-game User-Agent with a different egress IP for hosts that gate on both." },
   ],
   'Cloud (Tier 2)': [
     { name: 'tier2:cloud-whyknot',    label: 'WhyKnot.dev cloud', description: 'Hands resolution off to the WhyKnot.dev resolver. Useful when your local IP is rate-limited and you need to hit YouTube from somewhere else.' },

@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
 using System.Text;
@@ -195,6 +197,11 @@ public class WarpService : IProxyModule, IDisposable
                     Status = WarpStatus.Running;
                     StatusDetail = "SOCKS5 listening on 127.0.0.1:" + SocksPort + ".";
                     _logger?.Success("[Warp] WARP active — " + StatusDetail);
+                    // Confirm the SOCKS proxy actually masks the egress IP. Runs synchronously here
+                    // so the result lands in the log next to the "WARP active" line — useful when
+                    // diagnosing "is WARP really doing anything?" sessions. Failures are logged but
+                    // don't undo Running status: a Cloudflare outage shouldn't make WARP look broken.
+                    await VerifyEgressAsync();
                     return true;
                 }
             }
@@ -210,6 +217,53 @@ public class WarpService : IProxyModule, IDisposable
             StatusDetail = "Start failed: " + ex.Message;
             _logger?.Error("[Warp] " + StatusDetail, ex);
             return false;
+        }
+    }
+
+    // Confirm the SOCKS proxy is actually routing through WARP — not just locally listening.
+    // Hits Cloudflare's cdn-cgi/trace endpoint (plaintext key=value) via the SOCKS5 proxy and
+    // checks the `warp=` field. `on` or `plus` means we're going through the WARP edge; `off`
+    // means the request reached Cloudflare but bypassed WARP, which would defeat the whole point
+    // of these strategies. Logged at SUCCESS on confirmation, WARNING otherwise. Network errors
+    // don't fail WARP — Cloudflare being unreachable shouldn't shadow a working WG tunnel.
+    private async Task VerifyEgressAsync()
+    {
+        const string TraceUrl = "https://www.cloudflare.com/cdn-cgi/trace";
+        try
+        {
+            using var handler = new SocketsHttpHandler
+            {
+                Proxy = new WebProxy(SocksProxyUrl),
+                UseProxy = true,
+                ConnectTimeout = TimeSpan.FromSeconds(5),
+            };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+            string body = await client.GetStringAsync(TraceUrl);
+
+            string ip = "?", warpField = "?", loc = "?";
+            foreach (var line in body.Split('\n'))
+            {
+                int eq = line.IndexOf('=');
+                if (eq <= 0) continue;
+                string k = line.Substring(0, eq);
+                string v = line.Substring(eq + 1).Trim();
+                if (k == "ip") ip = v;
+                else if (k == "warp") warpField = v;
+                else if (k == "loc") loc = v;
+            }
+
+            if (warpField is "on" or "plus")
+            {
+                _logger?.Success("[Warp] Egress verified — outbound IP " + ip + " (" + loc + "), warp=" + warpField + ". Strategies routing through WARP will mask your real address.");
+            }
+            else
+            {
+                _logger?.Warning("[Warp] Egress check returned warp=" + warpField + " (IP " + ip + ", " + loc + "). Traffic is reaching Cloudflare but NOT through the WARP edge — your real IP may be exposed if a WARP strategy runs.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.Warning("[Warp] Could not verify egress (couldn't reach " + TraceUrl + " through SOCKS5): " + ex.Message + ". WARP may still be working — this just couldn't confirm.");
         }
     }
 
