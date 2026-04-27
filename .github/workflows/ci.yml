@@ -28,11 +28,15 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # Target the test project explicitly. The repo's WKVRCProxy.slnx
+      # intentionally excludes HlsTests (and the harness), so restoring
+      # the solution leaves the tests un-restored. Restoring the test
+      # project pulls Core in via ProjectReference.
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore src/WKVRCProxy.HlsTests
 
-      - name: Build
-        run: dotnet build --configuration Release --no-restore
+      - name: Build tests
+        run: dotnet build src/WKVRCProxy.HlsTests --configuration Release --no-restore
 
       - name: Test
         run: dotnet test src/WKVRCProxy.HlsTests --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
