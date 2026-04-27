@@ -6,8 +6,6 @@ const appStore = useAppStore()
 
 const active = computed(() => {
   if (appStore.status.stats.activeCount > 0) return true
-  if (appStore.cloudResolveStatus === 'resolving') return true
-  if (appStore.p2pShareStatus === 'connecting') return true
   const yt = appStore.ytDlpUpdate.status
   if (yt === 'Checking' || yt === 'Downloading') return true
   return false

@@ -211,7 +211,6 @@ partial class Program
                             _settings.Config.MaskIp = newConfig.MaskIp;
                             _settings.Config.EnableAnonymousReporting = newConfig.EnableAnonymousReporting;
                             _settings.Config.AnonymousReportingPromptAnswered = newConfig.AnonymousReportingPromptAnswered;
-                            _settings.Config.EnableWebsiteTab = newConfig.EnableWebsiteTab;
                             _settings.Config.UserOverriddenKeys = newConfig.UserOverriddenKeys ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                             _settings.Save();
 
@@ -283,50 +282,8 @@ partial class Program
                         }
                     });
                     break;
-                case "START_P2P_SHARE":
-                    if (root.TryGetProperty("data", out var shareData)) {
-                        string shareUrl = shareData.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? "" : "";
-                        if (!string.IsNullOrEmpty(shareUrl)) {
-                            Task.Run(async () => {
-                                // Resolve the user's URL through the tier cascade first so the P2P relay
-                                // sees a direct media URL (not a YouTube watch page).
-                                string? resolved = await (_resEngine?.ResolveForShareAsync(shareUrl, "AVPro", "P2PShare")
-                                                          ?? Task.FromResult<string?>(null));
-                                if (string.IsNullOrEmpty(resolved)) {
-                                    SendToUi("P2P_SHARE_ERROR", new { message = "Failed to resolve URL through tier cascade." });
-                                    return;
-                                }
-                                if (_shareService != null) await _shareService.StartAsync(resolved);
-                            });
-                        }
-                    }
-                    break;
-                case "STOP_P2P_SHARE":
-                    _shareService?.Stop();
-                    break;
-                case "REQUEST_CLOUD_RESOLVE":
-                    if (root.TryGetProperty("data", out var cloudData)) {
-                        string cloudUrl = cloudData.TryGetProperty("url", out var cuEl) ? cuEl.GetString() ?? "" : "";
-                        if (!string.IsNullOrEmpty(cloudUrl)) {
-                            Task.Run(async () => {
-                                string? resolved = await (_resEngine?.ResolveForShareAsync(cloudUrl, "AVPro", "CloudShare")
-                                                          ?? Task.FromResult<string?>(null));
-                                if (string.IsNullOrEmpty(resolved)) {
-                                    SendToUi("CLOUD_RESOLVE_RESULT", new { success = false, message = "Failed to resolve URL through tier cascade." });
-                                    return;
-                                }
-                                // Find the history entry we just created to surface resolution + tier info
-                                var entry = _settings?.Config.History.Count > 0 ? _settings.Config.History[0] : null;
-                                SendToUi("CLOUD_RESOLVE_RESULT", new {
-                                    success = true,
-                                    url = resolved,
-                                    tier = entry?.Tier,
-                                    height = entry?.ResolutionHeight,
-                                    width = entry?.ResolutionWidth
-                                });
-                            });
-                        }
-                    }
+                case "WEBSITE_BRIDGE":
+                    HandleWebsiteBridge(root);
                     break;
                 case "GET_HEALTH":
                     if (_coordinator != null)

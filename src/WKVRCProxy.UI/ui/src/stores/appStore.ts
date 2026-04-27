@@ -92,24 +92,11 @@ export const useAppStore = defineStore('app', () => {
     downloadBundledChromium: false,
     streamlinkDisableTwitchAds: false,
     enableRelaySmoothnessDebug: true,
-    enableWebsiteTab: false,
   })
-  
+
   const showHostsPrompt = ref(false)
   const relayEvents = ref<RelayEvent[]>([])
 
-  // P2P Share state
-  const p2pShareStatus = ref<'idle' | 'connecting' | 'active' | 'error'>('idle')
-  const p2pSharePublicUrl = ref('')
-  const p2pShareError = ref('')
-
-  // Cloud Resolve state (for Share panel — resolves user-pasted URLs to direct CDN URL)
-  const cloudResolveStatus = ref<'idle' | 'resolving' | 'ready' | 'error'>('idle')
-  const cloudResolvedUrl = ref('')
-  const cloudResolveTier = ref('')
-  const cloudResolveHeight = ref<number | null>(null)
-  const cloudResolveError = ref('')
-  
   const isBridgeReady = ref(false)
   const version = ref('2026.4.27.14-A130')
 
@@ -276,36 +263,12 @@ export const useAppStore = defineStore('app', () => {
           reportingOptInPreview.value = (inner.data?.preview ?? '') as string
           showReportingOptInPrompt.value = true
         }
-      } else if (parsed.type === 'P2P_SHARE_STARTED') {
-        p2pShareStatus.value = 'active'
-        p2pSharePublicUrl.value = parsed.data?.publicUrl ?? ''
-        enqueueToast({ variant: 'success', title: 'Stream active', message: 'Share link ready to copy.' })
-      } else if (parsed.type === 'P2P_SHARE_STOPPED') {
-        p2pShareStatus.value = 'idle'
-        p2pSharePublicUrl.value = ''
-      } else if (parsed.type === 'P2P_SHARE_ERROR') {
-        p2pShareStatus.value = 'error'
-        p2pShareError.value = parsed.data?.message ?? 'Unknown error'
-        enqueueToast({ variant: 'error', title: 'Stream failed', message: p2pShareError.value, timeoutMs: 6000 })
-      } else if (parsed.type === 'CLOUD_RESOLVE_RESULT') {
-        if (parsed.data?.success) {
-          cloudResolveStatus.value = 'ready'
-          cloudResolvedUrl.value = parsed.data.url ?? ''
-          cloudResolveTier.value = parsed.data.tier ?? ''
-          cloudResolveHeight.value = parsed.data.height ?? null
-          cloudResolveError.value = ''
-          const height = cloudResolveHeight.value
-          const tier = cloudResolveTier.value
-          enqueueToast({
-            variant: 'success',
-            title: 'Resolved',
-            message: [tier && tier.toUpperCase(), height && `${height}p`].filter(Boolean).join(' · ') || undefined
-          })
-        } else {
-          cloudResolveStatus.value = 'error'
-          cloudResolveError.value = parsed.data?.message ?? 'Resolve failed'
-          enqueueToast({ variant: 'error', title: 'Resolve failed', message: cloudResolveError.value, timeoutMs: 6000 })
-        }
+      } else if (parsed.type === 'WEBSITE_BRIDGE_RESPONSE') {
+        // Emitted by Program.WebsiteBridge.cs after handling a wkBridge call from the
+        // embedded site. WebsiteView.vue listens for this DOM event and routes the response
+        // back to the iframe that initiated the request. Routed via DOM event (not a Pinia
+        // ref) so a transient response payload doesn't pollute store state.
+        window.dispatchEvent(new CustomEvent('wkBridgeResponse', { detail: parsed.data }))
       } else if (parsed.type === 'RELAY_EVENT') {
         const e = parsed.data as RelayEvent;
         const idx = relayEvents.value.findIndex(x => x.id === e.id);
@@ -460,33 +423,6 @@ export const useAppStore = defineStore('app', () => {
     logs.value = []
   }
 
-  function startP2PShare(url: string) {
-    p2pShareStatus.value = 'connecting'
-    p2pShareError.value = ''
-    sendMessage('START_P2P_SHARE', { url })
-  }
-
-  function stopP2PShare() {
-    sendMessage('STOP_P2P_SHARE')
-  }
-
-  function requestCloudResolve(url: string) {
-    cloudResolveStatus.value = 'resolving'
-    cloudResolvedUrl.value = ''
-    cloudResolveTier.value = ''
-    cloudResolveHeight.value = null
-    cloudResolveError.value = ''
-    sendMessage('REQUEST_CLOUD_RESOLVE', { url })
-  }
-
-  function resetCloudResolve() {
-    cloudResolveStatus.value = 'idle'
-    cloudResolvedUrl.value = ''
-    cloudResolveTier.value = ''
-    cloudResolveHeight.value = null
-    cloudResolveError.value = ''
-  }
-
   function refreshBypassMemory() {
     sendMessage('GET_BYPASS_MEMORY')
   }
@@ -602,18 +538,6 @@ export const useAppStore = defineStore('app', () => {
     totalBytesTransferred,
     clearHistory,
     clearLogs,
-    p2pShareStatus,
-    p2pSharePublicUrl,
-    p2pShareError,
-    startP2PShare,
-    stopP2PShare,
-    cloudResolveStatus,
-    cloudResolvedUrl,
-    cloudResolveTier,
-    cloudResolveHeight,
-    cloudResolveError,
-    requestCloudResolve,
-    resetCloudResolve,
     bypassMemory,
     ytDlpUpdate,
     appUpdate,

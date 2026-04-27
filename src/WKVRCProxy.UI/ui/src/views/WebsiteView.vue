@@ -1,25 +1,53 @@
 <script setup lang="ts">
-// PoC: frame whyknot.dev inside the program window. Dark by default behind
-// `enableWebsiteTab` in app_config.json. Phase 1 has no native bridge — the iframe
-// is a passive embed validating that WebView2 will frame a remote HTTPS origin from
-// a file:// parent and that the iframe's own /mesh WebSocket connects.
+// Frame whyknot.dev inside the program window. The Website tab is unconditionally rendered
+// (no flag); the embedded site is the canonical surface for share/upload/browse flows.
 //
-// See docs/embed-website/DESIGN.md for the full design and Phase 2 bridge spec.
-import { ref, computed } from 'vue'
+// Native bridge: the iframe at https://whyknot.dev posts
+//   { type: 'wkBridge', method, requestId, args }
+// to its parent. We validate event.origin against EMBED_ORIGIN, then forward to the host
+// via the existing photino IPC as `WEBSITE_BRIDGE`. The host responds with
+// `WEBSITE_BRIDGE_RESPONSE` carrying { requestId, ok, data?, error? }; we route that back to
+// the iframe via iframe.contentWindow.postMessage with EMBED_ORIGIN as the explicit
+// targetOrigin.
+//
+// Allowlist (host-enforced too — see Program.WebsiteBridge.cs): PICK_FILE,
+// COPY_TO_CLIPBOARD, OPEN_IN_BROWSER, GET_HISTORY, GET_VERSION, GET_LAST_LINK.
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useAppStore } from '../stores/appStore'
 
 const appStore = useAppStore()
 
 const WEBSITE_URL = 'https://whyknot.dev'
+const EMBED_ORIGIN = 'https://whyknot.dev'
+// Vite dev server origin — only honoured when the UI was built in dev mode (import.meta.env.DEV
+// is replaced by the bundler at build time, so production builds reject this origin).
+const DEV_ORIGIN = 'http://localhost:5173'
+const ALLOWED_METHODS = new Set([
+  'PICK_FILE',
+  'COPY_TO_CLIPBOARD',
+  'OPEN_IN_BROWSER',
+  'GET_HISTORY',
+  'GET_VERSION',
+  'GET_LAST_LINK',
+])
 
-// Track loading state: WebView2 fires `load` when the frame finishes; if it errors at
-// the network layer (offline, DNS failure, TLS), `load` never fires and we'd be stuck
-// on the spinner. A short timeout flips us to an error state with a retry path.
+function isAllowedOrigin(origin: string): boolean {
+  if (origin === EMBED_ORIGIN) return true
+  if (import.meta.env.DEV && origin === DEV_ORIGIN) return true
+  return false
+}
+
 const status = ref<'loading' | 'ready' | 'error'>('loading')
 const iframeKey = ref(0)
 const errorMessage = ref('')
 
 let loadTimer: number | undefined
+
+// In-flight bridge requests this view forwarded to the host. Used to filter
+// WEBSITE_BRIDGE_RESPONSE messages back to the originating iframe contentWindow.
+const pendingRequests = new Map<string, { source: Window; sourceOrigin: string }>()
+// One-shot warning per (origin, method) so a misbehaving page can't flood the console.
+const warnedRejections = new Set<string>()
 
 function armLoadTimer() {
   if (loadTimer) window.clearTimeout(loadTimer)
@@ -40,6 +68,7 @@ function onIframeLoad() {
 function reload() {
   status.value = 'loading'
   errorMessage.value = ''
+  pendingRequests.clear()
   iframeKey.value++
   armLoadTimer()
 }
@@ -56,6 +85,80 @@ const statusLabel = computed(() => {
     case 'ready':   return 'Live'
     case 'error':   return 'Offline'
   }
+})
+
+function handleBridgeMessage(event: MessageEvent) {
+  // Origin guard FIRST — anything outside the allowlist is dropped before we even look at
+  // the payload shape, so a foreign window can't probe our protocol.
+  if (!isAllowedOrigin(event.origin)) return
+  const data = event.data
+  if (!data || typeof data !== 'object') return
+  if (data.type !== 'wkBridge') return
+
+  const method = typeof data.method === 'string' ? data.method : ''
+  const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+  const args = data.args ?? {}
+
+  if (!ALLOWED_METHODS.has(method)) {
+    const key = event.origin + '|' + method
+    if (!warnedRejections.has(key)) {
+      warnedRejections.add(key)
+      console.warn('[wkBridge] rejected method', method, 'from', event.origin)
+    }
+    if (requestId && event.source) {
+      try {
+        ;(event.source as Window).postMessage(
+          { type: 'wkBridge', requestId, ok: false, error: 'method not allowed' },
+          event.origin as any,
+        )
+      } catch { /* best-effort reply */ }
+    }
+    return
+  }
+
+  if (requestId && event.source instanceof Window) {
+    pendingRequests.set(requestId, { source: event.source, sourceOrigin: event.origin })
+  }
+
+  appStore.sendMessage('WEBSITE_BRIDGE', { method, requestId, args })
+}
+
+function handleHostResponse(event: Event) {
+  const payload = (event as CustomEvent).detail
+  if (!payload || typeof payload !== 'object') return
+  const requestId = typeof payload.requestId === 'string' ? payload.requestId : ''
+  if (!requestId) return
+  const pending = pendingRequests.get(requestId)
+  if (!pending) return
+  pendingRequests.delete(requestId)
+  try {
+    pending.source.postMessage(
+      {
+        type: 'wkBridge',
+        requestId,
+        ok: !!payload.ok,
+        data: payload.data,
+        error: payload.error,
+      },
+      pending.sourceOrigin as any,
+    )
+  } catch (e) {
+    console.warn('[wkBridge] failed to deliver response to iframe:', e)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('message', handleBridgeMessage)
+  // appStore.handleMessage re-emits WEBSITE_BRIDGE_RESPONSE as a DOM event so this view
+  // can route it back to the right iframe contentWindow without owning the photino bridge.
+  window.addEventListener('wkBridgeResponse', handleHostResponse)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('message', handleBridgeMessage)
+  window.removeEventListener('wkBridgeResponse', handleHostResponse)
+  if (loadTimer) window.clearTimeout(loadTimer)
+  pendingRequests.clear()
 })
 </script>
 

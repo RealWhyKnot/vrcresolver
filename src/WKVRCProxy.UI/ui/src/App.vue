@@ -12,12 +12,10 @@ import ActivityBar from './components/ActivityBar.vue'
 import DashboardView from './views/DashboardView.vue'
 import HistoryView from './views/HistoryView.vue'
 import BypassView from './views/BypassView.vue'
-import ShareView from './views/ShareView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import RelayView from './views/RelayView.vue'
-// Lazy: pulls no extra deps but keeps the iframe subtree out of cold-start until the user
-// (a) flips enableWebsiteTab, AND (b) actually navigates to the tab. Default behavior unchanged.
+// Lazy: keeps the iframe subtree out of cold-start until the user actually navigates to it.
 const WebsiteView = defineAsyncComponent(() => import('./views/WebsiteView.vue'))
 
 const appStore = useAppStore()
@@ -316,10 +314,9 @@ onMounted(() => {
             <DashboardView v-if="appStore.activeTab === 'dashboard'" />
             <HistoryView v-if="appStore.activeTab === 'history'" />
             <BypassView v-if="appStore.activeTab === 'bypass'" />
-            <ShareView v-if="appStore.activeTab === 'share'" />
             <RelayView v-if="appStore.activeTab === 'relay'" />
             <LogsView v-if="appStore.activeTab === 'logs'" />
-            <WebsiteView v-if="appStore.activeTab === 'website' && appStore.config.enableWebsiteTab" />
+            <WebsiteView v-if="appStore.activeTab === 'website'" />
             <SettingsView v-if="appStore.activeTab === 'settings'" />
           </div>
         </transition>

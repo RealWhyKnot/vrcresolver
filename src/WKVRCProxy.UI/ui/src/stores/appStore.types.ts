@@ -88,9 +88,6 @@ export interface AppConfig {
   downloadBundledChromium: boolean;
   streamlinkDisableTwitchAds: boolean;
   enableRelaySmoothnessDebug: boolean;
-  // PoC flag: shows a "Website" tab that iframes https://whyknot.dev. Dark by default;
-  // flip to true in app_config.json. Design lives in docs/embed-website/.
-  enableWebsiteTab: boolean;
 }
 
 // Canonical default StrategyPriority list, mirrored from StrategyDefaults.PriorityDefaults

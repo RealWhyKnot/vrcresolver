@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// Small colored badge. Replaces inline pill markup that appears in ShareView,
-// BypassView, DashboardView, HistoryView, etc. — each previously inlined its own
-// color logic and Tailwind class blob.
+// Small colored badge. Replaces inline pill markup across BypassView, DashboardView,
+// HistoryView, etc. — each previously inlined its own color logic and Tailwind class blob.
 
 const props = defineProps<{
   tone?: 'success' | 'warn' | 'danger' | 'neutral' | 'info' | 'live'

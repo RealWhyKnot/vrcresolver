@@ -33,7 +33,6 @@ partial class Program
     private static SettingsManager? _settings;
     private static Logger? _logger;
     private static ModuleCoordinator? _coordinator;
-    private static WhyKnotShareService? _shareService;
     private static ResolutionEngine? _resEngine;
     private static ReportingService? _reportingService;
     private static BrowserExtractService? _browserExtractor;
@@ -222,18 +221,6 @@ partial class Program
                     _logger?.Warning("RelayEvent send to UI failed: " + ex.Message, ex);
                 }
             }
-        };
-
-        _shareService = new WhyKnotShareService(_logger);
-
-        _shareService.OnPublicUrlReady += (publicUrl) => {
-            SendToUi("P2P_SHARE_STARTED", new { publicUrl });
-        };
-        _shareService.OnStopped += () => {
-            SendToUi("P2P_SHARE_STOPPED", null);
-        };
-        _shareService.OnError += (message) => {
-            SendToUi("P2P_SHARE_ERROR", new { message });
         };
 
         // Anonymous reporting: opt-in, fires on end-of-cascade failure, sanitizes everything
@@ -455,7 +442,6 @@ partial class Program
         try { _resEngine?.StrategyMemory.Flush(); }
         catch (Exception ex) { _logger?.Warning("StrategyMemory flush failed on shutdown: " + ex.Message); }
 
-        _shareService?.Dispose();
         _browserExtractor?.Dispose();
         _coordinator?.Dispose();
 
