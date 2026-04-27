@@ -42,7 +42,7 @@ WKVRCProxy.Core/        The engine. Referenced by UI + Redirector.
  │   ├── PotProviderService.cs    bgutil PO-token sidecar
  │   ├── BgutilPluginUpdater.cs   live updates the yt-dlp bgutil plugin
  │   ├── BrowserExtractService.cs Puppeteer-based JS-challenge bypass
- │   ├── WarpService.cs           optional Cloudflare WARP SOCKS5
+ │   ├── WarpService.cs           Cloudflare WARP SOCKS5 (lazy-started; powers the warp+ strategies)
  │   ├── CurlImpersonateClient.cs real-Chrome TLS fingerprint probe/fetch
  │   ├── Tier2WebSocketClient.cs  cloud resolver (WhyKnot.dev)
  │   └── …
@@ -55,7 +55,7 @@ WKVRCProxy.Redirector/  Tiny wrapper yt-dlp-replacement. VRChat's yt-dlp.exe
                         is patched to call this; it marshals the request into
                         WKVRCProxy's IPC and returns the resolved URL.
 
-WKVRCProxy.HlsTests/    xUnit suite (124 tests).
+WKVRCProxy.HlsTests/    xUnit suite (131 tests).
 WKVRCProxy.TestHarness/ Standalone scenario runner for local exploration.
 ```
 
@@ -104,7 +104,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 
 What the script does:
 
-1. Vendors third-party tools into `vendor/` on first run, cached by version: `yt-dlp.exe`, `deno.exe`, `curl-impersonate-win.exe`, `streamlink`, `warp` (wgcf + wireproxy), and the compiled `bgutil-ytdlp-pot-provider.exe` sidecar. Subsequent builds only re-fetch when the pinned version in `vendor/versions.json` lags upstream.
+1. Vendors third-party tools into `vendor/` on first run, cached by version: `yt-dlp.exe`, `deno.exe`, `curl-impersonate-win.exe`, `streamlink`, `warp` (wgcf + wireproxy), and the compiled `bgutil-ytdlp-pot-provider.exe` sidecar. Subsequent builds skip the network entirely for any binary whose pinned version in `vendor/versions.json` matches upstream and whose vendor file still exists; offline builds fall back to the cached binary.
 2. Builds the Vue UI (`vite build`) into `src/WKVRCProxy.UI/wwwroot/`.
 3. Publishes `WKVRCProxy.UI` (win-x64, self-contained) and `WKVRCProxy.Redirector` to `dist/`.
 4. Stamps `dist/version.txt` and the embedded assembly version with `YYYY.M.D.N-HASH`.
@@ -132,7 +132,7 @@ The Vite dev server is only useful for pure UI work — it doesn't have the Phot
 dotnet build
 dotnet run --project src/WKVRCProxy.UI
 
-# Tests (xUnit, 124 tests)
+# Tests (xUnit, 131 tests)
 dotnet test src/WKVRCProxy.HlsTests
 
 # Standalone scenario runner
@@ -166,14 +166,16 @@ Runtime state lives next to the exe — for dev runs that's `src/WKVRCProxy.UI/b
 
 Runtime knobs live under **Settings → Network**:
 - **Pre-Flight URL Probe** — verify URLs before handoff (catches dead cloud URLs; adds up to 5s on cold resolve).
-- **Direct-Connect Hosts** — comma-separated deny-list for hosts that need to see traffic coming directly from the in-game player.
+- **Direct-Connect Hosts** — chip-list of hosts (default `vr-m.net`) that need to see traffic coming directly from the in-game player. URLs on these hosts skip both the relay and the resolution cascade.
+
+Cloudflare WARP is wired in as two opt-in resolution strategies (`tier1:warp+default`, `tier1:warp+vrchat-ua`) rather than a global toggle. Toggle them in **Settings → Advanced — Individual Strategies**. The first run starts a local WireGuard helper (`wgcf` registers an account once, then `wireproxy` exposes a SOCKS5 listener); subsequent invocations are zero-cost. After WARP comes up, `WarpService.VerifyEgressAsync` hits Cloudflare's `cdn-cgi/trace` through the SOCKS5 proxy to confirm `warp=on` and logs the egress IP — useful for confirming your real address is masked before any strategy actually uses the path.
 
 ## Contributing
 
 1. Fork, branch off `main`.
 2. `dotnet test` must pass; add tests for behavior changes.
 3. Keep the rationale in comments where non-obvious — the `=== WHY WE WRAP ===` block in `ResolutionEngine.cs` is the template.
-4. Run `powershell -File build.ps1` at least once before PR to confirm the full pipeline builds.
+4. Run `powershell -File build.ps1` at least once before PR to confirm the full pipeline builds. The build script also flips `git config core.hooksPath = .githooks` once, which activates `.githooks/commit-msg` — a small bash hook that rejects commit subjects containing more than one `(YYYY.M.D.N-XXXX)` build-version stamp (a common editor-template autocompletion footgun).
 
 Code style follows the surrounding file. The project deliberately avoids heavy abstraction layers — a new feature usually means extending an existing service, not introducing a new one.
 
