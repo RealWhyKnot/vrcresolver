@@ -31,6 +31,7 @@ internal static class Program
         {
             string installDir = ParseArg(args, "--install-dir") ?? AppDomain.CurrentDomain.BaseDirectory;
             installDir = Path.GetFullPath(installDir.TrimEnd('\\', '/'));
+            bool fromTemp = HasFlag(args, "--from-temp");
             string logPath = Path.Combine(installDir, "updater.log");
 
             void Log(string msg)
@@ -48,6 +49,50 @@ internal static class Program
                 Log("ERROR: WKVRCProxy.exe not found in install dir. Refusing to update an unrelated folder.");
                 Pause();
                 return 2;
+            }
+
+            // Self-relaunch from %TEMP% if we're running from inside the install dir. The atomic
+            // swap below renames the install dir aside (Directory.Move) — Windows refuses if any
+            // file in that dir is currently executing, so an updater.exe living *inside* the dir
+            // it's about to swap fails with ERROR_SHARING_VIOLATION. Symptom: the user sees the
+            // console flash and close, version.txt never updates, and the "Update available"
+            // banner reappears on next launch. Copying ourselves to %TEMP% and re-execing breaks
+            // the lock without changing anything else.
+            string ownExe = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+            string ownDir = Path.GetDirectoryName(ownExe) ?? "";
+            bool runningFromInstallDir = !string.IsNullOrEmpty(ownDir)
+                && string.Equals(Path.GetFullPath(ownDir).TrimEnd('\\', '/'),
+                                 installDir, StringComparison.OrdinalIgnoreCase);
+            if (runningFromInstallDir && !fromTemp)
+            {
+                string tempCopy = Path.Combine(Path.GetTempPath(),
+                    "WKVRCProxy-updater-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
+                Log("Running from inside install dir; relaunching from " + tempCopy + " to release file lock.");
+                try { File.Copy(ownExe, tempCopy, overwrite: true); }
+                catch (Exception cex)
+                {
+                    Log("ERROR: Could not copy self to temp: " + cex.Message);
+                    Pause();
+                    return 10;
+                }
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = tempCopy,
+                        Arguments = "--install-dir \"" + installDir + "\" --from-temp",
+                        UseShellExecute = true,
+                        WorkingDirectory = Path.GetTempPath()
+                    });
+                }
+                catch (Exception sex)
+                {
+                    Log("ERROR: Could not exec temp copy: " + sex.Message);
+                    Pause();
+                    return 11;
+                }
+                // Original process exits cleanly so the install-dir file lock drops.
+                return 0;
             }
 
             string currentVersion = ReadVersionFile(installDir);
@@ -116,14 +161,20 @@ internal static class Program
                 Pause();
                 return 5;
             }
+            string assetUrlFinal = assetUrl!;
+            string assetNameFinal = assetName!;
             Log("Found asset: " + assetName);
 
             // Wait for the running app to exit (release file locks). The single-instance mutex is
             // held for the lifetime of WKVRCProxy.exe, so being able to acquire it = app is gone.
+            // When we self-relaunched from %TEMP%, the original updater (still inside the install
+            // dir) just exited, but Windows takes a moment to fully release the .exe handle —
+            // give the wait an extra few seconds in that case.
             Log("Waiting for WKVRCProxy.exe to exit...");
-            if (!await WaitForAppExit(TimeSpan.FromSeconds(30)))
+            var waitTimeout = fromTemp ? TimeSpan.FromSeconds(45) : TimeSpan.FromSeconds(30);
+            if (!await WaitForAppExit(waitTimeout))
             {
-                Log("ERROR: WKVRCProxy is still running after 30 seconds. Close it and re-run the updater.");
+                Log("ERROR: WKVRCProxy is still running after " + waitTimeout.TotalSeconds + " seconds. Close it and re-run the updater.");
                 Pause();
                 return 6;
             }
@@ -136,8 +187,8 @@ internal static class Program
 
             try
             {
-                Log("Downloading " + assetName + "...");
-                await DownloadWithProgress(http, assetUrl!, zipPath, Log);
+                Log("Downloading " + assetNameFinal + "...");
+                await DownloadWithProgress(http, assetUrlFinal, zipPath, Log);
 
                 // Optional SHA256 verification: release notes can contain a "SHA256: <hex>" line.
                 string? expectedSha = ExtractSha256(body);
@@ -148,6 +199,7 @@ internal static class Program
                     if (!string.Equals(actual, expectedSha, StringComparison.OrdinalIgnoreCase))
                     {
                         Log("ERROR: SHA256 mismatch. Expected " + expectedSha + " got " + actual + ". Aborting.");
+                        Pause();
                         return 7;
                     }
                     Log("SHA256 OK.");
@@ -165,6 +217,7 @@ internal static class Program
                 if (!File.Exists(Path.Combine(payloadDir, "WKVRCProxy.exe")))
                 {
                     Log("ERROR: Extracted payload doesn't contain WKVRCProxy.exe at the expected location.");
+                    Pause();
                     return 8;
                 }
 
@@ -172,6 +225,9 @@ internal static class Program
                 // %LOCALAPPDATA%\WKVRCProxy\ lives outside the install dir so user data is safe.
                 string oldDir = installDir + ".old-" + DateTime.Now.ToString("yyyyMMddHHmmss");
                 Log("Swapping install dir...");
+
+                string? releasePageUrl = null;
+                if (root.TryGetProperty("html_url", out var hu)) releasePageUrl = hu.GetString();
 
                 bool didMoveOld = false;
                 try
@@ -185,8 +241,19 @@ internal static class Program
                     Log("ERROR during swap: " + ex.Message);
                     if (didMoveOld && !Directory.Exists(installDir))
                     {
-                        try { Directory.Move(oldDir, installDir); Log("Rolled back to previous install."); }
-                        catch (Exception rb) { Log("ROLLBACK FAILED: " + rb.Message + ". Old install preserved at: " + oldDir); }
+                        try { Directory.Move(oldDir, installDir); Log("Rolled back to previous install."); Pause(); }
+                        catch (Exception rb)
+                        {
+                            // Catastrophic: the install dir is gone AND the rollback couldn't put
+                            // it back. The user's WKVRCProxy is effectively uninstalled. Show the
+                            // big scary banner with concrete recovery steps so the user doesn't
+                            // assume the update succeeded when it has actually wiped their app.
+                            ShowCatastrophicFailureScreen(oldDir, releasePageUrl, rb.Message, Log);
+                        }
+                    }
+                    else
+                    {
+                        Pause();
                     }
                     return 9;
                 }
@@ -217,6 +284,60 @@ internal static class Program
             if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
                 return args[i + 1];
         return null;
+    }
+
+    private static bool HasFlag(string[] args, string name)
+    {
+        foreach (var a in args)
+            if (string.Equals(a, name, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    // The "everything went wrong" screen. Reached when the install dir was renamed aside but the
+    // new payload couldn't be moved into place AND the rollback also failed — the user is left
+    // with no install at the original path, just a backup folder. Big banner, plain language,
+    // explicit recovery steps. Opens the GitHub releases page in the default browser so the
+    // re-download is a single click.
+    private static void ShowCatastrophicFailureScreen(string backupDir, string? releaseUrl, string rollbackError, Action<string> log)
+    {
+        string bar = new string('=', 78);
+        Console.WriteLine();
+        Console.WriteLine(bar);
+        Console.WriteLine(" SOMETHING WENT VERY WRONG");
+        Console.WriteLine(bar);
+        Console.WriteLine();
+        Console.WriteLine(" The automatic update couldn't finish AND the rollback to your previous");
+        Console.WriteLine(" install didn't work either. WKVRCProxy isn't installed at the original");
+        Console.WriteLine(" location right now.");
+        Console.WriteLine();
+        Console.WriteLine(" Your previous install is preserved at:");
+        Console.WriteLine("   " + backupDir);
+        Console.WriteLine();
+        Console.WriteLine(" Recovery — please go download the latest release manually:");
+        if (!string.IsNullOrEmpty(releaseUrl))
+            Console.WriteLine("   " + releaseUrl);
+        else
+            Console.WriteLine("   https://github.com/RealWhyKnot/WKVRCProxy/releases/latest");
+        Console.WriteLine();
+        Console.WriteLine(" Extract the new zip wherever you want WKVRCProxy to live, then copy");
+        Console.WriteLine(" your old data files (app_config.json, strategy_memory.json, etc.) from");
+        Console.WriteLine(" the backup folder above into the fresh install if you want to keep");
+        Console.WriteLine(" your settings.");
+        Console.WriteLine();
+        Console.WriteLine(" Rollback error (for the report): " + rollbackError);
+        Console.WriteLine(bar);
+        Console.WriteLine();
+
+        log("CATASTROPHIC: install dir gone, rollback failed. Backup at " + backupDir);
+
+        // Best-effort: open the releases page in the user's browser. If the user has no default
+        // browser configured, this silently fails — the URL is still printed above.
+        if (!string.IsNullOrEmpty(releaseUrl))
+        {
+            try { Process.Start(new ProcessStartInfo { FileName = releaseUrl, UseShellExecute = true }); }
+            catch { }
+        }
+        Pause();
     }
 
     private static string ReadVersionFile(string installDir)

@@ -134,6 +134,39 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- Sidecar Launch Failure Modal — surfaces when updater.exe / uninstall.exe couldn't be
+         launched (typically Windows installer-detection auto-UAC + user declined, or SmartScreen
+         block). Offers a "force" retry that strips Mark-of-the-Web with Unblock-File and
+         re-launches with Verb=runas for an explicit admin elevation prompt. -->
+    <div v-if="appStore.sidecarError" class="fixed inset-0 z-[96] bg-black/80 flex items-center justify-center backdrop-blur-xl animate-in fade-in duration-300">
+      <div class="bg-[#0a0a0c] border border-white/10 rounded-3xl p-8 max-w-lg shadow-2xl relative overflow-hidden mx-4">
+        <div class="absolute inset-0 bg-gradient-to-br from-amber-500/10 to-transparent pointer-events-none"></div>
+        <div class="relative z-10 space-y-6">
+          <div class="w-12 h-12 bg-amber-500/20 rounded-2xl flex items-center justify-center border border-amber-500/30">
+            <i class="bi bi-shield-exclamation text-amber-400 text-xl"></i>
+          </div>
+          <div>
+            <h2 class="text-xl font-bold mb-2">Windows blocked the {{ appStore.sidecarError.exe }}</h2>
+            <p class="text-white/60 text-sm leading-relaxed">
+              Either SmartScreen flagged it as untrusted or the UAC prompt was dismissed. <span v-if="appStore.sidecarError.canForce">You can retry — we'll unblock the file (removes the SmartScreen mark) and trigger an explicit admin elevation prompt instead of Windows' installer-detection auto-prompt.</span>
+            </p>
+            <p class="text-white/40 text-xs mt-3 italic font-mono border-l-2 border-white/10 pl-3">{{ appStore.sidecarError.message }}</p>
+          </div>
+          <div class="flex flex-col gap-3 pt-2">
+            <button v-if="appStore.sidecarError.canForce && appStore.sidecarError.exe.includes('updater')" @click="appStore.launchUpdaterForce(); appStore.dismissSidecarError()" class="bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2">
+              <i class="bi bi-shield-lock"></i> Retry with admin elevation
+            </button>
+            <button v-else-if="appStore.sidecarError.canForce && appStore.sidecarError.exe.includes('uninstall')" @click="appStore.launchUninstallerForce(); appStore.dismissSidecarError()" class="bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2">
+              <i class="bi bi-shield-lock"></i> Retry with admin elevation
+            </button>
+            <button @click="appStore.dismissSidecarError" class="bg-white/5 hover:bg-white/10 text-white/70 py-3 px-6 rounded-xl transition-all text-sm font-semibold">
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Anonymous Reporting Opt-In Modal — fires the first time end-of-cascade resolution
          fails. Shows the exact sanitized payload that would be sent so the user can verify
          what's transmitted before deciding. -->

@@ -8,6 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>uninstall</AssemblyName>
     <RootNamespace>WKVRCProxy.Uninstaller</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>

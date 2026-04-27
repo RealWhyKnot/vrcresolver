@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    Filename "updater.exe" matches Windows' installer-detection heuristic, which auto-prompts UAC
+    when the binary is launched (regardless of the actual permissions needed). For users in
+    Downloads or any non-protected install location, the elevation isn't needed and the auto-prompt
+    just creates a "do you want to allow this app to make changes" dialog that's confusing and
+    easy to dismiss-by-accident — observed as ERROR_CANCELLED at the caller.
+
+    asInvoker tells Windows: "I'll run with whatever privileges my parent process has; don't
+    second-guess based on filename." If the install dir actually requires elevation to write
+    (Program Files), the swap fails with a clear access-denied error instead of a UAC prompt.
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10/11 (same as WKVRCProxy.exe targets). -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>
