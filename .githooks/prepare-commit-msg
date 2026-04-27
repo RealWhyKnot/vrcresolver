@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Append the current build version to the commit subject.
+#
+# build.ps1 writes the latest stamp to <repo-root>/version.txt as YYYY.M.D.N-XXXX
+# (the same string baked into the assembly version and dist/version.txt). This hook
+# tacks "(YYYY.M.D.N-XXXX)" onto the subject so `git log` shows which build a commit
+# corresponds to without needing to map hashes by hand.
+#
+# Companion hook commit-msg rejects duplicate stamps if an editor template
+# autocompletes a stale one; keep these two in sync.
+#
+# Skip merge/squash messages — those already include structured content and the
+# stamp adds noise. --no-verify bypasses if you really need to.
+
+set -eu
+
+msg_file="$1"
+source="${2:-}"
+
+case "$source" in
+  merge|squash) exit 0 ;;
+esac
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$repo_root" ] || exit 0
+
+version_file="$repo_root/version.txt"
+[ -f "$version_file" ] || exit 0
+
+# Strip BOM/non-printables and trim — version.txt is written by PowerShell on Windows
+# and can carry a UTF-8 BOM that breaks the grep below.
+version="$(tr -d '\r' < "$version_file" | sed 's/[^[:print:]]//g' | xargs)"
+[ -n "$version" ] || exit 0
+
+if ! grep -q "($version)" "$msg_file"; then
+  sed -i "1s/\$/ ($version)/" "$msg_file"
+fi
