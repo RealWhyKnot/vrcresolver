@@ -12,6 +12,7 @@
 - [IPC and Redirector](IPC-and-Redirector)
 - [Update and Uninstall](Update-and-Uninstall)
 - [Troubleshooting](Troubleshooting)
+- [Changelog](Changelog)
 
 **Background**
 - [AVPro vs Unity](AVPro-vs-Unity)

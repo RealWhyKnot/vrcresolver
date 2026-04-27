@@ -124,6 +124,10 @@ Full troubleshooting playbook: [Troubleshooting](https://github.com/RealWhyKnot/
 - **Settings → Advanced → Individual Strategies** — toggle `tier1:warp+default`, `tier1:warp+vrchat-ua`, `tier1:browser-extract`, etc. The first WARP run starts a local WireGuard helper (`wgcf` registers an account once, then `wireproxy` exposes a SOCKS5 listener); subsequent invocations are zero-cost.
 - **Settings → Maintenance** — manual update check, update apply, uninstall.
 
+## Releases
+
+Per-release notes live in [CHANGELOG.md](CHANGELOG.md) (also mirrored to the wiki as [Changelog](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Changelog)). The [GitHub releases page](https://github.com/RealWhyKnot/WKVRCProxy/releases) is the authoritative artifact archive.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the short version, and [Engineering Standards](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Engineering-Standards) for the load-bearing rules (no C# string interpolation in stamped files, raw-bytes stdout in the Redirector, wrap-by-default, etc.). The wiki content itself lives at [`docs/wiki/`](docs/wiki/) — edit there, the [`wiki-sync.yml`](.github/workflows/wiki-sync.yml) workflow mirrors to the GitHub Wiki on push to `main`.
