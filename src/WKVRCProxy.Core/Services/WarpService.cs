@@ -25,41 +25,39 @@ namespace WKVRCProxy.Core.Services;
 //   - wgcf-profile.conf  (created by `wgcf generate`; wg-quick format)
 //   - wireproxy.conf     (derived from wgcf-profile.conf + [Socks5] section we append)
 //
-// Gated by AppConfig.EnableWarp. If disabled, this module is a no-op at Init time.
+// Lifecycle: this module no longer eagerly starts wireproxy at app launch. It performs a cheap
+// path check during InitializeAsync and otherwise stays NotStarted. The first time a WARP
+// strategy actually runs, it calls EnsureRunningAsync() which does the (possibly one-time)
+// account registration + wireproxy spawn. That trades a slow first WARP request for zero startup
+// cost when WARP is unused — which is the common case.
 [SupportedOSPlatform("windows")]
 public class WarpService : IProxyModule, IDisposable
 {
     public string Name => "WarpService";
 
     private Logger? _logger;
-    private SettingsManager? _settings;
     private Process? _wireproxyProcess;
     private string _warpDir = "";
     private string _wireproxyExe = "";
     private string _wgcfExe = "";
+    private readonly SemaphoreSlim _ensureLock = new(1, 1);
 
     // Fixed SOCKS5 port; yt-dlp strategies reference this via --proxy. If a collision occurs we log
     // and disable WARP rather than relocate — resolvers would need a way to learn the dynamic port.
     public const int SocksPort = 40000;
     public string SocksProxyUrl => "socks5://127.0.0.1:" + SocksPort;
 
-    // Tri-state lifecycle so other modules / UI can see whether WARP is usable.
-    public WarpStatus Status { get; private set; } = WarpStatus.Disabled;
+    // Lifecycle states. NotStarted = paths look fine but we haven't tried to spawn wireproxy yet
+    // (the lazy default). Subsequent EnsureRunningAsync calls move the state through Running or
+    // Failed. Disabled is reserved for future uses; nothing currently sets it.
+    public WarpStatus Status { get; private set; } = WarpStatus.NotStarted;
     public string? StatusDetail { get; private set; }
 
     public bool IsActive => Status == WarpStatus.Running;
 
-    public async Task InitializeAsync(IModuleContext context)
+    public Task InitializeAsync(IModuleContext context)
     {
         _logger = context.Logger;
-        _settings = context.Settings;
-
-        if (!_settings.Config.EnableWarp)
-        {
-            Status = WarpStatus.Disabled;
-            _logger.Debug("[Warp] EnableWarp=false — skipping init.");
-            return;
-        }
 
         string toolsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools");
         _warpDir = Path.Combine(toolsDir, "warp");
@@ -69,11 +67,47 @@ public class WarpService : IProxyModule, IDisposable
         if (!File.Exists(_wireproxyExe) || !File.Exists(_wgcfExe))
         {
             Status = WarpStatus.BinariesMissing;
-            StatusDetail = "tools/warp/wireproxy.exe and/or wgcf.exe are missing. WARP disabled.";
-            _logger.Warning("[Warp] " + StatusDetail + " Download wireproxy and wgcf and drop them in tools/warp/ to enable.");
-            return;
+            StatusDetail = "tools/warp/wireproxy.exe and/or wgcf.exe missing.";
+            _logger.Debug("[Warp] " + StatusDetail + " Drop the binaries in tools/warp/ to enable WARP strategies.");
+            return Task.CompletedTask;
         }
 
+        Status = WarpStatus.NotStarted;
+        StatusDetail = "WARP is ready but not started. Will start on first use.";
+        return Task.CompletedTask;
+    }
+
+    // Lazy starter. Called by WARP strategies before they invoke yt-dlp with --proxy. Returns true
+    // if the SOCKS5 listener is up and reachable. Subsequent calls after the first success are
+    // O(1) — they observe Status == Running and return immediately. Concurrent first-callers are
+    // serialized by _ensureLock so we don't spawn multiple wireproxy instances on a fresh start.
+    public async Task<bool> EnsureRunningAsync()
+    {
+        if (Status == WarpStatus.Running) return true;
+        if (Status == WarpStatus.BinariesMissing) return false;
+
+        await _ensureLock.WaitAsync();
+        try
+        {
+            // Re-check after acquiring the lock — another caller may have started it.
+            if (Status == WarpStatus.Running) return true;
+            if (Status == WarpStatus.Failed)
+            {
+                // Allow a retry if the failure was transient — InitializeAsync's path check still
+                // holds, so the only meaningful state to reset is the spawn outcome.
+                _wireproxyProcess = null;
+            }
+
+            return await TryStartAsync();
+        }
+        finally
+        {
+            _ensureLock.Release();
+        }
+    }
+
+    private async Task<bool> TryStartAsync()
+    {
         try
         {
             Directory.CreateDirectory(_warpDir);
@@ -81,16 +115,16 @@ public class WarpService : IProxyModule, IDisposable
             string accountToml = Path.Combine(_warpDir, "wgcf-account.toml");
             if (!File.Exists(accountToml))
             {
-                _logger.Info("[Warp] No wgcf-account.toml — registering new WARP account (one-time).");
+                _logger?.Info("[Warp] No wgcf-account.toml — registering new WARP account (one-time).");
                 bool ok = await RunWgcfAsync("register --accept-tos");
                 if (!ok || !File.Exists(accountToml))
                 {
                     Status = WarpStatus.Failed;
-                    StatusDetail = "wgcf register failed — see logs. WARP disabled.";
-                    _logger.Warning("[Warp] " + StatusDetail);
-                    return;
+                    StatusDetail = "wgcf register failed — see logs.";
+                    _logger?.Warning("[Warp] " + StatusDetail);
+                    return false;
                 }
-                _logger.Success("[Warp] Registered WARP account.");
+                _logger?.Success("[Warp] Registered WARP account.");
             }
 
             string profileConf = Path.Combine(_warpDir, "wgcf-profile.conf");
@@ -98,14 +132,14 @@ public class WarpService : IProxyModule, IDisposable
                 (DateTime.UtcNow - File.GetLastWriteTimeUtc(profileConf)) < TimeSpan.FromDays(7);
             if (!profileFresh)
             {
-                _logger.Debug("[Warp] Generating fresh wgcf-profile.conf.");
+                _logger?.Debug("[Warp] Generating fresh wgcf-profile.conf.");
                 bool ok = await RunWgcfAsync("generate");
                 if (!ok || !File.Exists(profileConf))
                 {
                     Status = WarpStatus.Failed;
-                    StatusDetail = "wgcf generate failed — see logs. WARP disabled.";
-                    _logger.Warning("[Warp] " + StatusDetail);
-                    return;
+                    StatusDetail = "wgcf generate failed — see logs.";
+                    _logger?.Warning("[Warp] " + StatusDetail);
+                    return false;
                 }
             }
 
@@ -115,9 +149,9 @@ public class WarpService : IProxyModule, IDisposable
             if (IsLocalPortOpen(SocksPort))
             {
                 Status = WarpStatus.Failed;
-                StatusDetail = "Port " + SocksPort + " already in use — another WARP instance? WARP disabled.";
-                _logger.Warning("[Warp] " + StatusDetail);
-                return;
+                StatusDetail = "Port " + SocksPort + " already in use — another WARP instance?";
+                _logger?.Warning("[Warp] " + StatusDetail);
+                return false;
             }
 
             var psi = new ProcessStartInfo
@@ -136,8 +170,8 @@ public class WarpService : IProxyModule, IDisposable
             {
                 Status = WarpStatus.Failed;
                 StatusDetail = "Process.Start returned null for wireproxy.";
-                _logger.Error("[Warp] " + StatusDetail);
-                return;
+                _logger?.Error("[Warp] " + StatusDetail);
+                return false;
             }
 
             ProcessGuard.Register(_wireproxyProcess);
@@ -152,28 +186,30 @@ public class WarpService : IProxyModule, IDisposable
                 if (_wireproxyProcess.HasExited)
                 {
                     Status = WarpStatus.Failed;
-                    StatusDetail = "wireproxy exited early (code " + _wireproxyProcess.ExitCode + "). WARP disabled.";
-                    _logger.Warning("[Warp] " + StatusDetail);
-                    return;
+                    StatusDetail = "wireproxy exited early (code " + _wireproxyProcess.ExitCode + ").";
+                    _logger?.Warning("[Warp] " + StatusDetail);
+                    return false;
                 }
                 if (IsLocalPortOpen(SocksPort))
                 {
                     Status = WarpStatus.Running;
                     StatusDetail = "SOCKS5 listening on 127.0.0.1:" + SocksPort + ".";
-                    _logger.Success("[Warp] WARP active — " + StatusDetail);
-                    return;
+                    _logger?.Success("[Warp] WARP active — " + StatusDetail);
+                    return true;
                 }
             }
 
             Status = WarpStatus.Failed;
-            StatusDetail = "SOCKS port " + SocksPort + " never became reachable. WARP disabled.";
-            _logger.Warning("[Warp] " + StatusDetail);
+            StatusDetail = "SOCKS port " + SocksPort + " never became reachable.";
+            _logger?.Warning("[Warp] " + StatusDetail);
+            return false;
         }
         catch (Exception ex)
         {
             Status = WarpStatus.Failed;
-            StatusDetail = "Init failed: " + ex.Message;
-            _logger.Error("[Warp] " + StatusDetail, ex);
+            StatusDetail = "Start failed: " + ex.Message;
+            _logger?.Error("[Warp] " + StatusDetail, ex);
+            return false;
         }
     }
 
@@ -274,7 +310,7 @@ public class WarpService : IProxyModule, IDisposable
         HealthStatus hs = Status switch
         {
             WarpStatus.Running => HealthStatus.Healthy,
-            WarpStatus.Disabled => HealthStatus.Healthy,   // Intentionally off — not a failure.
+            WarpStatus.NotStarted => HealthStatus.Healthy,    // Idle but ready — not a failure.
             WarpStatus.BinariesMissing => HealthStatus.Degraded,
             _ => HealthStatus.Failed
         };
@@ -296,16 +332,20 @@ public class WarpService : IProxyModule, IDisposable
             try { _wireproxyProcess.Dispose(); }
             catch { /* Shutdown cleanup — failure is expected */ }
         }
-        Status = WarpStatus.Disabled;
+        Status = WarpStatus.NotStarted;
     }
 
-    public void Dispose() => Shutdown();
+    public void Dispose()
+    {
+        Shutdown();
+        _ensureLock.Dispose();
+    }
 }
 
 public enum WarpStatus
 {
-    Disabled,         // EnableWarp=false; module is inert
-    BinariesMissing,  // tools/warp/wireproxy.exe or wgcf.exe not found
-    Running,          // wireproxy is up and SOCKS5 is reachable
-    Failed            // Init attempted but failed somewhere
+    NotStarted,       // Binaries are present but wireproxy hasn't been spawned yet (the lazy default).
+    BinariesMissing,  // tools/warp/wireproxy.exe or wgcf.exe not found.
+    Running,          // wireproxy is up and SOCKS5 is reachable.
+    Failed            // A start attempt was made and something went wrong.
 }

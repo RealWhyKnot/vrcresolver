@@ -63,8 +63,11 @@ public class AppConfig
     [JsonPropertyName("enableRelayBypass")]
     public bool EnableRelayBypass { get; set; } = true;
 
+    // WARP strategy variants are off by default — they require wireproxy + a one-time wgcf account
+    // registration, and most users don't need them. Users opt in by toggling them on in the
+    // Strategy Panel (which removes them from this list).
     [JsonPropertyName("disabledTiers")]
-    public List<string> DisabledTiers { get; set; } = new();
+    public List<string> DisabledTiers { get; set; } = new() { "tier1:warp+default", "tier1:warp+vrchat-ua" };
 
     [JsonPropertyName("enableTierMemory")]
     public bool EnableTierMemory { get; set; } = true;
@@ -90,12 +93,6 @@ public class AppConfig
     // users who lack a system browser and want browser-extract enable this once.
     [JsonPropertyName("downloadBundledChromium")]
     public bool DownloadBundledChromium { get; set; } = false;
-
-    // Enable Cloudflare WARP. When on, we launch wireproxy+wgcf as child processes so yt-dlp/
-    // browser-extract strategies can optionally route through WARP's SOCKS5 proxy on 127.0.0.1:40000.
-    // Nothing on the host machine is modified; WARP only applies to our own subprocesses.
-    [JsonPropertyName("enableWarp")]
-    public bool EnableWarp { get; set; } = false;
 
     // Hosts that must NOT be relay-wrapped because they only accept AVPro's native UnityPlayer UA
     // (VRChat "movie worlds" like vr-m.net). Everything else is wrapped by default — the relay wrap

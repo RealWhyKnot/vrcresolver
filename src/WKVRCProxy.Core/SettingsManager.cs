@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using WKVRCProxy.Core.Logging;
 using WKVRCProxy.Core.Models;
 
@@ -49,6 +51,7 @@ public class SettingsManager
                 if (config != null)
                 {
                     ApplyStrategyPriorityMigration(config);
+                    ApplyWarpAsStrategyMigration(config, json);
                 }
                 return config ?? new AppConfig();
             }
@@ -91,6 +94,49 @@ public class SettingsManager
         {
             config.YouTubeComboClientOrder = new System.Collections.Generic.List<string>(
                 StrategyDefaults.YouTubeComboClientOrderDefault);
+        }
+    }
+
+    // One-shot migration: WARP used to be a global on/off (`enableWarp` config flag) that gated
+    // whether the WARP strategy variants were even added to the cold race. It's now a regular pair
+    // of strategies (`tier1:warp+default`, `tier1:warp+vrchat-ua`) that the user toggles in the
+    // Strategy Panel. To preserve old behavior, this migration reads the raw JSON for the now-
+    // removed `enableWarp` key — if it was absent or false, we add the warp strategies to
+    // DisabledTiers so they stay off until the user explicitly enables them. Users who had
+    // `enableWarp: true` get to keep their opt-in (we don't add to DisabledTiers in that case).
+    private void ApplyWarpAsStrategyMigration(AppConfig config, string rawJson)
+    {
+        bool warpWasOn;
+        try
+        {
+            var root = JsonNode.Parse(rawJson)?.AsObject();
+            // If the field is missing entirely (new config) or false, treat as "warp was off".
+            warpWasOn = root != null
+                && root.TryGetPropertyValue("enableWarp", out var node)
+                && node?.GetValue<bool>() == true;
+        }
+        catch
+        {
+            // Malformed JSON? The outer load will hit its own catch — just bail safely here.
+            return;
+        }
+
+        if (warpWasOn) return;
+
+        string[] warpStrategies = { "tier1:warp+default", "tier1:warp+vrchat-ua" };
+        bool changed = false;
+        foreach (var s in warpStrategies)
+        {
+            if (!config.DisabledTiers.Any(t => string.Equals(t, s, StringComparison.OrdinalIgnoreCase)))
+            {
+                config.DisabledTiers.Add(s);
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            _logger?.Info("[Settings] Migrated WARP from a global toggle to per-strategy entries — added "
+                + string.Join(", ", warpStrategies) + " to DisabledTiers (you can re-enable each in the Strategy Panel).");
         }
     }
 

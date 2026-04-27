@@ -2,10 +2,10 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
 export const TIER_DISPLAY: Record<string, { short: string; long: string; color: string }> = {
-  tier1: { short: 'Local',        long: 'Fastest, offline-capable local extraction.',            color: 'bg-blue-500'   },
-  tier2: { short: 'Cloud',        long: 'Reliable cloud-based resolution via WhyKnot.dev.',      color: 'bg-purple-500' },
-  tier3: { short: 'VRChat Tools', long: 'Original VRChat yt-dlp behavior.',                      color: 'bg-amber-500'  },
-  tier4: { short: 'Passthrough',  long: 'No resolution, returns raw original URL.',              color: 'bg-white/20'   },
+  tier1: { short: 'Local',        long: 'Resolves URLs locally with yt-dlp. The default first stop.',          color: 'bg-blue-500'   },
+  tier2: { short: 'Cloud',        long: "Hands off to the WhyKnot.dev resolver from a different IP.",          color: 'bg-purple-500' },
+  tier3: { short: 'VRChat Tools', long: "Last resort: runs the yt-dlp.exe that VRChat itself ships.",          color: 'bg-amber-500'  },
+  tier4: { short: 'Passthrough',  long: "No resolution. The original URL is handed straight to VRChat.",       color: 'bg-white/20'   },
 }
 
 export interface RelayEvent {
@@ -71,7 +71,6 @@ export interface AppConfig {
   tier2TimeoutSeconds: number;
   enableBrowserExtract: boolean;
   downloadBundledChromium: boolean;
-  enableWarp: boolean;
   streamlinkDisableTwitchAds: boolean;
   enableRelaySmoothnessDebug: boolean;
 }
@@ -198,7 +197,6 @@ export const useAppStore = defineStore('app', () => {
     tier2TimeoutSeconds: 60,
     enableBrowserExtract: true,
     downloadBundledChromium: false,
-    enableWarp: false,
     streamlinkDisableTwitchAds: false,
     enableRelaySmoothnessDebug: true,
   })
@@ -219,7 +217,7 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.27.0-5A16')
+  const version = ref('2026.4.27.1-2F2D')
 
   const demotions = ref<DemotionNotification[]>([])
   const DEMOTION_CAP = 20
@@ -314,7 +312,6 @@ export const useAppStore = defineStore('app', () => {
         if (!incoming.tier2TimeoutSeconds || incoming.tier2TimeoutSeconds < 5) incoming.tier2TimeoutSeconds = 60
         if (incoming.enableBrowserExtract === undefined) incoming.enableBrowserExtract = true
         if (incoming.downloadBundledChromium === undefined) incoming.downloadBundledChromium = false
-        if (incoming.enableWarp === undefined) incoming.enableWarp = false
         if (incoming.streamlinkDisableTwitchAds === undefined) incoming.streamlinkDisableTwitchAds = false
         if (incoming.enableRelaySmoothnessDebug === undefined) incoming.enableRelaySmoothnessDebug = true
         config.value = incoming

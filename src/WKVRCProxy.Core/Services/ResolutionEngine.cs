@@ -1574,9 +1574,10 @@ public class ResolutionEngine
         // Useful for origins that geo-block or IP-flag the user's home ISP — WARP presents a
         // Cloudflare edge IP that many CDNs trust by default. Fires last in the race (priority 90+)
         // since most direct requests succeed; WARP is the "try a different network" retry.
-        // Only added when tier1 isn't disabled AND WARP is actually up (no point queueing strategies
-        // that will no-op — memory would learn a fake winner).
-        if (!disabled.Contains("tier1") && _warp != null && _warp.IsActive)
+        // Listed unconditionally and filtered out via DisabledTiers (default: both off — the user
+        // opts in from the Strategy Panel). The strategies lazily start wireproxy on first run via
+        // WarpService.EnsureRunningAsync, so listing them here costs nothing if they never run.
+        if (!disabled.Contains("tier1") && _warp != null)
         {
             list.Add(new ResolveStrategy("tier1:warp+default", "tier1", 90, true,
                 sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
@@ -1762,20 +1763,21 @@ public class ResolutionEngine
         // Cloudflare WARP route-through: yt-dlp (and the generic extractor's HTTP probes) go out via
         // our on-host wireproxy SOCKS5 listener, which is user-space WG to the Cloudflare edge. Only
         // this specific yt-dlp subprocess is affected — nothing else on the host routes through WARP.
-        // Strategies opt in via useWarp=true; WarpService.IsActive gates it (skip the flag if WARP
-        // didn't come up so we don't leak --proxy to a dead listener).
+        // Strategies opt in via useWarp=true. EnsureRunningAsync lazily starts wireproxy on first
+        // call (subsequent calls are O(1)). If WARP genuinely can't start (binaries missing, port
+        // collision, wgcf failure), the strategy fails outright rather than silently falling back
+        // to direct — otherwise the cold-race winner would look like "warp+default" while in reality
+        // doing exactly what tier1:default would have done, and StrategyMemory would learn nonsense.
         if (useWarp)
         {
-            if (_warp != null && _warp.IsActive)
+            if (_warp == null || !await _warp.EnsureRunningAsync())
             {
-                args.Add("--proxy");
-                args.Add(_warp.SocksProxyUrl);
-                _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] Routing yt-dlp through WARP SOCKS5 (" + _warp.SocksProxyUrl + ").");
+                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] WARP unavailable (" + (_warp?.StatusDetail ?? "service not registered") + ") — strategy aborted. Disable warp+ strategies in Settings if WARP isn't usable on this machine.");
+                return null;
             }
-            else
-            {
-                _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] useWarp requested but WARP is not active — running direct.");
-            }
+            args.Add("--proxy");
+            args.Add(_warp.SocksProxyUrl);
+            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] Routing yt-dlp through WARP SOCKS5 (" + _warp.SocksProxyUrl + ").");
         }
 
         if (injectPot)

@@ -87,19 +87,21 @@ interface StrategyDescriptor {
 }
 const STRATEGY_CATALOG: Record<string, StrategyDescriptor[]> = {
   'Local (Tier 1)': [
-    { name: 'tier1:yt-combo',         label: 'YouTube combo',    description: 'One yt-dlp call that tries every YouTube player_client (tv_simply, tv_embedded, tv, web_safari, web, mweb, ios, ios_music, android, android_vr, android_music) internally, stopping at the first that works. Low-burst — the primary YouTube strategy.' },
-    { name: 'tier1:ipv6',             label: 'IPv6 forced',      description: 'Same as default but forces v6 egress. Routes around residential/CGNAT rate flags that target v4 only. No-op on networks without v6.' },
-    { name: 'tier1:default',          label: 'Default',          description: 'yt-dlp with auto PO token + curl-impersonate. First pick for non-YouTube hosts.' },
-    { name: 'tier1:vrchat-ua',        label: 'VRChat UA',        description: 'UnityPlayer User-Agent for hosts that need traffic to look like it came from VRChat itself.' },
-    { name: 'tier1:impersonate-only', label: 'Impersonate only', description: 'curl-impersonate TLS fingerprint, no PO token — for sites where PO fetch itself flags us.' },
-    { name: 'tier1:plain',            label: 'Plain',            description: 'Bare yt-dlp, no extras. Last-resort variant.' },
-    { name: 'tier1:browser-extract',  label: 'Browser extract',  description: 'Headless Edge/Chrome for JS-gated sites. Can serve decoy URLs on YouTube when detected.' },
+    { name: 'tier1:yt-combo',         label: 'YouTube combo',    description: 'A single yt-dlp call that walks through every YouTube client (web, mobile, TV, iOS, Android, etc.) and uses whichever one responds first. The default pick for YouTube URLs.' },
+    { name: 'tier1:ipv6',             label: 'IPv6 forced',      description: 'Forces requests over IPv6. Useful when your IPv4 address is rate-limited (common on shared or CGNAT connections). Has no effect on networks without IPv6.' },
+    { name: 'tier1:default',          label: 'Default',          description: 'Standard yt-dlp call with a real-browser TLS fingerprint. First pick for non-YouTube hosts.' },
+    { name: 'tier1:vrchat-ua',        label: 'VRChat UA',        description: "Sends requests that look like they're coming from VRChat itself. Helps for hosts that only respond to in-game traffic." },
+    { name: 'tier1:impersonate-only', label: 'Impersonate only', description: "Real-browser TLS fingerprint with no extra YouTube tokens. For sites that flag the standard token fetch but accept normal-looking browser traffic." },
+    { name: 'tier1:plain',            label: 'Plain',            description: 'Bare yt-dlp, no impersonation, no tokens. Kept as a last-resort sanity check.' },
+    { name: 'tier1:browser-extract',  label: 'Browser extract',  description: "Spins up a headless Edge/Chrome to handle sites that need full JavaScript. Used when yt-dlp can't crack the page on its own." },
+    { name: 'tier1:warp+default',     label: 'Default via WARP',  description: 'Same as Default, but routes the request through Cloudflare WARP first. Useful when the host blocks or rate-limits your home IP. Off by default — first run starts a local WireGuard helper.' },
+    { name: 'tier1:warp+vrchat-ua',   label: 'VRChat UA via WARP',description: 'Same as VRChat UA, but via Cloudflare WARP. Off by default; combines the in-game UA with a different egress IP.' },
   ],
   'Cloud (Tier 2)': [
-    { name: 'tier2:cloud-whyknot',    label: 'WhyKnot.dev cloud', description: 'Cloud resolver fallback. Hits YouTube from a different IP so it works when your IP is rate-flagged.' },
+    { name: 'tier2:cloud-whyknot',    label: 'WhyKnot.dev cloud', description: 'Hands resolution off to the WhyKnot.dev resolver. Useful when your local IP is rate-limited and you need to hit YouTube from somewhere else.' },
   ],
   'Original yt-dlp (Tier 3)': [
-    { name: 'tier3:plain',            label: 'Plain yt-dlp-og',   description: 'VRChat-pinned yt-dlp.exe, no extras. Sequential fallback only.' },
+    { name: 'tier3:plain',            label: 'Plain yt-dlp-og',   description: "VRChat's bundled yt-dlp.exe with no extras. Final fallback when everything else has failed." },
   ],
 }
 
@@ -285,7 +287,7 @@ function clearHistory() {
             </div>
           </div>
         </div>
-        <p class="text-[8px] text-white/25 font-bold uppercase tracking-widest italic">Passthrough always activates on unrecoverable error regardless of this setting.</p>
+        <p class="text-[8px] text-white/25 font-bold uppercase tracking-widest italic">Passthrough always runs as a last resort when everything else fails — that part can't be turned off.</p>
       </section>
 
       <!-- Advanced: per-strategy toggles. Users can disable a single variant without taking down
@@ -306,7 +308,7 @@ function clearHistory() {
         </div>
 
         <div v-if="showAdvancedStrategies" class="space-y-5 pt-2">
-          <p class="text-[8px] text-white/40 font-bold uppercase tracking-widest leading-relaxed italic">Use these to mute a single variant that's misbehaving for a host. Disabling all variants in a tier has the same effect as disabling the whole tier.</p>
+          <p class="text-[8px] text-white/40 font-bold uppercase tracking-widest leading-relaxed italic">Turn off a single strategy that's misbehaving without disabling its whole tier. Turning off every strategy in a tier is equivalent to disabling that tier above.</p>
           <div v-for="(strategies, groupLabel) in STRATEGY_CATALOG" :key="groupLabel" class="space-y-2">
             <h5 class="text-[9px] font-black uppercase tracking-[0.3em] text-white/45 italic">{{ groupLabel }}</h5>
             <div class="space-y-1.5">
@@ -341,7 +343,7 @@ function clearHistory() {
             </div>
             <div>
               <h4 class="text-lg font-black uppercase tracking-tighter italic">Strategy Priority</h4>
-              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Which strategies run first in the cold race (wave 1)</p>
+              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Order strategies are tried in when nothing is cached yet</p>
             </div>
           </div>
           <button @click="resetStrategyPriority()" class="px-4 py-2 bg-white/5 hover:bg-emerald-500/10 text-white/50 hover:text-emerald-400 rounded-xl font-black text-[8px] uppercase tracking-[0.2em] transition-all italic active:scale-95 border border-white/5 hover:border-emerald-500/20">
@@ -414,14 +416,14 @@ function clearHistory() {
         </div>
 
         <div v-if="showRaceTuning" class="space-y-5 pt-2">
-          <p class="text-[8px] text-white/40 font-bold uppercase tracking-widest leading-relaxed italic">Defaults are calibrated against yt-dlp's 2–3-concurrent guidance. Increase only if your network is rock-solid; decrease if you keep getting rate-flagged.</p>
+          <p class="text-[8px] text-white/40 font-bold uppercase tracking-widest leading-relaxed italic">Defaults match yt-dlp's own 2–3 concurrent-request recommendation. Raise these only on a reliable connection; lower them if you keep hitting rate limits.</p>
 
           <!-- Wave race master toggle -->
           <div @click="appStore.config.enableWaveRace = !appStore.config.enableWaveRace; appStore.saveConfig()"
                class="flex items-center gap-4 p-4 bg-white/[0.02] border border-white/5 rounded-2xl cursor-pointer hover:bg-white/[0.04] hover:border-white/10 transition-all">
             <div class="flex-grow min-w-0">
               <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Wave Mode</p>
-              <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">Off = legacy "fire all strategies at once" race. Most users want this on.</p>
+              <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">On (the default) launches strategies in small waves to avoid hammering rate limits. Off launches every strategy in parallel right away.</p>
             </div>
             <div :class="['w-10 h-5 rounded-full relative transition-all duration-500 shrink-0', appStore.config.enableWaveRace ? 'bg-emerald-600 shadow-[0_0_12px_rgba(16,185,129,0.4)]' : 'bg-white/10 border border-white/10']">
               <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-500', appStore.config.enableWaveRace ? 'left-6' : 'left-1']"></div>
@@ -473,7 +475,7 @@ function clearHistory() {
             <div class="md:col-span-2 p-4 bg-white/[0.02] border border-white/5 rounded-2xl flex items-center gap-3">
               <div class="flex-grow min-w-0">
                 <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Cloud (Tier 2) Timeout (s)</p>
-                <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">Max time the cloud resolver can spend before being treated as a failure. Cold-cache YouTube can legitimately take 30–60s. 5–180.</p>
+                <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">How long the cloud resolver gets before it's marked as a failure. YouTube can need 30–60 seconds the first time it sees a video. Allowed: 5–180.</p>
               </div>
               <input type="number" min="5" max="180" v-model.number="appStore.config.tier2TimeoutSeconds"
                      @blur="saveNumberClamped('tier2TimeoutSeconds', 5, 180)"
@@ -544,7 +546,7 @@ function clearHistory() {
               <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.autoPatchOnStart ? 'left-6' : 'left-1']"></div>
             </div>
           </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Automatically patch VRChat video tools on startup.</p>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Refresh VRChat's bundled yt-dlp on launch so it matches the bypass tools this app ships with.</p>
         </div>
 
         <div @click="appStore.config.enableRelayBypass = !appStore.config.enableRelayBypass; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
@@ -564,7 +566,7 @@ function clearHistory() {
               <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enablePreflightProbe ? 'left-6' : 'left-1']"></div>
             </div>
           </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Verify resolved URLs are playable before handing them to VRChat. Catches dead CDN URLs and cloud-resolver drift; adds up to 5s on cold resolve.</p>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Test the resolved URL is reachable before handing it to VRChat. Catches dead CDN links and stale cloud results; adds up to 5 seconds on a cold start.</p>
         </div>
 
         <div @click="appStore.config.enableTierMemory = !appStore.config.enableTierMemory; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
@@ -594,7 +596,7 @@ function clearHistory() {
               <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableBrowserExtract ? 'left-6' : 'left-1']"></div>
             </div>
           </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Headless Edge/Chrome fallback for JS-gated sites that yt-dlp can't crack. Uses your installed browser; no download.</p>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Headless Edge/Chrome fallback for sites that need JavaScript to load. Uses an already-installed browser; no extra download.</p>
         </div>
 
         <!-- Sub-toggle: only meaningful when browser-extract is on AND no system browser is found.
@@ -608,17 +610,7 @@ function clearHistory() {
               <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.downloadBundledChromium ? 'left-6' : 'left-1']"></div>
             </div>
           </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">If no Edge/Chrome/Brave is found on this system, allow downloading a ~180 MB Chromium build for browser-extract. One-time per install.</p>
-        </div>
-
-        <div @click="appStore.config.enableWarp = !appStore.config.enableWarp; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Cloudflare WARP</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableWarp ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableWarp ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Run wireproxy + wgcf locally so resolution strategies can route through WARP. Only affects this app's subprocesses; your system traffic is untouched.</p>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">If no Edge/Chrome/Brave is installed, this lets browser-extract download its own Chromium (about 180 MB) the first time it needs one.</p>
         </div>
 
         <div @click="appStore.config.streamlinkDisableTwitchAds = !appStore.config.streamlinkDisableTwitchAds; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
@@ -638,7 +630,7 @@ function clearHistory() {
               <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableRelaySmoothnessDebug ? 'left-6' : 'left-1']"></div>
             </div>
           </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Per-segment relay timing in the log (TTFB + throughput). Slow segments log at info, stalls at warning. Useful for diagnosing stutter that isn't a hard playback failure.</p>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Logs how fast each video segment arrives. Slow segments show up at info, stalls at warning. Useful for spotting stutter that isn't a full playback failure.</p>
         </div>
       </div>
 
@@ -689,7 +681,7 @@ function clearHistory() {
           </button>
         </div>
 
-        <p class="text-[9px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">Hosts that need to see traffic coming directly from VRChat's player (e.g. vr-m.net). These are skipped by the relay and resolution short-circuits straight to passthrough; every other host is routed through the relay by default.</p>
+        <p class="text-[9px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">Some hosts (like vr-m.net) only respond when they see traffic coming straight from VRChat's player. Hosts listed here are handed straight to VRChat untouched; every other host is routed through the relay by default.</p>
       </section>
 
       <!-- Custom User Agent -->
