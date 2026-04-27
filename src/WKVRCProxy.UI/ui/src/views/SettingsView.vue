@@ -84,11 +84,10 @@ interface StrategyDescriptor {
   name: string          // full name, e.g. "tier1:browser-extract" — what gets put in disabledTiers
   label: string         // UI label
   description: string   // short "when it helps" blurb
-  youtubeOnly?: boolean // only meaningful for YouTube URLs
 }
 const STRATEGY_CATALOG: Record<string, StrategyDescriptor[]> = {
   'Local (Tier 1)': [
-    { name: 'tier1:yt-combo',         label: 'YouTube combo',    description: 'One yt-dlp call that tries every YouTube player_client (tv_simply, tv_embedded, tv, web_safari, web, mweb, ios, ios_music, android, android_vr, android_music) internally, stopping at the first that works. Low-burst — the primary YouTube strategy.', youtubeOnly: true },
+    { name: 'tier1:yt-combo',         label: 'YouTube combo',    description: 'One yt-dlp call that tries every YouTube player_client (tv_simply, tv_embedded, tv, web_safari, web, mweb, ios, ios_music, android, android_vr, android_music) internally, stopping at the first that works. Low-burst — the primary YouTube strategy.' },
     { name: 'tier1:ipv6',             label: 'IPv6 forced',      description: 'Same as default but forces v6 egress. Routes around residential/CGNAT rate flags that target v4 only. No-op on networks without v6.' },
     { name: 'tier1:default',          label: 'Default',          description: 'yt-dlp with auto PO token + curl-impersonate. First pick for non-YouTube hosts.' },
     { name: 'tier1:vrchat-ua',        label: 'VRChat UA',        description: 'UnityPlayer User-Agent for hosts that need traffic to look like it came from VRChat itself.' },
@@ -318,7 +317,6 @@ function clearHistory() {
                 <div class="flex-grow min-w-0">
                   <div class="flex items-center gap-2">
                     <span class="text-[10px] font-black uppercase tracking-widest italic text-white/75">{{ s.label }}</span>
-                    <span v-if="s.youtubeOnly" class="px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-widest bg-red-500/10 border border-red-500/20 text-red-400/75 italic">YouTube</span>
                     <span class="text-[8px] font-mono text-white/25">{{ s.name }}</span>
                   </div>
                   <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">{{ s.description }}</p>
@@ -358,7 +356,6 @@ function clearHistory() {
             <div class="flex-grow min-w-0">
               <div class="flex items-center gap-2">
                 <span class="text-[10px] font-black uppercase tracking-widest italic text-white/75">{{ s.label }}</span>
-                <span v-if="s.youtubeOnly" class="px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-widest bg-red-500/10 border border-red-500/20 text-red-400/75 italic">YouTube</span>
                 <span class="text-[8px] font-mono text-white/25">{{ s.name }}</span>
               </div>
               <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">{{ s.description }}</p>
@@ -386,7 +383,6 @@ function clearHistory() {
             <div class="flex-grow min-w-0">
               <div class="flex items-center gap-2">
                 <span class="text-[10px] font-black uppercase tracking-widest italic text-white/60">{{ s.label }}</span>
-                <span v-if="s.youtubeOnly" class="px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-widest bg-red-500/10 border border-red-500/20 text-red-400/60 italic">YouTube</span>
                 <span class="text-[8px] font-mono text-white/20">{{ s.name }}</span>
               </div>
             </div>

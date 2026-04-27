@@ -206,11 +206,11 @@ const isDownloading = computed(() => appStore.ytDlpUpdate.status === 'Downloadin
                       {{ bestEntry(row.entries)!.strategy }}
                     </span>
                     <span v-if="isDemoted(bestEntry(row.entries)!)"
-                          class="px-2 py-0.5 rounded-md text-[7px] font-black uppercase tracking-widest bg-red-500/15 border border-red-500/25 text-red-400">
+                          class="px-2 py-0.5 rounded-md text-[7px] font-black uppercase tracking-widest bg-amber-500/15 border border-amber-500/25 text-amber-400">
                       Demoted
                     </span>
                     <span v-else-if="isStale(bestEntry(row.entries)!)"
-                          class="px-2 py-0.5 rounded-md text-[7px] font-black uppercase tracking-widest bg-amber-500/15 border border-amber-500/25 text-amber-400">
+                          class="px-2 py-0.5 rounded-md text-[7px] font-black uppercase tracking-widest bg-white/[0.04] border border-white/15 text-white/55">
                       Stale
                     </span>
                   </div>
@@ -254,7 +254,7 @@ const isDownloading = computed(() => appStore.ytDlpUpdate.status === 'Downloadin
                   <span class="text-white/30 font-black uppercase tracking-[0.2em] mr-1">Also tried:</span>
                   <span v-for="entry in otherEntries(row.entries)" :key="entry.strategy"
                         :class="['font-mono px-2 py-0.5 rounded border',
-                                 isDemoted(entry) ? 'text-red-400/70 border-red-500/20 bg-red-500/5' : 'text-white/50 border-white/5 bg-white/[0.02]']">
+                                 isDemoted(entry) ? 'text-amber-400/80 border-amber-500/20 bg-amber-500/5' : 'text-white/50 border-white/5 bg-white/[0.02]']">
                     {{ entry.strategy }}
                     <span class="text-white/30 ml-1">{{ entry.successCount }}W / {{ entry.failureCount }}L</span>
                   </span>
