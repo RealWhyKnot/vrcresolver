@@ -1,0 +1,117 @@
+name: Bug report
+description: A URL doesn't resolve, doesn't play, or WKVRCProxy itself misbehaves.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a report. WKVRCProxy is alpha — most "video doesn't play" reports come down to one of: a strategy that returned a URL AVPro can't actually play, a hosts-file mapping that didn't take, or a host that needs a direct connection (no relay wrap). The fields below collect the minimum we need to triage without a back-and-forth.
+
+  - type: input
+    id: version
+    attributes:
+      label: WKVRCProxy version
+      description: Found in the About panel, or `dist/version.txt` (format `YYYY.M.D.N-HASH`).
+      placeholder: "2026.4.27.7-4974"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: latest
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I'm running the latest build from `main` (or pulled within the last few days).
+          required: true
+        - label: I understand this is alpha software and have read the README's "What to look for if playback fails" section.
+          required: true
+
+  - type: input
+    id: vrchat
+    attributes:
+      label: VRChat build / Windows version
+      placeholder: "VRChat 2026.1.2 / Windows 11 26200"
+    validations:
+      required: false
+
+  - type: input
+    id: url
+    attributes:
+      label: Failing URL (or domain)
+      description: Redact the path if private — the host is what matters most for triage.
+      placeholder: "https://example.com/watch?v=… or just `example.com`"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: avpro_loading_failed
+    attributes:
+      label: Did the VRChat output log show `[AVProVideo] Error: Loading failed`?
+      options:
+        - "Unsure / didn't check"
+        - "Yes"
+        - "No"
+        - "Different AVPro error (paste below)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: relay_state
+    attributes:
+      label: Was the URL relay-wrapped or direct-connect?
+      description: Look in the Logs view for `URL relay-wrapped on port …` (wrapped) or `Relay wrap skipped for …` (direct).
+      options:
+        - "Unknown / didn't see either log line"
+        - "Relay-wrapped (saw `URL relay-wrapped on port …`)"
+        - "Direct-connect (saw `Relay wrap skipped for …`)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hosts_file
+    attributes:
+      label: Hosts-file mapping present?
+      description: Open `C:\Windows\System32\drivers\etc\hosts` — is `127.0.0.1 localhost.youtube.com` there?
+      options:
+        - "Unsure"
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs view output (correlation-ID block)
+      description: |
+        From the Logs tab, copy every line for the failing request. Each request shares a correlation ID like `[a1b2c3d4]` — grab the whole block from `Starting resolution for: …` through to the failure. Don't summarize; paste verbatim.
+      render: text
+      placeholder: |
+        [a1b2c3d4] Starting resolution for: https://…
+        [a1b2c3d4] [tier1:plain] …
+        [a1b2c3d4] [WARNING] [Playback] AVPro rejected resolved URL from 'tier1:plain'
+        …
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: What did you do, in order? Include in-world player type if you know it (Stream / Video / Movie & Chill / etc.).
+      placeholder: |
+        1. Launched WKVRCProxy, then VRChat.
+        2. Joined world "Movie & Chill".
+        3. Pasted the URL above into the player.
+        4. Player showed "Loading…" and never started.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Settings tweaks, prior workarounds tried, screenshots, etc.
+    validations:
+      required: false

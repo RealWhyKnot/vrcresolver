@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / setup help
+    url: https://github.com/RealWhyKnot/WKVRCProxy/discussions
+    about: General questions, install/setup help, or "is this a bug or am I holding it wrong?" — start a Discussion. We'll convert it to an issue if it turns out to be a real bug.
+  - name: Security vulnerability
+    url: https://github.com/RealWhyKnot/WKVRCProxy/security/advisories/new
+    about: Report a vulnerability privately via GitHub Security Advisories. Do NOT open a public issue.
