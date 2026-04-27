@@ -131,19 +131,52 @@ try {
 }
 # 3. Fetch Latest curl-impersonate-win (RealWhyKnot/curl-impersonate-win)
 # Go-based Windows CLI wrapper around bogdanfinn/tls-client for Chrome TLS fingerprint impersonation.
+# This binary runs with attacker-influenced URLs as args, so we verify it on download:
+#   1. Download the .exe.sha256 sidecar (sha256sum format) alongside the .exe.
+#   2. Compute the local SHA256 and compare. Mismatch => abort, do not install.
+#   3. Releases without a sidecar are refused; we keep whatever's already in vendor/.
 $CurlImpVendorPath = Join-Path $VendorDir "curl-impersonate-win.exe"
 try {
     $CurlImpRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/RealWhyKnot/curl-impersonate-win/releases/latest" -ErrorAction Stop
     $LatestCurlImpVersion = $CurlImpRelease.tag_name
     if ($Versions.curlimp -ne $LatestCurlImpVersion -or !(Test-Path $CurlImpVendorPath)) {
         Write-Host "Updating curl-impersonate-win to $LatestCurlImpVersion..." -ForegroundColor Yellow
-        $CurlImpAsset = ($CurlImpRelease.assets | Where-Object { $_.name -eq "curl-impersonate-win.exe" } | Select-Object -First 1)
-        if ($CurlImpAsset) {
-            Invoke-WebRequest -Uri $CurlImpAsset.browser_download_url -OutFile $CurlImpVendorPath
-            $Versions.curlimp = $LatestCurlImpVersion
-            Write-Host "curl-impersonate-win.exe ready ($LatestCurlImpVersion)." -ForegroundColor Green
-        } else {
+        $CurlImpAsset    = ($CurlImpRelease.assets | Where-Object { $_.name -eq "curl-impersonate-win.exe" } | Select-Object -First 1)
+        $CurlImpShaAsset = ($CurlImpRelease.assets | Where-Object { $_.name -eq "curl-impersonate-win.exe.sha256" } | Select-Object -First 1)
+        if (-not $CurlImpAsset) {
             Write-Host "Warning: curl-impersonate-win.exe asset not found in release. Relay will use standard HttpClient." -ForegroundColor Yellow
+        } elseif (-not $CurlImpShaAsset) {
+            Write-Host "WARNING: $LatestCurlImpVersion has no SHA256 sidecar. Refusing to install unverified binary." -ForegroundColor Red
+            if (Test-Path $CurlImpVendorPath) {
+                Write-Host "Keeping existing vendor/curl-impersonate-win.exe (last verified version: $($Versions.curlimp))." -ForegroundColor Yellow
+            } else {
+                Write-Host "No previously-verified copy available. Relay will use standard HttpClient." -ForegroundColor Yellow
+            }
+        } else {
+            $TmpExe = "$CurlImpVendorPath.new"
+            $TmpSha = "$CurlImpVendorPath.sha256"
+            Invoke-WebRequest -Uri $CurlImpAsset.browser_download_url    -OutFile $TmpExe
+            Invoke-WebRequest -Uri $CurlImpShaAsset.browser_download_url -OutFile $TmpSha
+
+            # Sidecar format is `<hex>  curl-impersonate-win.exe` (sha256sum style).
+            $ExpectedHash = (Get-Content $TmpSha -Raw).Split(" ")[0].Trim().ToLowerInvariant()
+            $ActualHash   = (Get-FileHash $TmpExe -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            if ($ExpectedHash -eq $ActualHash) {
+                Move-Item -Force $TmpExe $CurlImpVendorPath
+                Remove-Item $TmpSha -ErrorAction SilentlyContinue
+                $Versions.curlimp = $LatestCurlImpVersion
+                Write-Host "curl-impersonate-win.exe verified + installed ($LatestCurlImpVersion, sha256:$($ActualHash.Substring(0,12))...)." -ForegroundColor Green
+            } else {
+                Remove-Item $TmpExe, $TmpSha -ErrorAction SilentlyContinue
+                Write-Host "ERROR: SHA256 mismatch on curl-impersonate-win.exe!" -ForegroundColor Red
+                Write-Host "  Expected: $ExpectedHash" -ForegroundColor Red
+                Write-Host "  Actual:   $ActualHash"   -ForegroundColor Red
+                Write-Host "  Refusing to install. Investigate before continuing." -ForegroundColor Red
+                if (-not (Test-Path $CurlImpVendorPath)) {
+                    Write-Host "  No previously-verified copy available. Relay will use standard HttpClient." -ForegroundColor Yellow
+                }
+            }
         }
     } else {
         Write-Host "curl-impersonate-win.exe is up-to-date ($LatestCurlImpVersion)." -ForegroundColor Green
