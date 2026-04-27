@@ -6,6 +6,28 @@ $ErrorActionPreference = "Stop"
 # relative-path lookup here.
 Set-Location $PSScriptRoot
 
+# Activate the repo's tracked git hooks (.githooks/) the first time the build runs in a clone.
+# We do this from the build script — rather than asking users to run `git config core.hooksPath`
+# manually — because forgetting the setup silently disables the hooks, which defeats the point of
+# checks like the commit-msg version-stamp guard. Idempotent: only writes when it would actually
+# change. If we're not inside a git checkout (e.g. someone runs the script from an extracted zip),
+# the call no-ops harmlessly.
+try {
+    $current = (& git config --local --get core.hooksPath 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $current -ne ".githooks") {
+        & git config --local core.hooksPath .githooks
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Configured local git core.hooksPath = .githooks (commit-msg guard now active)." -ForegroundColor DarkGray
+        }
+    } elseif ($LASTEXITCODE -ne 0) {
+        # `git config --get` returns 1 when the key is unset. Treat that as "needs setup" too.
+        & git config --local core.hooksPath .githooks 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Configured local git core.hooksPath = .githooks (commit-msg guard now active)." -ForegroundColor DarkGray
+        }
+    }
+} catch { }
+
 $BuildDir = Join-Path $PSScriptRoot "dist"
 $VendorDir = Join-Path $PSScriptRoot "vendor"
 $VersionFile = Join-Path $VendorDir "versions.json"

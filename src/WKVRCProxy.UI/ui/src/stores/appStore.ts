@@ -217,7 +217,7 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.27.6-005F')
+  const version = ref('2026.4.27.7-4974')
 
   const demotions = ref<DemotionNotification[]>([])
   const DEMOTION_CAP = 20

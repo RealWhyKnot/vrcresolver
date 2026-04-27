@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Reject commit subjects that contain more than one build-version stamp.
+#
+# The version pattern is the one stamped by build.ps1: (YYYY.M.D.N-XXXX) where N is the build
+# count for the day and XXXX is a 4-char hex UID — e.g. (2026.4.27.6-005F).
+#
+# Why this hook exists: editor commit-message templates can autocomplete the trailing version
+# from the previous commit alongside the fresh one, producing subjects like
+#   "build: skip-when-current ... (2026.4.27.6-005F) (2026.4.27.4-6B9B)"
+# That's almost never intentional. Catching it here is cheaper than noticing post-push and
+# rewording history.
+#
+# The hook fires on every commit (including --amend with a new message). It can be bypassed
+# with --no-verify in the rare case you really want two stamps; don't make that the habit.
+
+set -euo pipefail
+
+msg_file="$1"
+[ -f "$msg_file" ] || exit 0
+
+# First non-comment, non-blank line = subject.
+subject="$(grep -m1 -vE '^(#|$)' "$msg_file" || true)"
+[ -n "$subject" ] || exit 0
+
+# Count occurrences of the build-version pattern in the subject.
+# - 4 digits . one-or-more digits . one-or-more digits . one-or-more digits - 4 hex chars
+# - wrapped in parentheses
+# `grep || true` absorbs the no-match exit code (grep returns 1 when nothing matches);
+# without it, set -e + pipefail would kill the hook on every commit that has no version
+# stamp at all — i.e. most of them.
+count=$( ( printf '%s\n' "$subject" | grep -oE '\([0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+-[A-Fa-f0-9]{4}\)' || true ) \
+  | grep -c . \
+  || true )
+count=${count//[^0-9]/}
+[ -n "$count" ] || count=0
+
+if [ "${count:-0}" -gt 1 ]; then
+  echo "" >&2
+  echo "commit-msg: subject contains $count build-version stamps; expected at most one." >&2
+  echo "" >&2
+  echo "  subject: $subject" >&2
+  echo "" >&2
+  echo "Editor templates sometimes autocomplete a stale (YYYY.M.D.N-XXXX) tag from the previous" >&2
+  echo "commit. Edit the subject so only the current build's tag remains, then commit again." >&2
+  echo "" >&2
+  exit 1
+fi
+
+exit 0
