@@ -604,6 +604,16 @@ function clearHistory() {
           <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Test the resolved URL is reachable before handing it to VRChat. Catches dead CDN links and stale cloud results; adds up to 5 seconds on a cold start.</p>
         </div>
 
+        <div @click="appStore.config.enableAnonymousReporting = !appStore.config.enableAnonymousReporting; appStore.config.anonymousReportingPromptAnswered = true; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Anonymous Reporting</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableAnonymousReporting ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableAnonymousReporting ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">When every resolution method fails for a video, send a sanitized summary (domain only, no full URL, no usernames, no IPs) so the project can spot patterns. Off by default; toggling on opts in for future failures.</p>
+        </div>
+
         <div @click="appStore.config.enableTierMemory = !appStore.config.enableTierMemory; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
           <div class="flex justify-between items-start mb-4">
             <h4 class="text-lg font-black uppercase tracking-tighter italic">Strategy Memory</h4>

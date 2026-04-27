@@ -134,6 +134,39 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- Anonymous Reporting Opt-In Modal — fires the first time end-of-cascade resolution
+         fails. Shows the exact sanitized payload that would be sent so the user can verify
+         what's transmitted before deciding. -->
+    <div v-if="appStore.showReportingOptInPrompt" class="fixed inset-0 z-[95] bg-black/80 flex items-center justify-center backdrop-blur-xl animate-in fade-in duration-300">
+      <div class="bg-[#0a0a0c] border border-white/10 rounded-3xl p-8 max-w-2xl shadow-2xl relative overflow-hidden mx-4 max-h-[85vh] flex flex-col">
+        <div class="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent pointer-events-none"></div>
+        <div class="relative z-10 space-y-6 flex-1 overflow-hidden flex flex-col">
+          <div class="w-12 h-12 bg-blue-500/20 rounded-2xl flex items-center justify-center border border-blue-500/30 shrink-0">
+            <i class="bi bi-shield-check text-blue-400 text-xl"></i>
+          </div>
+          <div class="shrink-0">
+            <h2 class="text-xl font-bold mb-2">Help improve WKVRCProxy?</h2>
+            <p class="text-white/60 text-sm leading-relaxed">
+              A video just failed every resolution method. WKVRCProxy can send a sanitized summary of what went wrong so the project can spot patterns and fix recurring failures faster.
+            </p>
+            <p class="text-white/40 text-xs mt-2 italic border-l-2 border-white/10 pl-3">
+              No usernames, no IPs, no full URLs, no file paths — only the host (e.g. <code class="text-blue-300">youtube.com</code>), a hashed identifier, and which strategies were tried. The payload below is exactly what gets sent.
+            </p>
+          </div>
+          <div class="flex-1 overflow-auto bg-black/40 border border-white/5 rounded-2xl p-4 font-mono text-[10px] text-white/70 whitespace-pre-wrap leading-relaxed">{{ appStore.reportingOptInPreview }}</div>
+          <div class="flex gap-3 pt-2 shrink-0">
+            <button @click="appStore.answerAnonymousReporting(true)" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2">
+              <i class="bi bi-check-circle"></i> Send this and future reports
+            </button>
+            <button @click="appStore.answerAnonymousReporting(false)" class="flex-1 bg-white/5 hover:bg-white/10 text-white/70 py-3 px-6 rounded-xl transition-all text-sm font-semibold">
+              No thanks
+            </button>
+          </div>
+          <p class="text-white/30 text-[9px] text-center shrink-0">You can change this later in Settings → Network → Anonymous Reporting.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Global activity bar + toasts (z-index above all content) -->
     <ActivityBar />
     <ToastContainer />

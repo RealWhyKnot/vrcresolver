@@ -29,6 +29,7 @@ class Program
     private static ModuleCoordinator? _coordinator;
     private static WhyKnotShareService? _shareService;
     private static ResolutionEngine? _resEngine;
+    private static ReportingService? _reportingService;
     private static BrowserExtractService? _browserExtractor;
     private static bool _isWindowReady = false;
 
@@ -229,7 +230,19 @@ class Program
             SendToUi("P2P_SHARE_ERROR", new { message });
         };
 
-        _resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient, potProvider, browserExtractService, warpService);
+        // Anonymous reporting: opt-in, fires on end-of-cascade failure, sanitizes everything
+        // before transmission. Reads the build's version.txt (same source as AppUpdateChecker)
+        // for the appVersion field; falls back to "unknown" if the file is missing (dev runs).
+        string reportingAppVersion = "unknown";
+        try
+        {
+            string vpath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "version.txt");
+            if (File.Exists(vpath)) reportingAppVersion = File.ReadAllText(vpath).Trim();
+        }
+        catch { }
+        _reportingService = new ReportingService(_logger, _settings, reportingAppVersion, _coordinator.EventBus);
+
+        _resEngine = new ResolutionEngine(_logger, _settings, logMonitor, tier2Client, hostsManager, relayPortManager, patcherService, curlClient, potProvider, browserExtractService, warpService, _reportingService);
         _resEngine.SetEventBus(_coordinator.EventBus);
         _resEngine.AttachRelayAbortDetector(relayServer);
 
@@ -270,8 +283,14 @@ class Program
                         eventType = "STRATEGY_DEMOTED";
                         data = evt.Payload!;
                         break;
+                    case SystemEventType.Prompt:
+                        // PublishPrompt wraps as { type, data }. Forward as PROMPT so the UI store
+                        // can dispatch on inner type (anonymousReportingOptIn, etc.).
+                        eventType = "PROMPT";
+                        data = evt.Payload!;
+                        break;
                     default:
-                        return; // Log, Status, Relay, Prompt handled by legacy events for now
+                        return; // Log, Status, Relay handled by legacy events for now
                 }
                 _window?.Invoke(() => {
                     _window?.SendWebMessage(JsonSerializer.Serialize(
@@ -629,6 +648,8 @@ class Program
                             if (newConfig.PerHostRequestBudget > 0) _settings.Config.PerHostRequestBudget = newConfig.PerHostRequestBudget;
                             if (newConfig.PerHostRequestWindowSeconds > 0) _settings.Config.PerHostRequestWindowSeconds = newConfig.PerHostRequestWindowSeconds;
                             _settings.Config.MaskIp = newConfig.MaskIp;
+                            _settings.Config.EnableAnonymousReporting = newConfig.EnableAnonymousReporting;
+                            _settings.Config.AnonymousReportingPromptAnswered = newConfig.AnonymousReportingPromptAnswered;
                             _settings.Config.UserOverriddenKeys = newConfig.UserOverriddenKeys ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                             _settings.Save();
 
@@ -647,6 +668,15 @@ class Program
                                 }
                             }
                         }
+                    }
+                    break;
+                case "SET_ANONYMOUS_REPORTING":
+                    if (root.TryGetProperty("data", out var arData)
+                        && arData.TryGetProperty("optIn", out var optInEl)
+                        && (optInEl.ValueKind == JsonValueKind.True || optInEl.ValueKind == JsonValueKind.False))
+                    {
+                        _reportingService?.RecordUserAnswer(optInEl.GetBoolean());
+                        _window?.SendWebMessage(JsonSerializer.Serialize(new { type = "CONFIG", data = _settings?.Config }));
                     }
                     break;
                 case "PICK_VRC_PATH":

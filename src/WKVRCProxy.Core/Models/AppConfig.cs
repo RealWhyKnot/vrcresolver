@@ -177,6 +177,21 @@ public class AppConfig
     [JsonPropertyName("maskIp")]
     public bool MaskIp { get; set; } = false;
 
+    // Opt-in: when the cascade fully fails (every strategy unable to resolve), POST a sanitized
+    // failure summary to whyknot.dev/api/report so the Discord channel sees the pattern. Default
+    // off; the first time the cascade fails after install, a modal asks the user to opt in. The
+    // sanitizer strips usernames, paths, and IP addresses; only the URL's domain (not path/query)
+    // is sent, plus a SHA256-prefix hash of the path so duplicates can be correlated without
+    // leaking which video was being played.
+    [JsonPropertyName("enableAnonymousReporting")]
+    public bool EnableAnonymousReporting { get; set; } = false;
+
+    // Set to true once the user has answered the opt-in prompt (yes or no). Suppresses the modal
+    // on subsequent cascade failures. The user can still toggle EnableAnonymousReporting in
+    // Settings after answering.
+    [JsonPropertyName("anonymousReportingPromptAnswered")]
+    public bool AnonymousReportingPromptAnswered { get; set; } = false;
+
     // Names (in JSON-key form) of fields the user has explicitly customized via the UI. On load,
     // SettingsManager re-pulls the current code default for any default-tracked field NOT in this
     // set, so editing a default constant in source automatically flows out to all users who

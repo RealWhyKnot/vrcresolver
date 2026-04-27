@@ -35,6 +35,7 @@ public class ResolutionEngine
     private readonly PotProviderService? _potProvider;
     private readonly BrowserExtractService? _browserExtractor;
     private readonly WarpService? _warp;
+    private readonly ReportingService? _reporting;
     private SystemEventBus? _eventBus;
 
     public event Action<string, object>? OnStatusUpdate;
@@ -115,7 +116,7 @@ public class ResolutionEngine
     // without making the UI feel stuck.
     private static readonly TimeSpan PlaybackVerifyDelay = TimeSpan.FromSeconds(8);
 
-    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager, PatcherService patcher, CurlImpersonateClient? curlClient = null, PotProviderService? potProvider = null, BrowserExtractService? browserExtractor = null, WarpService? warp = null)
+    public ResolutionEngine(Logger logger, SettingsManager settings, VrcLogMonitor monitor, Tier2WebSocketClient tier2Client, HostsManager hostsManager, RelayPortManager relayPortManager, PatcherService patcher, CurlImpersonateClient? curlClient = null, PotProviderService? potProvider = null, BrowserExtractService? browserExtractor = null, WarpService? warp = null, ReportingService? reporting = null)
     {
         _logger = logger;
         _settings = settings;
@@ -128,6 +129,7 @@ public class ResolutionEngine
         _potProvider = potProvider;
         _browserExtractor = browserExtractor;
         _warp = warp;
+        _reporting = reporting;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(_settings.Config.UserAgent);
 
@@ -1237,6 +1239,24 @@ public class ResolutionEngine
                         ActionHint = "Check your internet connection. The video URL may be geo-restricted or require authentication.",
                         IsRecoverable = true
                     }, ctx.CorrelationId);
+
+                    // Anonymous reporting hook. Fire-and-forget — the user doesn't wait on the
+                    // report. ReportingService internally checks the opt-in flag, gates on a
+                    // first-launch prompt if the user hasn't answered yet, and rate-limits.
+                    if (_reporting != null)
+                    {
+                        var failureCtx = new CascadeFailureContext
+                        {
+                            OriginalUrl = targetUrl,
+                            Player = player,
+                            ErrorSummary = "All resolution tiers failed. Tried: " + string.Join(", ", cascade) + ".",
+                        };
+                        _ = Task.Run(async () =>
+                        {
+                            try { await _reporting.ReportCascadeFailureAsync(failureCtx); }
+                            catch (Exception rex) { _logger.Debug("[Reporting] Background send threw: " + rex.Message); }
+                        });
+                    }
                 }
             }
         }

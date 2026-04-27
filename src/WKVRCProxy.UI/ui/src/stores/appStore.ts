@@ -65,6 +65,13 @@ export interface AppConfig {
   // stays direct. Backend gates yt-dlp/browser-extract/yt-dlp-og on this; UI just sets the bool
   // (plus calls EnsureRunningAsync via SAVE_CONFIG echo).
   maskIp: boolean;
+  // Anonymous failure reporting opt-in. When enabled, end-of-cascade failures POST a sanitized
+  // summary to whyknot.dev/api/report (forwards to a private Discord channel). Strict client-side
+  // sanitization strips PII before transmission. The first cascade failure after install surfaces
+  // a modal asking the user to opt in or decline; that decision sets enableAnonymousReporting and
+  // anonymousReportingPromptAnswered.
+  enableAnonymousReporting: boolean;
+  anonymousReportingPromptAnswered: boolean;
   // Names of fields the user has explicitly customized via the UI. Backend re-pulls the current
   // code default for any default-tracked field NOT in this set on next load. Helpers
   // markOverridden / clearOverridden manage entries.
@@ -207,6 +214,8 @@ export const useAppStore = defineStore('app', () => {
     strategyPriority: [...STRATEGY_PRIORITY_DEFAULTS],
     enableWaveRace: true,
     maskIp: false,
+    enableAnonymousReporting: false,
+    anonymousReportingPromptAnswered: false,
     userOverriddenKeys: [],
     waveSize: 2,
     waveStageDeadlineSeconds: 3,
@@ -339,6 +348,12 @@ export const useAppStore = defineStore('app', () => {
         if (typeof incoming.maskIp !== 'boolean') {
           incoming.maskIp = false
         }
+        if (typeof incoming.enableAnonymousReporting !== 'boolean') {
+          incoming.enableAnonymousReporting = false
+        }
+        if (typeof incoming.anonymousReportingPromptAnswered !== 'boolean') {
+          incoming.anonymousReportingPromptAnswered = false
+        }
         if (incoming.enableWaveRace === undefined) incoming.enableWaveRace = true
         if (!incoming.waveSize || incoming.waveSize < 1) incoming.waveSize = 2
         if (!incoming.waveStageDeadlineSeconds || incoming.waveStageDeadlineSeconds < 1) incoming.waveStageDeadlineSeconds = 3
@@ -359,6 +374,14 @@ export const useAppStore = defineStore('app', () => {
         status.value = parsed.data
       } else if (parsed.type === 'PROMPT_HOSTS_SETUP') {
         showHostsPrompt.value = true
+      } else if (parsed.type === 'PROMPT') {
+        // Generic prompt envelope from SystemEventBus.PublishPrompt: { type, data }.
+        const inner = parsed.data ?? {}
+        const innerType = inner.type ?? ''
+        if (innerType === 'anonymousReportingOptIn') {
+          reportingOptInPreview.value = (inner.data?.preview ?? '') as string
+          showReportingOptInPrompt.value = true
+        }
       } else if (parsed.type === 'P2P_SHARE_STARTED') {
         p2pShareStatus.value = 'active'
         p2pSharePublicUrl.value = parsed.data?.publicUrl ?? ''
@@ -587,6 +610,18 @@ export const useAppStore = defineStore('app', () => {
     sendMessage('LAUNCH_UNINSTALLER')
   }
 
+  // Anonymous-reporting opt-in modal state. The backend publishes a "PROMPT" event with type
+  // "anonymousReportingOptIn" and a sanitized JSON preview of what would be sent on the next
+  // cascade failure. The UI surfaces a modal so the user can review the actual payload before
+  // deciding. Once answered, the backend stops asking.
+  const showReportingOptInPrompt = ref(false)
+  const reportingOptInPreview = ref('')
+
+  function answerAnonymousReporting(optIn: boolean) {
+    showReportingOptInPrompt.value = false
+    sendMessage('SET_ANONYMOUS_REPORTING', { optIn })
+  }
+
   function dismissAppUpdatePrompt(skipThisVersion = false) {
     if (skipThisVersion) {
       dismissedAppUpdatePromptVersion.value = appUpdate.value.remoteVersion
@@ -644,6 +679,9 @@ export const useAppStore = defineStore('app', () => {
     ytDlpUpdate,
     appUpdate,
     showAppUpdatePrompt,
+    showReportingOptInPrompt,
+    reportingOptInPreview,
+    answerAnonymousReporting,
     refreshBypassMemory,
     forgetBypassKey,
     refreshYtDlpUpdate,
