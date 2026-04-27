@@ -62,13 +62,10 @@ export function baseOptions(): Partial<ChartOptions<any>> {
   } as Partial<ChartOptions<any>>
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
+// Re-exported from the shared util so chart consumers (and anyone who already imports
+// `formatBytes` from this file) get the hardened version that survives undefined/NaN inputs.
+export { formatBytes } from '../../utils/format'
+import { formatBytes } from '../../utils/format'
 
 export function bytesTooltip(ctx: TooltipItem<any>): string {
   const value = (ctx.raw as number) ?? 0

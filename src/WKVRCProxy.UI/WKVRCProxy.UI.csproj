@@ -25,4 +25,14 @@
     </Content>
   </ItemGroup>
 
+  <!-- CHANGELOG.md ships embedded inside the exe so the in-app "Release Notes" viewer
+       (App.vue → openChangelog → GET_CHANGELOG) can stream it back regardless of where
+       the user has the install dir. The logical resource name is the one passed to
+       Assembly.GetManifestResourceStream — keep it in sync with Program.IpcHandlers.cs. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\CHANGELOG.md">
+      <LogicalName>WKVRCProxy.UI.CHANGELOG.md</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>

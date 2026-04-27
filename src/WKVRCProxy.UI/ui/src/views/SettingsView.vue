@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useAppStore, TIER_DISPLAY, STRATEGY_PRIORITY_DEFAULTS } from '../stores/appStore'
+import SettingToggle from '../components/ui/SettingToggle.vue'
 
 const appStore = useAppStore()
 
@@ -542,141 +543,69 @@ function clearHistory() {
         <div class="flex-grow h-px bg-white/5"></div>
       </div>
 
-      <!-- Toggles -->
+      <!-- Toggles — each row is now the shared <SettingToggle> primitive (defined in
+           components/ui/SettingToggle.vue). Visual is byte-identical to the prior 13
+           hand-rolled blocks; switching to the component dropped ~140 lines of duplicated
+           Tailwind boilerplate and means future copy/style changes happen in one place. -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div @click="appStore.config.debugMode = !appStore.config.debugMode; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Detailed Logging</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.debugMode ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.debugMode ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Show technical detail in the logs panel.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.debugMode" @update:modelValue="appStore.saveConfig()"
+                       label="Detailed Logging"
+                       description="Show technical detail in the logs panel." />
 
-        <div @click="appStore.config.forceIPv4 = !appStore.config.forceIPv4; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Force IPv4</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.forceIPv4 ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.forceIPv4 ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Use only IPv4 when resolving video URLs.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.forceIPv4" @update:modelValue="appStore.saveConfig()"
+                       label="Force IPv4"
+                       description="Use only IPv4 when resolving video URLs." />
 
-        <div @click="appStore.config.maskIp = !appStore.config.maskIp; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Mask IP (always WARP)</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.maskIp ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.maskIp ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Routes every video resolution and probe through Cloudflare WARP, so the host sees a Cloudflare edge IP instead of yours. Adds latency. The cloud resolver (Tier 2) stays direct. Switching this on while a YouTube session is active may need a fresh resolve.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.maskIp" @update:modelValue="appStore.saveConfig()"
+                       label="Mask IP (always WARP)"
+                       description="Routes every video resolution and probe through Cloudflare WARP, so the host sees a Cloudflare edge IP instead of yours. Adds latency. The cloud resolver (Tier 2) stays direct. Switching this on while a YouTube session is active may need a fresh resolve." />
 
-        <div @click="appStore.config.autoPatchOnStart = !appStore.config.autoPatchOnStart; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Auto-Patch on Start</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.autoPatchOnStart ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.autoPatchOnStart ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Refresh VRChat's bundled yt-dlp on launch so it matches the bypass tools this app ships with.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.autoPatchOnStart" @update:modelValue="appStore.saveConfig()"
+                       label="Auto-Patch on Start"
+                       description="Refresh VRChat's bundled yt-dlp on launch so it matches the bypass tools this app ships with." />
 
-        <div @click="appStore.config.enableRelayBypass = !appStore.config.enableRelayBypass; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Enable Relay Bypass</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableRelayBypass ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableRelayBypass ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Route video URLs through a local proxy to bypass domain blocking in public VRChat worlds. Required for most public world video players.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.enableRelayBypass" @update:modelValue="appStore.saveConfig()"
+                       label="Enable Relay Bypass"
+                       description="Route video URLs through a local proxy to bypass domain blocking in public VRChat worlds. Required for most public world video players." />
 
-        <div @click="appStore.config.enablePreflightProbe = !appStore.config.enablePreflightProbe; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Pre-Flight URL Probe</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enablePreflightProbe ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enablePreflightProbe ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Test the resolved URL is reachable before handing it to VRChat. Catches dead CDN links and stale cloud results; adds up to 5 seconds on a cold start.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.enablePreflightProbe" @update:modelValue="appStore.saveConfig()"
+                       label="Pre-Flight URL Probe"
+                       description="Test the resolved URL is reachable before handing it to VRChat. Catches dead CDN links and stale cloud results; adds up to 5 seconds on a cold start." />
 
-        <div @click="appStore.config.enableAnonymousReporting = !appStore.config.enableAnonymousReporting; appStore.config.anonymousReportingPromptAnswered = true; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Anonymous Reporting</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableAnonymousReporting ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableAnonymousReporting ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">When every resolution method fails for a video, send a sanitized summary (domain only, no full URL, no usernames, no IPs) so the project can spot patterns. Off by default; toggling on opts in for future failures.</p>
-        </div>
+        <!-- Anonymous reporting marks the prompt as answered the first time the user toggles it
+             from Settings, so the cascade-failure modal stops re-asking. Bound explicitly
+             rather than via v-model so the side-effect ordering stays obvious. -->
+        <SettingToggle :model-value="appStore.config.enableAnonymousReporting"
+                       @update:model-value="(v) => { appStore.config.enableAnonymousReporting = v; appStore.config.anonymousReportingPromptAnswered = true; appStore.saveConfig() }"
+                       label="Anonymous Reporting"
+                       description="When every resolution method fails for a video, send a sanitized summary (domain only, no full URL, no usernames, no IPs) so the project can spot patterns. Off by default; toggling on opts in for future failures." />
 
-        <div @click="appStore.config.enableTierMemory = !appStore.config.enableTierMemory; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Strategy Memory</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableTierMemory ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableTierMemory ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Remember which strategy worked per host so the next play skips the cold race. Off = every play runs the full race.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.enableTierMemory" @update:modelValue="appStore.saveConfig()"
+                       label="Strategy Memory"
+                       description="Remember which strategy worked per host so the next play skips the cold race. Off = every play runs the full race." />
 
-        <div @click="appStore.config.autoUpdateYtDlp = !appStore.config.autoUpdateYtDlp; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Auto-Update yt-dlp</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.autoUpdateYtDlp ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.autoUpdateYtDlp ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Check GitHub for a newer yt-dlp on every launch. The Tier 3 fallback (yt-dlp-og) always stays pinned to VRChat's own copy.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.autoUpdateYtDlp" @update:modelValue="appStore.saveConfig()"
+                       label="Auto-Update yt-dlp"
+                       description="Check GitHub for a newer yt-dlp on every launch. The Tier 3 fallback (yt-dlp-og) always stays pinned to VRChat's own copy." />
 
-        <div @click="appStore.config.enableBrowserExtract = !appStore.config.enableBrowserExtract; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Browser Extract Strategy</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableBrowserExtract ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableBrowserExtract ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Headless Edge/Chrome fallback for sites that need JavaScript to load. Uses an already-installed browser; no extra download.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.enableBrowserExtract" @update:modelValue="appStore.saveConfig()"
+                       label="Browser Extract Strategy"
+                       description="Headless Edge/Chrome fallback for sites that need JavaScript to load. Uses an already-installed browser; no extra download." />
 
         <!-- Sub-toggle: only meaningful when browser-extract is on AND no system browser is found.
              Off keeps PuppeteerSharp from grabbing a ~180 MB Chromium build behind your back. -->
-        <div v-if="appStore.config.enableBrowserExtract"
-             @click="appStore.config.downloadBundledChromium = !appStore.config.downloadBundledChromium; appStore.saveConfig()"
-             class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Bundled Chromium Fallback</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.downloadBundledChromium ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.downloadBundledChromium ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">If no Edge/Chrome/Brave is installed, this lets browser-extract download its own Chromium (about 180 MB) the first time it needs one.</p>
-        </div>
+        <SettingToggle v-if="appStore.config.enableBrowserExtract"
+                       v-model="appStore.config.downloadBundledChromium" @update:modelValue="appStore.saveConfig()"
+                       label="Bundled Chromium Fallback"
+                       description="If no Edge/Chrome/Brave is installed, this lets browser-extract download its own Chromium (about 180 MB) the first time it needs one." />
 
-        <div @click="appStore.config.streamlinkDisableTwitchAds = !appStore.config.streamlinkDisableTwitchAds; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Filter Twitch Ads</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.streamlinkDisableTwitchAds ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.streamlinkDisableTwitchAds ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Strip Twitch ad segments from the Streamlink (Tier 0) feed. The picture freezes on the last good frame for the ad's duration; off = ads play through normally.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.streamlinkDisableTwitchAds" @update:modelValue="appStore.saveConfig()"
+                       label="Filter Twitch Ads"
+                       description="Strip Twitch ad segments from the Streamlink (Tier 0) feed. The picture freezes on the last good frame for the ad's duration; off = ads play through normally." />
 
-        <div @click="appStore.config.enableRelaySmoothnessDebug = !appStore.config.enableRelaySmoothnessDebug; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
-          <div class="flex justify-between items-start mb-4">
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Relay Smoothness Debug</h4>
-            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableRelaySmoothnessDebug ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
-              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableRelaySmoothnessDebug ? 'left-6' : 'left-1']"></div>
-            </div>
-          </div>
-          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Logs how fast each video segment arrives. Slow segments show up at info, stalls at warning. Useful for spotting stutter that isn't a full playback failure.</p>
-        </div>
+        <SettingToggle v-model="appStore.config.enableRelaySmoothnessDebug" @update:modelValue="appStore.saveConfig()"
+                       label="Relay Smoothness Debug"
+                       description="Logs how fast each video segment arrives. Slow segments show up at info, stalls at warning. Useful for spotting stutter that isn't a full playback failure." />
       </div>
 
       <!-- Direct-connect hosts (skipped by the relay wrap) -->

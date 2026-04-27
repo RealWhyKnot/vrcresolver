@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useAppStore } from '../stores/appStore'
 import { useAnimatedNumber } from '../composables/useAnimatedNumber'
+import { formatBytes } from '../utils/format'
 import RelayBandwidthChart from '../components/charts/RelayBandwidthChart.vue'
 import StatusCodeDonut from '../components/charts/StatusCodeDonut.vue'
 
@@ -9,14 +10,6 @@ const appStore = useAppStore()
 
 const clearEvents = () => {
   appStore.relayEvents = []
-}
-
-const formatBytes = (bytes: number) => {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
 const totalRequests = computed(() => appStore.relayEvents.length)
@@ -64,6 +57,23 @@ watch(() => appStore.relayEvents[0]?.id, (id) => {
 
 <template>
   <div class="h-full flex flex-col p-8 lg:p-12 max-w-7xl mx-auto w-full">
+    <!-- Relay-disabled affordance: explains why no events ever appear without forcing
+         the user to dig into Settings to find out it's the bypass switch. -->
+    <button v-if="!appStore.config.enableRelayBypass"
+            @click="appStore.activeTab = 'settings'"
+            class="mb-6 w-full flex items-center justify-between gap-4 px-5 py-3.5 bg-amber-500/10 hover:bg-amber-500/15 border border-amber-500/25 rounded-2xl transition-all text-left group">
+      <div class="flex items-center gap-3 min-w-0">
+        <div class="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+          <i class="bi bi-pause-fill text-amber-400"></i>
+        </div>
+        <div class="min-w-0">
+          <p class="text-amber-300 text-[10px] font-black uppercase tracking-widest italic">Relay bypass disabled</p>
+          <p class="text-white/55 text-[10px] mt-0.5">No traffic will be observed until you re-enable it. Off-list hosts will fail in VRChat.</p>
+        </div>
+      </div>
+      <span class="shrink-0 text-[9px] font-black uppercase tracking-widest text-amber-300/70 group-hover:text-amber-200 transition-colors italic">Settings <i class="bi bi-arrow-right ml-1"></i></span>
+    </button>
+
     <div class="flex justify-between items-end mb-8"
          v-motion :initial="{ opacity: 0, y: -8 }" :enter="{ opacity: 1, y: 0, transition: { duration: 450, delay: 40 } }">
       <div>

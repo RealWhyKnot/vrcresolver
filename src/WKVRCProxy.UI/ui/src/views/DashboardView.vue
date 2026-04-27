@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed } from 'vue'
 import { useAppStore, TIER_DISPLAY } from '../stores/appStore'
 import { useAnimatedNumber } from '../composables/useAnimatedNumber'
+import { formatUptime } from '../utils/format'
 import SuccessDonut from '../components/charts/SuccessDonut.vue'
 import ActivitySparkline from '../components/charts/ActivitySparkline.vue'
 import RequestsOverTime from '../components/charts/RequestsOverTime.vue'
@@ -59,29 +60,15 @@ function flashClass(dir: 'up' | 'down' | null): string {
 }
 
 // --- Uptime ---
-const uptime = ref('00:00:00')
-let uptimeStart = 0
-let uptimeInterval = 0
-
-function formatUptime(ms: number): string {
-  const totalSec = Math.floor(ms / 1000)
-  const h = String(Math.floor(totalSec / 3600)).padStart(2, '0')
-  const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0')
-  const s = String(totalSec % 60).padStart(2, '0')
-  return `${h}:${m}:${s}`
-}
-
-onMounted(() => {
-  uptimeStart = Date.now()
-  uptimeInterval = window.setInterval(() => {
-    uptime.value = formatUptime(Date.now() - uptimeStart)
-  }, 1000)
-})
-onUnmounted(() => {
-  clearInterval(uptimeInterval)
-})
+// Reads from a store-owned ticker so the value persists across view switches; previously
+// each Dashboard mount restarted a local timer at 00:00:00.
+const uptime = computed(() => formatUptime(appStore.uptimeMs))
 
 const isResolving = computed(() => appStore.status.stats.activeCount > 0)
+
+// Some status fields ship as `null` until the backend fully populates the first STATUS push;
+// guard the .split() so a transient null doesn't blow up the template.
+const cloudNodeShort = computed(() => appStore.status.stats.node?.split('.')[0] ?? '—')
 </script>
 
 <template>
@@ -114,7 +101,7 @@ const isResolving = computed(() => appStore.status.stats.activeCount > 0)
         <div class="w-[1px] h-6 bg-white/10"></div>
         <div class="text-center">
           <p class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">Cloud</p>
-          <p class="text-lg font-black italic text-purple-400 uppercase">{{ appStore.status.stats.node.split('.')[0] }}</p>
+          <p class="text-lg font-black italic text-purple-400 uppercase">{{ cloudNodeShort }}</p>
         </div>
         <div class="w-[1px] h-6 bg-white/10"></div>
         <div class="text-center">
@@ -249,7 +236,7 @@ const isResolving = computed(() => appStore.status.stats.activeCount > 0)
               <div class="min-w-0 flex-grow">
                 <p class="text-[11px] font-black text-white/80 truncate italic group-hover/item:text-blue-400 transition-colors">{{ entry.OriginalUrl }}</p>
                 <div class="flex items-center gap-2 mt-1">
-                  <span class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">{{ TIER_DISPLAY[entry.Tier.split('-')[0]]?.short || entry.Tier }}</span>
+                  <span class="text-[8px] font-black uppercase tracking-widest text-white/45 italic">{{ TIER_DISPLAY[entry.Tier?.split('-')[0] ?? '']?.short || entry.Tier || '—' }}</span>
                   <span class="w-0.5 h-0.5 bg-white/20 rounded-full"></span>
                   <span class="text-[8px] font-bold text-white/45 uppercase tabular-nums tracking-widest">{{ new Date(entry.Timestamp).toLocaleTimeString() }}</span>
                 </div>
@@ -274,9 +261,14 @@ const isResolving = computed(() => appStore.status.stats.activeCount > 0)
         </div>
 
         <div class="space-y-2 font-mono text-[9px]">
-          <div v-for="(log, i) in appStore.logs.slice(-10).reverse()" :key="i" class="flex gap-3 px-3 py-1.5 border-l-2 border-white/5 hover:border-blue-500/40 hover:bg-white/[0.02] transition-all">
-            <span class="text-white/35 shrink-0 font-bold tabular-nums">{{ log.Timestamp.split('T')[1]?.split('.')[0] }}</span>
+          <div v-for="(log, i) in appStore.logs.slice(-10).reverse()"
+               :key="(log.Timestamp ?? '') + '-' + (log.Source ?? '') + '-' + i"
+               class="flex gap-3 px-3 py-1.5 border-l-2 border-white/5 hover:border-blue-500/40 hover:bg-white/[0.02] transition-all">
+            <span class="text-white/35 shrink-0 font-bold tabular-nums">{{ log.Timestamp?.split('T')[1]?.split('.')[0] ?? '--:--:--' }}</span>
             <span class="text-white/65 break-all leading-normal">{{ log.Message }}</span>
+          </div>
+          <div v-if="appStore.logs.length === 0" class="py-6 text-center uppercase tracking-[0.4em] text-white/25 text-[8px] font-black italic">
+            No logs yet · play a video in VRChat
           </div>
         </div>
       </div>

@@ -3,7 +3,13 @@ param(
     # passes the git tag here (with the leading "v" stripped) so the published release's tag,
     # zip filename, and embedded assembly version are all the same string. Local builds leave
     # this empty and get the auto-derived stamp from $Today + $BuildCount + a fresh GUID prefix.
-    [string]$Version = ""
+    [string]$Version = "",
+
+    # Skip the release zip packaging step. The zip is what the GitHub release workflow uploads
+    # and what the in-app AppUpdateChecker downloads — CI builds always want it. Local rebuilds
+    # don't, and accumulate one zip per build in release/ otherwise. Pass -SkipZip to short-
+    # circuit the Compress-Archive at the end. dist/ is still produced normally.
+    [switch]$SkipZip
 )
 
 $ErrorActionPreference = "Stop"
@@ -269,9 +275,13 @@ if ($BgutilRelease) {
 }
 
 # 5. Fetch Latest Streamlink (Windows portable zip)
+# Streamlink itself stopped publishing the Windows portable zip on its main repo's GitHub
+# releases — `streamlink/streamlink` releases now ship only the source tarball. The portable
+# build moved to `streamlink/windows-builds`, tagged `X.Y.Z-N` (the `-N` is the build
+# iteration; we just round-trip the tag verbatim through $Versions.streamlink).
 $StreamlinkVendorDir = Join-Path $VendorDir "streamlink"
 try {
-    $StreamlinkRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/streamlink/streamlink/releases/latest" -ErrorAction Stop
+    $StreamlinkRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/streamlink/windows-builds/releases/latest" -ErrorAction Stop
     $LatestStreamlinkVersion = $StreamlinkRelease.tag_name
     $SlExePath = Join-Path $StreamlinkVendorDir "bin\streamlink.exe"
     if ($Versions.streamlink -ne $LatestStreamlinkVersion -or !(Test-Path $SlExePath)) {
@@ -533,14 +543,19 @@ $FullVersion | Set-Content -Path (Join-Path $PSScriptRoot "version.txt") -Encodi
 # Release zip — what the updater fetches from GitHub and what the release workflow uploads.
 # Lives outside dist/ so a second build doesn't accidentally include the previous zip in the
 # new one. Named with the full version so users (and the updater) can identify the build.
-$ReleaseDir = Join-Path $PSScriptRoot "release"
-if (!(Test-Path $ReleaseDir)) { New-Item -ItemType Directory $ReleaseDir | Out-Null }
-$ZipPath = Join-Path $ReleaseDir "WKVRCProxy-$FullVersion.zip"
-if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
-Write-Host "Packaging release zip: $ZipPath" -ForegroundColor Cyan
-Compress-Archive -Path (Join-Path $BuildDir "*") -DestinationPath $ZipPath -Force
-$ZipHash = (Get-FileHash $ZipPath -Algorithm SHA256).Hash
-Write-Host "Release zip ready. SHA256: $ZipHash" -ForegroundColor Green
+# -SkipZip lets local devs short-circuit this so release/ doesn't accumulate a zip per build.
+if ($SkipZip) {
+    Write-Host "Skipping release zip (-SkipZip)." -ForegroundColor DarkGray
+} else {
+    $ReleaseDir = Join-Path $PSScriptRoot "release"
+    if (!(Test-Path $ReleaseDir)) { New-Item -ItemType Directory $ReleaseDir | Out-Null }
+    $ZipPath = Join-Path $ReleaseDir "WKVRCProxy-$FullVersion.zip"
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+    Write-Host "Packaging release zip: $ZipPath" -ForegroundColor Cyan
+    Compress-Archive -Path (Join-Path $BuildDir "*") -DestinationPath $ZipPath -Force
+    $ZipHash = (Get-FileHash $ZipPath -Algorithm SHA256).Hash
+    Write-Host "Release zip ready. SHA256: $ZipHash" -ForegroundColor Green
+}
 
 Write-Host "`nBuild $FullVersion Complete! Output in: $BuildDir" -ForegroundColor Green
 

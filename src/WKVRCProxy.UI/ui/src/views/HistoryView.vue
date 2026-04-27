@@ -176,7 +176,7 @@ const isInitialLoad = computed(() => !appStore.isBridgeReady)
           </tr>
         </thead>
         <TransitionGroup tag="tbody" name="history-row" class="divide-y divide-white/5 font-bold">
-          <tr v-for="(entry, i) in filteredHistory" :key="entry.Timestamp + i" class="hover:bg-white/[0.03] transition-all duration-300 group">
+          <tr v-for="(entry, i) in filteredHistory" :key="(entry.Timestamp ?? '') + '|' + (entry.OriginalUrl ?? '') + '|' + i" class="hover:bg-white/[0.03] transition-all duration-300 group">
             <td class="px-6 py-4 text-white/50 font-mono tabular-nums">{{ formatTime(entry.Timestamp) }}</td>
             <td class="px-6 py-4">
               <div class="flex flex-col gap-1">
@@ -186,8 +186,8 @@ const isInitialLoad = computed(() => !appStore.isBridgeReady)
             </td>
             <td class="px-6 py-4">
               <div class="flex items-center gap-2">
-                <span :title="TIER_DISPLAY[entry.Tier.split('-')[0]]?.long" class="px-3 py-1 bg-white/5 rounded-lg text-[8px] font-black uppercase tracking-widest border border-white/5 group-hover:border-blue-500/20 transition-all italic">
-                  {{ TIER_DISPLAY[entry.Tier.split('-')[0]]?.short || entry.Tier }}
+                <span :title="TIER_DISPLAY[entry.Tier?.split('-')[0] ?? '']?.long" class="px-3 py-1 bg-white/5 rounded-lg text-[8px] font-black uppercase tracking-widest border border-white/5 group-hover:border-blue-500/20 transition-all italic">
+                  {{ TIER_DISPLAY[entry.Tier?.split('-')[0] ?? '']?.short || entry.Tier || '—' }}
                 </span>
                 <i :title="entry.Player" :class="entry.Player === 'AVPro' ? 'bi-camera-video-fill text-purple-400/70' : 'bi-play-circle-fill text-blue-400/70'" class="bi text-xs"></i>
               </div>

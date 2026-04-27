@@ -153,12 +153,13 @@ watch(() => appStore.filteredLogs.length, () => {
           <SkeletonRow :count="6" height="h-6" />
         </template>
         <template v-else>
-          <div v-for="(log, i) in appStore.filteredLogs" :key="i"
+          <div v-for="(log, i) in appStore.filteredLogs"
+               :key="(log.Timestamp ?? '') + '|' + (log.Source ?? '') + '|' + i"
                :class="['grid grid-cols-[7rem_6rem_8rem_1fr] gap-4 border-l border-transparent hover:border-blue-500/40 hover:bg-white/[0.03] px-4 transition-all py-0.5 rounded-r-lg group/item',
                         isErrorLevel(log.Level) ? 'border-red-500/25' : '',
                         i === newestErrorIndex ? 'error-pulse' : '']">
             <span class="text-white/35 shrink-0 group-hover/item:text-white/55 font-bold tabular-nums">
-              {{ log.Timestamp.split('T')[1]?.split('.')[0] }}
+              {{ log.Timestamp?.split('T')[1]?.split('.')[0] ?? '--:--:--' }}
             </span>
             <span :class="logLevelClasses[log.Level]" class="shrink-0 uppercase tracking-widest truncate">
               [{{ logLevelNames[log.Level] }}]
@@ -170,8 +171,14 @@ watch(() => appStore.filteredLogs.length, () => {
               {{ log.Message }}
             </span>
           </div>
-          <div v-if="appStore.filteredLogs.length === 0" class="text-white/25 italic py-20 text-center uppercase tracking-[0.8em] font-black">
-            {{ appStore.logs.length === 0 ? 'No logs yet' : 'No logs match filter' }}
+          <div v-if="appStore.filteredLogs.length === 0" class="text-white/25 italic py-20 text-center font-black">
+            <p class="uppercase tracking-[0.8em]">{{ appStore.logs.length === 0 ? 'No logs yet' : 'No logs match filter' }}</p>
+            <p v-if="appStore.logs.length === 0" class="mt-3 text-white/20 text-[10px] tracking-widest normal-case">
+              Logs from VRChat and the proxy will appear here once a video is requested.
+            </p>
+            <p v-else class="mt-3 text-white/20 text-[10px] tracking-widest normal-case">
+              Try clearing the level / source filter above.
+            </p>
           </div>
         </template>
       </div>

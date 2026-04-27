@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, computed, defineAsyncComponent } from 'vue'
+import { marked } from 'marked'
 import { useAppStore } from './stores/appStore'
-import ThreeBackground from './components/ThreeBackground.vue'
+// ThreeBackground pulls in ~515 KB of three.js — lazy-loading it via defineAsyncComponent
+// keeps the cold-start bundle small. The 3D scene fades in shortly after first paint, which
+// is fine for a decorative background. (See vite.config.ts — `three` is its own chunk.)
+const ThreeBackground = defineAsyncComponent(() => import('./components/ThreeBackground.vue'))
 import Sidebar from './components/layout/Sidebar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import ActivityBar from './components/ActivityBar.vue'
@@ -36,6 +40,21 @@ const acceptAppUpdate = () => {
 
 const skipAppUpdate = () => appStore.dismissAppUpdatePrompt(true)
 const laterAppUpdate = () => appStore.dismissAppUpdatePrompt(false)
+
+// Renders the embedded CHANGELOG.md → HTML on the fly. The changelog is small (a few KB)
+// so we don't bother memoising; Vue's reactive system already short-circuits when the
+// source string hasn't changed. Defence-in-depth XSS strip: even though we own the input
+// (an embedded resource), kill any <script> tags or `on*=` event handlers `marked` might
+// pass through if the source were ever tampered with.
+const changelogHtml = computed(() => {
+  const raw = appStore.changelog
+  if (!raw) return ''
+  const html = marked.parse(raw, { async: false }) as string
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/\son\w+="[^"]*"/gi, '')
+    .replace(/\son\w+='[^']*'/gi, '')
+})
 
 onMounted(() => {
   if (!appStore.initBridge()) {
@@ -200,6 +219,61 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- Changelog Modal — opened from the footer "Release notes" icon. Markdown is fetched
+         lazily on first open (GET_CHANGELOG -> CHANGELOG inbound message); subsequent opens
+         reuse the cached value in appStore.changelog. -->
+    <div v-if="appStore.showChangelogModal" class="fixed inset-0 z-[95] bg-black/80 flex items-center justify-center backdrop-blur-xl animate-in fade-in duration-300"
+         @click.self="appStore.closeChangelog()">
+      <div class="bg-[#0a0a0c] border border-white/10 rounded-3xl p-8 max-w-2xl w-full shadow-2xl relative overflow-hidden mx-4 max-h-[85vh] flex flex-col">
+        <div class="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent pointer-events-none"></div>
+        <div class="relative z-10 space-y-5 flex-1 overflow-hidden flex flex-col">
+          <div class="flex items-center justify-between gap-4 shrink-0">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 bg-blue-500/20 rounded-2xl flex items-center justify-center border border-blue-500/30 shrink-0">
+                <i class="bi bi-file-text text-blue-400"></i>
+              </div>
+              <div>
+                <h2 class="text-xl font-black uppercase tracking-tighter italic">Release Notes</h2>
+                <p class="text-white/40 text-[9px] font-bold uppercase tracking-[0.2em] mt-0.5">Build {{ appStore.version }}</p>
+              </div>
+            </div>
+            <button @click="appStore.closeChangelog()"
+                    class="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 text-white/55 hover:text-white transition-all flex items-center justify-center"
+                    title="Close">
+              <i class="bi bi-x-lg text-sm"></i>
+            </button>
+          </div>
+
+          <div class="flex-1 overflow-y-auto bg-black/30 border border-white/5 rounded-2xl p-6 changelog-prose">
+            <div v-if="appStore.changelogLoading && !appStore.changelog"
+                 class="flex flex-col items-center justify-center py-12 text-white/35">
+              <div class="flex gap-1.5 mb-4">
+                <div class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></div>
+                <div class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:0.15s]"></div>
+                <div class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:0.3s]"></div>
+              </div>
+              <p class="text-[9px] font-bold uppercase tracking-widest">Loading changelog...</p>
+            </div>
+            <div v-else-if="!appStore.changelog" class="text-white/35 text-center py-12 text-[10px]">
+              Changelog unavailable in this build.
+            </div>
+            <div v-else v-html="changelogHtml"></div>
+          </div>
+
+          <div class="flex gap-3 pt-1 shrink-0">
+            <button @click="appStore.openReleasesPage()"
+                    class="flex-1 bg-white/5 hover:bg-white/10 text-white/70 py-3 px-6 rounded-xl transition-all text-[10px] font-black uppercase tracking-widest italic">
+              <i class="bi bi-github mr-2"></i>View on GitHub
+            </button>
+            <button @click="appStore.closeChangelog()"
+                    class="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 px-6 rounded-xl transition-all text-[10px] font-black uppercase tracking-widest italic shadow-lg shadow-blue-600/20">
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Global activity bar + toasts (z-index above all content) -->
     <ActivityBar />
     <ToastContainer />
@@ -250,9 +324,16 @@ onMounted(() => {
       <!-- Footer Area -->
       <footer class="px-8 py-4 border-t border-white/5 bg-black/20 backdrop-blur-xl flex items-center justify-between z-20">
         <span class="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em]">&copy; {{ new Date().getFullYear() }} WhyKnot</span>
-        <div class="flex items-center gap-2 font-mono text-[8px] uppercase tracking-widest text-white/20">
+        <div class="flex items-center gap-3 font-mono text-[8px] uppercase tracking-widest text-white/20">
+          <button @click="appStore.openChangelog()"
+                  class="flex items-center gap-1.5 px-2 py-0.5 rounded-md hover:bg-white/5 hover:text-blue-300 transition-all"
+                  title="Release notes">
+            <i class="bi bi-file-text"></i>
+            <span class="hidden md:inline">Notes</span>
+          </button>
+          <span class="w-px h-3 bg-white/10"></span>
           <span class="w-1 h-1 bg-blue-500/40 rounded-full"></span>
-          Build: <span class="text-white/40">{{ appStore.version }}</span>
+          <span>Build: <span class="text-white/40">{{ appStore.version }}</span></span>
         </div>
       </footer>
     </main>
@@ -270,4 +351,21 @@ onMounted(() => {
 @keyframes slide-in-from-bottom-4 { from { transform: translateY(1rem); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 @keyframes zoom-in-95 { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .animate-in { animation-fill-mode: both; }
+
+/* Changelog markdown rendering. Hand-tuned in lieu of @tailwindcss/typography to keep the
+   bundle lean. Targets the structures `marked` emits for our CHANGELOG.md (h1/h2/h3, ul,
+   strong, code, hr, links). */
+.changelog-prose { color: rgba(255,255,255,0.78); font-size: 12px; line-height: 1.6; }
+.changelog-prose h1 { font-size: 18px; font-weight: 900; text-transform: uppercase; letter-spacing: -0.02em; font-style: italic; color: rgba(255,255,255,0.95); margin: 0 0 16px; }
+.changelog-prose h2 { font-size: 14px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.05em; font-style: italic; color: rgba(96,165,250,0.95); margin: 24px 0 8px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.changelog-prose h3 { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.15em; color: rgba(255,255,255,0.55); margin: 14px 0 6px; }
+.changelog-prose p { margin: 6px 0; }
+.changelog-prose ul { margin: 6px 0 12px; padding-left: 18px; }
+.changelog-prose li { margin: 3px 0; }
+.changelog-prose li::marker { color: rgba(96,165,250,0.5); }
+.changelog-prose strong { color: rgba(255,255,255,0.95); font-weight: 800; }
+.changelog-prose code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: rgba(147,197,253,0.95); }
+.changelog-prose a { color: rgba(96,165,250,0.95); text-decoration: underline; text-decoration-color: rgba(96,165,250,0.3); }
+.changelog-prose a:hover { color: rgba(147,197,253,1); text-decoration-color: rgba(147,197,253,0.6); }
+.changelog-prose hr { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 18px 0; }
 </style>

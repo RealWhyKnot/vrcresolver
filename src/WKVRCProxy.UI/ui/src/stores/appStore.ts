@@ -110,7 +110,23 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.27.7-4974')
+  const version = ref('2026.4.27.14-A130')
+
+  // Session uptime — store-owned ticker so the value survives DashboardView unmounts.
+  // Previously DashboardView held its own setInterval + Date.now() baseline, which meant
+  // every time the user navigated away and back the clock reset to 00:00:00.
+  const sessionStartedAt = ref(Date.now())
+  const uptimeMs = ref(0)
+  window.setInterval(() => {
+    uptimeMs.value = Date.now() - sessionStartedAt.value
+  }, 1000)
+
+  // Changelog viewer state. Content is fetched lazily on first open via GET_CHANGELOG IPC,
+  // then cached for the rest of the session. The C# side reads CHANGELOG.md from the
+  // embedded resources of WKVRCProxy.UI.exe.
+  const changelog = ref<string>('')
+  const changelogLoading = ref(false)
+  const showChangelogModal = ref(false)
 
   const demotions = ref<DemotionNotification[]>([])
   const DEMOTION_CAP = 20
@@ -328,6 +344,11 @@ export const useAppStore = defineStore('app', () => {
           showAppUpdatePrompt.value = true
         }
         _prevAppUpdateStatus = next.status
+      } else if (parsed.type === 'CHANGELOG') {
+        // C# replies to GET_CHANGELOG with the raw markdown of CHANGELOG.md (embedded resource).
+        // We render it client-side in App.vue using `marked` so the C# side stays dumb.
+        changelog.value = (parsed.data?.content ?? '') as string
+        changelogLoading.value = false
       } else if (parsed.type === 'STRATEGY_DEMOTED') {
         const p = parsed.data ?? {}
         const entry: DemotionNotification = {
@@ -424,7 +445,9 @@ export const useAppStore = defineStore('app', () => {
   })
 
   const totalBytesTransferred = computed(() => {
-    return relayEvents.value.reduce((sum, e) => sum + e.bytesTransferred, 0)
+    // Coalesce undefined bytes (in-flight events) to 0 — a single missing field would
+    // otherwise NaN-poison the sum and the UI would render "NaN B" / "undefined".
+    return relayEvents.value.reduce((sum, e) => sum + (e.bytesTransferred ?? 0), 0)
   })
 
   function clearHistory() {
@@ -517,6 +540,26 @@ export const useAppStore = defineStore('app', () => {
     sendMessage('SET_ANONYMOUS_REPORTING', { optIn })
   }
 
+  // Opens the changelog modal. First call sends GET_CHANGELOG so the C# side can stream
+  // the embedded CHANGELOG.md back; subsequent opens reuse the cached content. The modal
+  // shows immediately with a loading state so the user isn't staring at a blank screen
+  // during the (typically <50 ms) round-trip.
+  function openChangelog() {
+    showChangelogModal.value = true
+    if (!changelog.value && !changelogLoading.value) {
+      changelogLoading.value = true
+      sendMessage('GET_CHANGELOG')
+    }
+  }
+
+  function closeChangelog() {
+    showChangelogModal.value = false
+  }
+
+  function openReleasesPage() {
+    sendMessage('OPEN_BROWSER', { url: 'https://github.com/RealWhyKnot/WKVRCProxy/releases' })
+  }
+
   function dismissAppUpdatePrompt(skipThisVersion = false) {
     if (skipThisVersion) {
       dismissedAppUpdatePromptVersion.value = appUpdate.value.remoteVersion
@@ -595,7 +638,15 @@ export const useAppStore = defineStore('app', () => {
     enqueueToast,
     dismissToast,
     pauseToast,
-    resumeToast
+    resumeToast,
+    uptimeMs,
+    sessionStartedAt,
+    changelog,
+    changelogLoading,
+    showChangelogModal,
+    openChangelog,
+    closeChangelog,
+    openReleasesPage
   }
 })
 

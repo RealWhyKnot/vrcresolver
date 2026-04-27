@@ -3,6 +3,7 @@
 todo/
 vendor/
 dist/
+release/
 logs/
 build/
 node_modules/

@@ -81,6 +81,16 @@ onMounted(() => {
         <span v-if="tab.id === 'logs' && appStore.logs.length > 0" class="relative z-10 ml-auto bg-blue-500/20 text-blue-400 text-[7px] font-black px-1.5 py-0.5 rounded-full">{{ appStore.logs.length }}</span>
         <span v-else-if="tab.id === 'relay' && appStore.relayEvents.length > 0" class="relative z-10 ml-auto bg-blue-500/20 text-blue-400 text-[7px] font-black px-1.5 py-0.5 rounded-full">{{ appStore.relayEvents.length }}</span>
         <span v-else-if="tab.id === 'history' && appStore.config.history.length > 0" class="relative z-10 ml-auto bg-blue-500/20 text-blue-400 text-[7px] font-black px-1.5 py-0.5 rounded-full">{{ appStore.config.history.length }}</span>
+        <!-- Share badge: signals an active P2P stream (indigo, pulsing) or a ready cloud URL
+             (green) so the user notices state they may have left behind on another tab. -->
+        <span v-else-if="tab.id === 'share' && appStore.p2pShareStatus === 'active'"
+              class="relative z-10 ml-auto flex items-center gap-1 bg-indigo-500/20 text-indigo-300 text-[7px] font-black px-1.5 py-0.5 rounded-full"
+              title="Stream active">
+          <span class="w-1 h-1 rounded-full bg-indigo-300 animate-pulse"></span>LIVE
+        </span>
+        <span v-else-if="tab.id === 'share' && appStore.cloudResolveStatus === 'ready'"
+              class="relative z-10 ml-auto bg-emerald-500/20 text-emerald-300 text-[7px] font-black px-1.5 py-0.5 rounded-full"
+              title="Resolved URL waiting to copy">URL</span>
 
         <!-- Active Indicator Dot -->
         <div v-if="appStore.activeTab === tab.id" class="absolute right-4 w-1 h-1 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,1)] z-10"></div>

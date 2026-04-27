@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -379,6 +380,29 @@ partial class Program
                     break;
                 case "LAUNCH_UNINSTALLER_FORCE":
                     LaunchSidecarAndExit("uninstall.exe", forceElevation: true);
+                    break;
+                case "GET_CHANGELOG":
+                    // Streams the embedded CHANGELOG.md back as raw markdown; the UI
+                    // (App.vue → marked) renders it. Embedding is set in WKVRCProxy.UI.csproj
+                    // (<EmbeddedResource Include="..\..\CHANGELOG.md" LogicalName="...">) —
+                    // keep the resource name in sync with that.
+                    try {
+                        string content;
+                        using (var stream = Assembly.GetExecutingAssembly()
+                            .GetManifestResourceStream("WKVRCProxy.UI.CHANGELOG.md"))
+                        {
+                            if (stream == null) {
+                                content = "Changelog unavailable in this build.";
+                            } else {
+                                using var reader = new StreamReader(stream);
+                                content = reader.ReadToEnd();
+                            }
+                        }
+                        SendToUi("CHANGELOG", new { content });
+                    } catch (Exception ex) {
+                        _logger?.Warning("GET_CHANGELOG failed: " + ex.Message, ex);
+                        SendToUi("CHANGELOG", new { content = "Failed to load changelog: " + ex.Message });
+                    }
                     break;
             }
         } catch (Exception ex) {
