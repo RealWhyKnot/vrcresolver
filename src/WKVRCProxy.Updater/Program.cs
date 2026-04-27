@@ -165,6 +165,25 @@ internal static class Program
             string assetNameFinal = assetName!;
             Log("Found asset: " + assetName);
 
+            // Mandatory SHA256 gate. The release workflow (.github/workflows/release.yml) always
+            // emits a "SHA256: <hex>" line in the release notes. If it's missing or malformed we
+            // refuse to proceed — we will not download an unverifiable zip and swap it in over
+            // the user's install. Fail fast (before WaitForAppExit + download) so the user isn't
+            // forced to close VRChat just to see the error.
+            string? expectedSha = ExtractSha256(body);
+            if (string.IsNullOrEmpty(expectedSha))
+            {
+                Log("ERROR: Release " + tag + " has no SHA256 line in its notes (or the value is malformed).");
+                Log("       Refusing to install an unverified update. Re-download manually from the releases page if needed:");
+                if (root.TryGetProperty("html_url", out var hu0))
+                    Log("       " + (hu0.GetString() ?? "https://github.com/RealWhyKnot/WKVRCProxy/releases/latest"));
+                else
+                    Log("       https://github.com/RealWhyKnot/WKVRCProxy/releases/latest");
+                Pause();
+                return 12;
+            }
+            Log("Release notes report SHA256: " + expectedSha);
+
             // Wait for the running app to exit (release file locks). The single-instance mutex is
             // held for the lifetime of WKVRCProxy.exe, so being able to acquire it = app is gone.
             // When we self-relaunched from %TEMP%, the original updater (still inside the install
@@ -190,24 +209,31 @@ internal static class Program
                 Log("Downloading " + assetNameFinal + "...");
                 await DownloadWithProgress(http, assetUrlFinal, zipPath, Log);
 
-                // Optional SHA256 verification: release notes can contain a "SHA256: <hex>" line.
-                string? expectedSha = ExtractSha256(body);
-                if (!string.IsNullOrEmpty(expectedSha))
+                // Mandatory SHA256 verification. The expected hash was already parsed (and required
+                // to be present) before WaitForAppExit. Mismatch is a hard fail — we never extract
+                // a zip whose contents don't match the release-notes-attested hash.
+                Log("Verifying SHA256...");
+                string actualSha = HashFileSha256(zipPath);
+                if (!string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase))
                 {
-                    Log("Verifying SHA256...");
-                    string actual = HashFileSha256(zipPath);
-                    if (!string.Equals(actual, expectedSha, StringComparison.OrdinalIgnoreCase))
-                    {
-                        Log("ERROR: SHA256 mismatch. Expected " + expectedSha + " got " + actual + ". Aborting.");
-                        Pause();
-                        return 7;
-                    }
-                    Log("SHA256 OK.");
+                    Log("ERROR: SHA256 mismatch. Expected " + expectedSha + " got " + actualSha + ". Aborting.");
+                    Pause();
+                    return 7;
                 }
+                Log("SHA256 OK.");
 
                 Log("Extracting...");
                 Directory.CreateDirectory(extractDir);
-                ZipFile.ExtractToDirectory(zipPath, extractDir, overwriteFiles: true);
+                // Zip Slip guard: every entry's resolved destination must stay under extractDir.
+                // ZipFile.ExtractToDirectory has its own check on modern .NET, but we extract
+                // entry-by-entry so we can refuse the whole update on the first escape attempt
+                // rather than rely on framework-version-specific behaviour.
+                if (!TryExtractZipSafely(zipPath, extractDir, Log, out string? extractError))
+                {
+                    Log("ERROR: " + (extractError ?? "Zip extraction rejected.") + " Aborting.");
+                    Pause();
+                    return 13;
+                }
 
                 // Some release zips wrap their content in a single top-level dir; flatten.
                 string payloadDir = extractDir;
@@ -460,6 +486,61 @@ internal static class Program
         using var fs = File.OpenRead(path);
         byte[] hash = sha.ComputeHash(fs);
         return Convert.ToHexString(hash);
+    }
+
+    // Zip Slip-safe extraction. For each entry, resolve the destination via Path.GetFullPath and
+    // require it to stay under destinationDir. A single escaping entry rejects the whole update —
+    // we will not extract a partial payload over the user's install. Returns false on the first
+    // bad entry, with `error` describing what was rejected; on success returns true and `error` is
+    // null. Mirrors the canonical fix from
+    //   https://learn.microsoft.com/dotnet/api/system.io.compression.zipfileextensions.extracttodirectory
+    // but we own the loop so the rejection is visible at this layer rather than tucked inside
+    // framework version-specific behaviour (older .NET runtimes did not validate).
+    private static bool TryExtractZipSafely(string zipPath, string destinationDir, Action<string> log, out string? error)
+    {
+        error = null;
+        // Canonicalise the destination so the prefix check below sees the same form
+        // GetFullPath produces for entry destinations.
+        string canonicalDest = Path.GetFullPath(destinationDir);
+        string destWithSep = canonicalDest.EndsWith(Path.DirectorySeparatorChar.ToString())
+            ? canonicalDest
+            : canonicalDest + Path.DirectorySeparatorChar;
+
+        using var archive = ZipFile.OpenRead(zipPath);
+        foreach (var entry in archive.Entries)
+        {
+            // Empty FullName means a malformed entry; skip rather than treat as escape.
+            if (string.IsNullOrEmpty(entry.FullName)) continue;
+
+            // Resolve where the entry would land. Path.GetFullPath collapses .., absolute roots,
+            // and alt-separators, which is exactly what a Zip Slip attack tries to abuse.
+            string targetPath = Path.GetFullPath(Path.Combine(canonicalDest, entry.FullName));
+
+            bool isDirEntry = entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\");
+
+            // The entry must either be the destination itself (rare — a self-reference) or a path
+            // strictly under destination + separator. Anything else escapes.
+            if (!string.Equals(targetPath, canonicalDest, StringComparison.OrdinalIgnoreCase)
+                && !targetPath.StartsWith(destWithSep, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "Zip entry '" + entry.FullName + "' resolves outside the staging directory ('" + targetPath + "'). Refusing the whole update.";
+                log(error);
+                return false;
+            }
+
+            if (isDirEntry)
+            {
+                Directory.CreateDirectory(targetPath);
+                continue;
+            }
+
+            // Make sure the parent dir exists. CreateDirectory is a no-op if it already does.
+            string? parent = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+
+            entry.ExtractToFile(targetPath, overwrite: true);
+        }
+        return true;
     }
 
     private static void ScheduleDelete(string path, Action<string> log)
