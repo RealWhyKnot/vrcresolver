@@ -92,6 +92,7 @@ export const useAppStore = defineStore('app', () => {
     downloadBundledChromium: false,
     streamlinkDisableTwitchAds: false,
     enableRelaySmoothnessDebug: true,
+    enableWebsiteTab: false,
   })
   
   const showHostsPrompt = ref(false)

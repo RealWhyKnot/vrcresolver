@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted, computed } from 'vue'
 import { useAppStore } from '../../stores/appStore'
 
 const appStore = useAppStore()
 
-const tabs = [
-  { id: 'dashboard', label: 'Dashboard', icon: 'bi-grid-1x2-fill' },
-  { id: 'history', label: 'History', icon: 'bi-collection-play-fill' },
-  { id: 'bypass', label: 'Bypass', icon: 'bi-lightning-charge-fill' },
-  { id: 'share', label: 'Share', icon: 'bi-share-fill' },
-  { id: 'relay', label: 'Traffic', icon: 'bi-arrow-left-right' },
-  { id: 'logs', label: 'Logs', icon: 'bi-terminal-fill' },
-  { id: 'settings', label: 'Settings', icon: 'bi-sliders' }
-]
+// Tab list. The "Website" tab is dark behind appStore.config.enableWebsiteTab — see
+// docs/embed-website/POC.md for how to enable. The order keeps it slotted just before
+// Settings so it sits visually with the user-facing surfaces, not the operational ones.
+const tabs = computed(() => {
+  const base = [
+    { id: 'dashboard', label: 'Dashboard', icon: 'bi-grid-1x2-fill' },
+    { id: 'history', label: 'History', icon: 'bi-collection-play-fill' },
+    { id: 'bypass', label: 'Bypass', icon: 'bi-lightning-charge-fill' },
+    { id: 'share', label: 'Share', icon: 'bi-share-fill' },
+    { id: 'relay', label: 'Traffic', icon: 'bi-arrow-left-right' },
+    { id: 'logs', label: 'Logs', icon: 'bi-terminal-fill' },
+  ]
+  if (appStore.config.enableWebsiteTab) {
+    base.push({ id: 'website', label: 'Website', icon: 'bi-globe2' })
+  }
+  base.push({ id: 'settings', label: 'Settings', icon: 'bi-sliders' })
+  return base
+})
 
 const navRoot = ref<HTMLElement | null>(null)
 const indicator = ref<{ top: number; height: number; visible: boolean }>({ top: 0, height: 0, visible: false })

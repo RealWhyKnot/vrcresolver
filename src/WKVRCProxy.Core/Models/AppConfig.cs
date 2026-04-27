@@ -192,6 +192,13 @@ public class AppConfig
     [JsonPropertyName("anonymousReportingPromptAnswered")]
     public bool AnonymousReportingPromptAnswered { get; set; } = false;
 
+    // Surfaces a "Website" tab that frames https://whyknot.dev inside the program. PoC stage —
+    // dark by default; flip to true in app_config.json to test. Design + migration plan live
+    // in docs/embed-website/. The tab does not yet expose a native bridge to the embedded page
+    // (Phase 2). Off in default builds; not surfaced in Settings on purpose.
+    [JsonPropertyName("enableWebsiteTab")]
+    public bool EnableWebsiteTab { get; set; } = false;
+
     // Names (in JSON-key form) of fields the user has explicitly customized via the UI. On load,
     // SettingsManager re-pulls the current code default for any default-tracked field NOT in this
     // set, so editing a default constant in source automatically flows out to all users who

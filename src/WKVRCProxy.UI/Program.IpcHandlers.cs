@@ -211,6 +211,7 @@ partial class Program
                             _settings.Config.MaskIp = newConfig.MaskIp;
                             _settings.Config.EnableAnonymousReporting = newConfig.EnableAnonymousReporting;
                             _settings.Config.AnonymousReportingPromptAnswered = newConfig.AnonymousReportingPromptAnswered;
+                            _settings.Config.EnableWebsiteTab = newConfig.EnableWebsiteTab;
                             _settings.Config.UserOverriddenKeys = newConfig.UserOverriddenKeys ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                             _settings.Save();
 

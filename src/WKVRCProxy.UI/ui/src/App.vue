@@ -16,6 +16,9 @@ import ShareView from './views/ShareView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import RelayView from './views/RelayView.vue'
+// Lazy: pulls no extra deps but keeps the iframe subtree out of cold-start until the user
+// (a) flips enableWebsiteTab, AND (b) actually navigates to the tab. Default behavior unchanged.
+const WebsiteView = defineAsyncComponent(() => import('./views/WebsiteView.vue'))
 
 const appStore = useAppStore()
 
@@ -316,6 +319,7 @@ onMounted(() => {
             <ShareView v-if="appStore.activeTab === 'share'" />
             <RelayView v-if="appStore.activeTab === 'relay'" />
             <LogsView v-if="appStore.activeTab === 'logs'" />
+            <WebsiteView v-if="appStore.activeTab === 'website' && appStore.config.enableWebsiteTab" />
             <SettingsView v-if="appStore.activeTab === 'settings'" />
           </div>
         </transition>
