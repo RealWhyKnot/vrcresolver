@@ -114,6 +114,15 @@ export interface YtDlpUpdateStatus {
   remoteVersion: string;
 }
 
+export interface AppUpdateStatus {
+  status: 'Idle' | 'Checking' | 'UpToDate' | 'UpdateAvailable' | 'Failed';
+  detail: string;
+  localVersion: string;
+  remoteVersion: string;
+  releaseUrl: string;
+  downloadUrl: string;
+}
+
 export interface AppStatus {
   message: string;
   stats: {
@@ -231,6 +240,18 @@ export const useAppStore = defineStore('app', () => {
   })
   // Previous status used to detect transitions (e.g. Checking -> Updated) for one-shot toasts.
   let _prevYtDlpStatus: YtDlpUpdateStatus['status'] = 'Idle'
+
+  const appUpdate = ref<AppUpdateStatus>({
+    status: 'Idle',
+    detail: '',
+    localVersion: '',
+    remoteVersion: '',
+    releaseUrl: '',
+    downloadUrl: ''
+  })
+  const showAppUpdatePrompt = ref(false)
+  const dismissedAppUpdatePromptVersion = ref('')
+  let _prevAppUpdateStatus: AppUpdateStatus['status'] = 'Idle'
   // Set when user clicks Save; cleared when the CONFIG echo returns. Lets us confirm persistence
   // on the round-trip rather than trusting the optimistic local mutation.
   let _pendingSaveToast = false
@@ -380,6 +401,18 @@ export const useAppStore = defineStore('app', () => {
           }
           _prevYtDlpStatus = next.status
         }
+      } else if (parsed.type === 'APP_UPDATE') {
+        const next = parsed.data as AppUpdateStatus
+        const prev = _prevAppUpdateStatus
+        appUpdate.value = next
+        // Surface the modal once per session per version. If the user has dismissed this exact
+        // remote version already, only the persistent banner shows.
+        if (next.status === 'UpdateAvailable' &&
+            prev !== 'UpdateAvailable' &&
+            next.remoteVersion !== dismissedAppUpdatePromptVersion.value) {
+          showAppUpdatePrompt.value = true
+        }
+        _prevAppUpdateStatus = next.status
       } else if (parsed.type === 'STRATEGY_DEMOTED') {
         const p = parsed.data ?? {}
         const entry: DemotionNotification = {
@@ -418,6 +451,7 @@ export const useAppStore = defineStore('app', () => {
       sendMessage('GET_CONFIG')
       sendMessage('GET_BYPASS_MEMORY')
       sendMessage('GET_YTDLP_UPDATE')
+      sendMessage('GET_APP_UPDATE')
       isBridgeReady.value = true
       return true
     }
@@ -504,6 +538,25 @@ export const useAppStore = defineStore('app', () => {
     sendMessage('GET_YTDLP_UPDATE')
   }
 
+  function refreshAppUpdate() {
+    sendMessage('APP_UPDATE_CHECK')
+  }
+
+  function launchUpdater() {
+    sendMessage('LAUNCH_UPDATER')
+  }
+
+  function launchUninstaller() {
+    sendMessage('LAUNCH_UNINSTALLER')
+  }
+
+  function dismissAppUpdatePrompt(skipThisVersion = false) {
+    if (skipThisVersion) {
+      dismissedAppUpdatePromptVersion.value = appUpdate.value.remoteVersion
+    }
+    showAppUpdatePrompt.value = false
+  }
+
   function dismissDemotion(id: string) {
     demotions.value = demotions.value.filter(d => d.id !== id)
   }
@@ -549,9 +602,15 @@ export const useAppStore = defineStore('app', () => {
     resetCloudResolve,
     bypassMemory,
     ytDlpUpdate,
+    appUpdate,
+    showAppUpdatePrompt,
     refreshBypassMemory,
     forgetBypassKey,
     refreshYtDlpUpdate,
+    refreshAppUpdate,
+    launchUpdater,
+    launchUninstaller,
+    dismissAppUpdatePrompt,
     demotions,
     dismissDemotion,
     clearDemotions,

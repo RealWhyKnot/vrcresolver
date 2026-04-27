@@ -1,0 +1,78 @@
+name: Release
+
+# Triggered by pushing a tag like v2026.4.27.7-4974 (matches the YYYY.M.d.<count>-<UID>
+# version stamp that build.ps1 writes, with a leading "v" so the tag glob anchors cleanly).
+# Builds the full distribution via build.ps1 on a Windows runner — required because the build
+# produces win-x64 single-file exes and uses PowerShell-only cmdlets — then attaches the zip
+# from release/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        shell: pwsh
+        working-directory: src/WKVRCProxy.UI/ui
+        run: npm ci
+
+      - name: Build distribution
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Locate release zip
+        id: zip
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem release/WKVRCProxy-*.zip | Select-Object -First 1
+          if (-not $zip) { throw "No release zip found in release/ — build.ps1 did not produce one." }
+          $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash
+          "path=$($zip.FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($zip.Name)"     >> $env:GITHUB_OUTPUT
+          "sha256=$hash"          >> $env:GITHUB_OUTPUT
+          Write-Host "Release zip: $($zip.Name)"
+          Write-Host "SHA256: $hash"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag    = "${{ github.ref_name }}"
+          $zip    = "${{ steps.zip.outputs.path }}"
+          $sha    = "${{ steps.zip.outputs.sha256 }}"
+          $name   = "${{ steps.zip.outputs.name }}"
+          $notes  = @"
+          ## WKVRCProxy $tag
+
+          Download **$name** below and extract anywhere. The bundled ``updater.exe`` and ``uninstall.exe`` live next to ``WKVRCProxy.exe``.
+
+          SHA256: $sha
+          "@
+          # gh release create accepts the asset paths as positional arguments after the tag.
+          gh release create $tag $zip --title $tag --notes $notes

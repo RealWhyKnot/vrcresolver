@@ -38,28 +38,15 @@ public class PatcherService : IProxyModule, IDisposable
     {
         try
         {
-            if (_context != null && !string.IsNullOrEmpty(_context.Settings.Config.CustomVrcPath))
-            {
-                if (Directory.Exists(_context.Settings.Config.CustomVrcPath))
-                {
-                    _vrcToolsDir = _context.Settings.Config.CustomVrcPath;
-                    _logger?.Success("Using Custom VRChat Tools path: " + _vrcToolsDir);
-                    return;
-                }
-                else
-                {
-                    _logger?.Warning("Custom VRChat path configured but does not exist: " + _context.Settings.Config.CustomVrcPath);
-                }
-            }
+            string? custom = _context?.Settings.Config.CustomVrcPath;
+            if (!string.IsNullOrEmpty(custom) && !Directory.Exists(custom))
+                _logger?.Warning("Custom VRChat path configured but does not exist: " + custom);
 
-            string localLow = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "Low", "VRChat", "VRChat", "Tools");
-            if (Directory.Exists(localLow))
-            {
-                _vrcToolsDir = localLow;
-                _logger?.Success("VRChat Tools found: " + _vrcToolsDir);
-                return;
-            }
-            _logger?.Warning("VRChat Tools folder missing at default location.");
+            _vrcToolsDir = VrcPathLocator.Find(custom);
+            if (!string.IsNullOrEmpty(_vrcToolsDir))
+                _logger?.Success((string.IsNullOrEmpty(custom) ? "VRChat Tools found: " : "Using Custom VRChat Tools path: ") + _vrcToolsDir);
+            else
+                _logger?.Warning("VRChat Tools folder missing at default location.");
         }
         catch (Exception ex) { _logger?.Error("Path Detection Error: " + ex.Message); }
     }
@@ -229,45 +216,107 @@ public class PatcherService : IProxyModule, IDisposable
 
         // Restore yt-dlp.exe — only possible if we know the tools dir.
         if (!string.IsNullOrEmpty(_vrcToolsDir))
-        {
-            try
-            {
-                string targetPath = Path.Combine(_vrcToolsDir, "yt-dlp.exe");
-                string backupPath = Path.Combine(_vrcToolsDir, "yt-dlp-og.exe");
-
-                if (File.Exists(backupPath))
-                {
-                    _logger?.Info("Restoring original yt-dlp.exe...");
-                    if (File.Exists(targetPath)) File.Delete(targetPath);
-                    File.Move(backupPath, targetPath);
-                    _logger?.Success("Original state restored.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger?.Error("Shutdown Restore Error: " + ex.Message);
-            }
-        }
+            RestoreYtDlpInTools(_vrcToolsDir, _logger);
 
         // Process cleanup — always runs regardless of tools dir or restore outcome.
-        // ProcessGuard (Job Object) handles the primary kill; this is a belt-and-suspenders
-        // fallback for any stray processes that were started outside the job.
-        foreach (var proc in Process.GetProcessesByName("curl-impersonate-win"))
+        // ProcessGuard (Job Object) handles the primary kill; these are belt-and-suspenders
+        // fallbacks for any stray processes that were started outside the job (e.g. after a
+        // hard parent crash where the job object never closed cleanly).
+        KillStrayChildren(new[]
         {
-            try { proc.Kill(); }
-            catch { /* Shutdown cleanup — failure is expected */ }
-        }
-        foreach (var proc in Process.GetProcessesByName("bgutil-ytdlp-pot-provider"))
-        {
-            try { proc.Kill(); }
-            catch { /* Shutdown cleanup — failure is expected */ }
-        }
+            "curl-impersonate-win",
+            "bgutil-ytdlp-pot-provider",
+            "wireproxy",
+            "wgcf",
+            "streamlink",
+        });
 
         string relayPortFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WKVRCProxy", "relay_port.dat");
         if (File.Exists(relayPortFile))
         {
             try { File.Delete(relayPortFile); }
             catch { /* Shutdown cleanup — failure is expected */ }
+        }
+    }
+
+    private static void KillStrayChildren(string[] processNames)
+    {
+        foreach (var name in processNames)
+        {
+            foreach (var proc in Process.GetProcessesByName(name))
+            {
+                try { proc.Kill(); }
+                catch { /* Shutdown cleanup — failure is expected */ }
+            }
+        }
+    }
+
+    // Restores VRChat's original yt-dlp.exe by promoting yt-dlp-og.exe back over the patched copy.
+    // Public + static so the standalone uninstall.exe can invoke it without a module context, and
+    // so PatcherService.Shutdown() and the recovery path share a single implementation. If the
+    // patched yt-dlp.exe is locked at delete-time (rare — usually means VRChat is mid-launch) the
+    // redirector is renamed to yt-dlp.exe.stale-<ts> so the restore can still proceed; the next
+    // launch's CleanupJunk() removes the stale file.
+    public static bool RestoreYtDlpInTools(string toolsDir, Logger? log)
+    {
+        if (string.IsNullOrEmpty(toolsDir) || !Directory.Exists(toolsDir)) return false;
+        string targetPath = Path.Combine(toolsDir, "yt-dlp.exe");
+        string backupPath = Path.Combine(toolsDir, "yt-dlp-og.exe");
+
+        if (!File.Exists(backupPath)) return false;
+
+        try
+        {
+            log?.Info("Restoring original yt-dlp.exe...");
+            if (File.Exists(targetPath))
+            {
+                try { File.Delete(targetPath); }
+                catch (IOException)
+                {
+                    string stale = targetPath + ".stale-" + DateTime.Now.ToString("yyyyMMddHHmmss");
+                    File.Move(targetPath, stale);
+                    log?.Warning("yt-dlp.exe was locked; moved aside to " + Path.GetFileName(stale) + " so restore could proceed.");
+                }
+            }
+            File.Move(backupPath, targetPath);
+            log?.Success("Original state restored.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log?.Error("Restore Error: " + ex.Message);
+            return false;
+        }
+    }
+
+    // Auto-recover from a previous unclean exit. Run once at startup before patching resumes.
+    // Three states we can encounter in the VRChat Tools dir:
+    //   1. yt-dlp-og.exe present  → patch was applied last run and never reverted; restore.
+    //   2. only yt-dlp.exe and it hashes equal to the bundled redirector → orphaned shim, delete
+    //      so the next monitor pass copies the real yt-dlp back from vendor.
+    //   3. otherwise → user's real yt-dlp; leave alone.
+    public void RecoverFromUncleanShutdown(string redirectorPath)
+    {
+        if (string.IsNullOrEmpty(_vrcToolsDir) || !Directory.Exists(_vrcToolsDir)) return;
+
+        string backupPath = Path.Combine(_vrcToolsDir, "yt-dlp-og.exe");
+        string targetPath = Path.Combine(_vrcToolsDir, "yt-dlp.exe");
+
+        if (File.Exists(backupPath))
+        {
+            _logger?.Warning("Detected unclean previous shutdown — restoring yt-dlp from yt-dlp-og.exe before re-patching.");
+            RestoreYtDlpInTools(_vrcToolsDir, _logger);
+            return;
+        }
+
+        if (File.Exists(targetPath) && File.Exists(redirectorPath) && IsFileSame(targetPath, redirectorPath))
+        {
+            try
+            {
+                File.Delete(targetPath);
+                _logger?.Warning("Detected orphaned redirector at yt-dlp.exe with no backup — deleted; vendor copy will be re-staged.");
+            }
+            catch (Exception ex) { _logger?.Warning("Failed to delete orphaned redirector: " + ex.Message); }
         }
     }
 

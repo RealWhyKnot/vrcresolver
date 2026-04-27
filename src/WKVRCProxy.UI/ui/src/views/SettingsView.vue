@@ -4,6 +4,18 @@ import { useAppStore, TIER_DISPLAY, STRATEGY_PRIORITY_DEFAULTS, STRATEGY_PRIORIT
 
 const appStore = useAppStore()
 
+function confirmUninstall() {
+  const ok = window.confirm(
+    'Uninstall WKVRCProxy?\n\n' +
+    'This will:\n' +
+    "  • Restore VRChat's original yt-dlp.exe\n" +
+    '  • Delete saved settings, cookies, and bypass memory\n' +
+    '  • Remove the install folder\n\n' +
+    'WKVRCProxy will close and the uninstaller will take over.'
+  )
+  if (ok) appStore.launchUninstaller()
+}
+
 const DEFAULT_NATIVE_AVPRO_UA_HOSTS = ['vr-m.net']
 
 // Chip editor for the deny-list. Users type one host into `hostInputDraft`, then press Enter
@@ -807,6 +819,68 @@ function clearHistory() {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- Maintenance section: app updates + uninstall -->
+      <div class="space-y-3">
+        <div class="flex items-center gap-3 ml-2">
+          <div class="w-1 h-6 bg-emerald-500/40 rounded-full"></div>
+          <h3 class="text-[10px] font-black uppercase tracking-[0.3em] text-white/30 italic">Maintenance</h3>
+        </div>
+
+        <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-6 hover:border-emerald-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <h4 class="text-lg font-black uppercase tracking-tighter italic">Application updates</h4>
+              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">
+                <template v-if="appStore.appUpdate.status === 'UpdateAvailable'">
+                  <span class="text-emerald-300">{{ appStore.appUpdate.localVersion }} → {{ appStore.appUpdate.remoteVersion }}</span>
+                </template>
+                <template v-else-if="appStore.appUpdate.status === 'UpToDate'">
+                  Up to date — {{ appStore.appUpdate.localVersion }}
+                </template>
+                <template v-else-if="appStore.appUpdate.status === 'Checking'">
+                  Checking GitHub releases…
+                </template>
+                <template v-else-if="appStore.appUpdate.status === 'Failed'">
+                  Last check failed: {{ appStore.appUpdate.detail }}
+                </template>
+                <template v-else>
+                  Click "Check now" to query the latest release
+                </template>
+              </p>
+            </div>
+            <div class="flex gap-2">
+              <button
+                @click="appStore.refreshAppUpdate"
+                class="px-5 py-2.5 bg-white/5 hover:bg-white/10 text-white/70 rounded-2xl font-black text-[9px] uppercase tracking-[0.2em] transition-all border border-white/5 active:scale-95">
+                Check now
+              </button>
+              <button
+                v-if="appStore.appUpdate.status === 'UpdateAvailable'"
+                @click="appStore.launchUpdater"
+                class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-black text-[9px] uppercase tracking-[0.2em] transition-all italic active:scale-95 shadow-xl shadow-emerald-600/20">
+                Update now
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-6 hover:border-red-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <h4 class="text-lg font-black uppercase tracking-tighter italic">Uninstall WKVRCProxy</h4>
+              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">
+                Restores VRChat's original yt-dlp.exe and removes this install completely
+              </p>
+            </div>
+            <button
+              @click="confirmUninstall"
+              class="px-5 py-2.5 bg-white/5 hover:bg-red-500/20 hover:text-red-400 text-white/50 rounded-2xl font-black text-[9px] uppercase tracking-[0.2em] transition-all border border-white/5 active:scale-95">
+              Uninstall…
+            </button>
+          </div>
+        </section>
       </div>
 
     </div>

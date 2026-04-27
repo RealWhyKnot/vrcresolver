@@ -3,5 +3,7 @@
     <Project Path="src/WKVRCProxy.Core/WKVRCProxy.Core.csproj" />
     <Project Path="src/WKVRCProxy.Redirector/WKVRCProxy.Redirector.csproj" />
     <Project Path="src/WKVRCProxy.UI/WKVRCProxy.UI.csproj" />
+    <Project Path="src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" />
+    <Project Path="src/WKVRCProxy.Uninstaller/WKVRCProxy.Uninstaller.csproj" />
   </Folder>
 </Solution>

@@ -43,9 +43,12 @@ if (Test-Path $BuildDir) {
     Get-Process "WKVRCProxy.UI" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "WKVRCProxy" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "redirector" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "updater" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "uninstall" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "bgutil-ytdlp-pot-provider" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "curl-impersonate-win" -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process "streamlink" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "wireproxy" -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 1
 
     try {
@@ -411,6 +414,12 @@ Write-Host "`n--- Building .NET Projects ---" -ForegroundColor Cyan
 # Production build: Release mode
 dotnet publish src/WKVRCProxy.UI/WKVRCProxy.UI.csproj -c Release -o $BuildDir --self-contained true -r win-x64 /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -warnaserror
 dotnet publish src/WKVRCProxy.Redirector/WKVRCProxy.Redirector.csproj -c Release -o $BuildDir --self-contained true -r win-x64 /p:PublishSingleFile=true -warnaserror
+# Updater + Uninstaller — small single-file companions that ship in dist/ root next to WKVRCProxy.exe.
+# updater.exe is launched on user click from the in-app banner / Settings → Maintenance to download
+# a new release zip and swap it in place. uninstall.exe restores VRChat's original yt-dlp.exe and
+# wipes the install. Both are self-contained so they keep working after a partial swap.
+dotnet publish src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj -c Release -o $BuildDir --self-contained true -r win-x64 /p:PublishSingleFile=true
+dotnet publish src/WKVRCProxy.Uninstaller/WKVRCProxy.Uninstaller.csproj -c Release -o $BuildDir --self-contained true -r win-x64 /p:PublishSingleFile=true
 
 # --- Final Packaging ---
 Write-Host "`n--- Packaging Assets ---" -ForegroundColor Cyan
@@ -464,6 +473,18 @@ Get-ChildItem -Path $BuildDir -Filter "*.log" | Remove-Item -Force
 
 $FullVersion | Set-Content -Path (Join-Path $BuildDir "version.txt") -Encoding UTF8
 $FullVersion | Set-Content -Path (Join-Path $PSScriptRoot "version.txt") -Encoding UTF8
+
+# Release zip — what the updater fetches from GitHub and what the release workflow uploads.
+# Lives outside dist/ so a second build doesn't accidentally include the previous zip in the
+# new one. Named with the full version so users (and the updater) can identify the build.
+$ReleaseDir = Join-Path $PSScriptRoot "release"
+if (!(Test-Path $ReleaseDir)) { New-Item -ItemType Directory $ReleaseDir | Out-Null }
+$ZipPath = Join-Path $ReleaseDir "WKVRCProxy-$FullVersion.zip"
+if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+Write-Host "Packaging release zip: $ZipPath" -ForegroundColor Cyan
+Compress-Archive -Path (Join-Path $BuildDir "*") -DestinationPath $ZipPath -Force
+$ZipHash = (Get-FileHash $ZipPath -Algorithm SHA256).Hash
+Write-Host "Release zip ready. SHA256: $ZipHash" -ForegroundColor Green
 
 Write-Host "`nBuild $FullVersion Complete! Output in: $BuildDir" -ForegroundColor Green
 

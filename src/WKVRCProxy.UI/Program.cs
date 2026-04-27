@@ -39,6 +39,14 @@ class Program
     private static Mutex? _singleInstanceMutex;
     private const string SingleInstanceMutexName = "Local\\WKVRCProxy.UI.SingleInstance";
 
+    // Clean-shutdown marker. Written at the end of OnShutdown() once restore + cleanup succeed,
+    // checked at startup. Missing or stale-PID flag = previous run crashed → run recovery before
+    // re-patching. Lives in %LOCALAPPDATA%\WKVRCProxy so an install-folder swap (updater) doesn't
+    // erase it — recovery state must survive an in-place upgrade.
+    private static string CleanExitFlagPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "WKVRCProxy", "clean_exit.flag");
+
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")]
@@ -128,6 +136,7 @@ class Program
         var integrityManager = new RelayIntegrityManager();
         var ytDlpUpdater = new YtDlpUpdater();
         var bgutilPluginUpdater = new BgutilPluginUpdater();
+        var appUpdateChecker = new AppUpdateChecker();
         var browserSessionCache = new BrowserSessionCache();
         // BrowserExtractService is not a module (no InitializeAsync lifecycle needed — its browser
         // is lazy-initialised on first extraction call). Constructed here so Program.cs owns its
@@ -151,6 +160,7 @@ class Program
         _coordinator.Register(integrityManager);
         _coordinator.Register(ytDlpUpdater);
         _coordinator.Register(bgutilPluginUpdater);
+        _coordinator.Register(appUpdateChecker);
         _coordinator.Register(warpService);
 
         ytDlpUpdater.OnStatusChanged += (status, detail, local, remote) => {
@@ -159,6 +169,17 @@ class Program
                 detail,
                 localVersion = local,
                 remoteVersion = remote
+            });
+        };
+
+        appUpdateChecker.OnStatusChanged += (status, detail, local, remote, releaseUrl, downloadUrl) => {
+            SendToUi("APP_UPDATE", new {
+                status = status.ToString(),
+                detail,
+                localVersion = local,
+                remoteVersion = remote,
+                releaseUrl,
+                downloadUrl
             });
         };
 
@@ -294,6 +315,15 @@ class Program
                     string? knownToolsDir = patcherService.VrcToolsDir;
                     if (!string.IsNullOrEmpty(knownToolsDir))
                         ipcServer.ExportPortToDirectory(knownToolsDir);
+
+                    // Crash-recovery sweep: if the previous run didn't write a clean-exit flag
+                    // we must restore yt-dlp before patching again, otherwise the redirector
+                    // ends up patched over itself with no -og backup to revert to.
+                    string redirectorPath = Path.Combine(baseDir, "tools", "redirector.exe");
+                    if (!WasLastShutdownClean())
+                        patcherService.RecoverFromUncleanShutdown(redirectorPath);
+                    InvalidateCleanExitFlag();
+
                     if (_settings.Config.AutoPatchOnStart) {
                         string wrapperPath = Path.Combine(baseDir, "tools", "redirector.exe");
                         if (File.Exists(wrapperPath)) patcherService.StartMonitoring(wrapperPath);
@@ -376,9 +406,11 @@ class Program
 
     private static void OnShutdown()
     {
+        bool restoreOk = false;
         try {
             var patcher = _coordinator?.GetModule<PatcherService>();
             patcher?.Shutdown();
+            restoreOk = true;
         } catch (Exception ex) {
             _logger?.Warning("Shutdown error: " + ex.Message, ex);
         }
@@ -391,11 +423,43 @@ class Program
         _shareService?.Dispose();
         _browserExtractor?.Dispose();
         _coordinator?.Dispose();
+
+        // Write the clean-exit flag only if patcher restore actually ran. Anything else (logger
+        // dispose, mutex release) is best-effort housekeeping. If we crash *after* this point the
+        // VRChat Tools dir is already in its restored state, so a flag here is honest.
+        if (restoreOk) WriteCleanExitFlag();
+
         _logger?.Dispose();
 
         // Release the single-instance mutex so the next launch can start immediately.
         try { _singleInstanceMutex?.ReleaseMutex(); } catch { /* not held or already released */ }
         _singleInstanceMutex?.Dispose();
+    }
+
+    private static bool WasLastShutdownClean()
+    {
+        try { return File.Exists(CleanExitFlagPath); }
+        catch { return false; }
+    }
+
+    private static void InvalidateCleanExitFlag()
+    {
+        try
+        {
+            if (File.Exists(CleanExitFlagPath)) File.Delete(CleanExitFlagPath);
+        }
+        catch { /* a leftover flag is harmless; it would just defer recovery one launch */ }
+    }
+
+    private static void WriteCleanExitFlag()
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(CleanExitFlagPath)!;
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(CleanExitFlagPath, DateTime.UtcNow.ToString("O") + " pid=" + Environment.ProcessId);
+        }
+        catch (Exception ex) { _logger?.Debug("Could not write clean-exit flag: " + ex.Message); }
     }
 
     private static void SendToUi(string type, object? data)
@@ -441,6 +505,56 @@ class Program
             localVersion = updater.LocalVersion,
             remoteVersion = updater.RemoteVersion
         });
+    }
+
+    private static void SendAppUpdateStatus()
+    {
+        var checker = _coordinator?.GetModule<AppUpdateChecker>();
+        if (checker == null) return;
+        SendToUi("APP_UPDATE", new {
+            status = checker.Status.ToString(),
+            detail = checker.StatusDetail,
+            localVersion = checker.LocalVersion,
+            remoteVersion = checker.RemoteVersion,
+            releaseUrl = checker.ReleaseUrl,
+            downloadUrl = checker.DownloadUrl
+        });
+    }
+
+    // Spawns updater.exe / uninstall.exe sitting next to WKVRCProxy.exe in the install dir,
+    // then closes the window so the spawned process can take over file locks. Both are signed
+    // single-file exes that handle their own work; we just need to get out of their way.
+    private static void LaunchSidecarAndExit(string exeName, string args = "")
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string exePath = Path.Combine(baseDir, exeName);
+            if (!File.Exists(exePath))
+            {
+                _logger?.Error("Cannot launch " + exeName + " — file missing from install dir.");
+                SendToUi("SIDECAR_ERROR", new { exe = exeName, message = "File missing from install folder." });
+                return;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = string.IsNullOrEmpty(args)
+                    ? "--install-dir \"" + baseDir.TrimEnd('\\') + "\""
+                    : args,
+                UseShellExecute = true,
+                WorkingDirectory = baseDir
+            };
+            Process.Start(psi);
+            _logger?.Info("Launched " + exeName + "; window will close so file locks release.");
+            _window?.Invoke(() => _window?.Close());
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error("Failed to launch " + exeName + ": " + ex.Message);
+            SendToUi("SIDECAR_ERROR", new { exe = exeName, message = ex.Message });
+        }
     }
 
     private static void SetupHostsBypass()
@@ -624,6 +738,21 @@ class Program
                     break;
                 case "GET_YTDLP_UPDATE":
                     SendYtDlpUpdateStatus();
+                    break;
+                case "GET_APP_UPDATE":
+                    SendAppUpdateStatus();
+                    break;
+                case "APP_UPDATE_CHECK":
+                    Task.Run(async () => {
+                        var checker = _coordinator?.GetModule<AppUpdateChecker>();
+                        if (checker != null) await checker.CheckAsync();
+                    });
+                    break;
+                case "LAUNCH_UPDATER":
+                    LaunchSidecarAndExit("updater.exe");
+                    break;
+                case "LAUNCH_UNINSTALLER":
+                    LaunchSidecarAndExit("uninstall.exe");
                     break;
             }
         } catch (Exception ex) {

@@ -29,6 +29,14 @@ const declineHostsPrompt = (neverAskAgain: boolean) => {
   appStore.showHostsPrompt = false
 }
 
+const acceptAppUpdate = () => {
+  appStore.dismissAppUpdatePrompt(false)
+  appStore.launchUpdater()
+}
+
+const skipAppUpdate = () => appStore.dismissAppUpdatePrompt(true)
+const laterAppUpdate = () => appStore.dismissAppUpdatePrompt(false)
+
 onMounted(() => {
   if (!appStore.initBridge()) {
     window.addEventListener('photino-ready', () => {
@@ -90,6 +98,42 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- App Update Modal — shows once per session per remote version -->
+    <div v-if="appStore.showAppUpdatePrompt" class="fixed inset-0 z-[95] bg-black/80 flex items-center justify-center backdrop-blur-xl animate-in fade-in duration-300">
+      <div class="bg-[#0a0a0c] border border-white/10 rounded-3xl p-8 max-w-lg shadow-2xl relative overflow-hidden mx-4">
+        <div class="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none"></div>
+        <div class="relative z-10 space-y-6">
+          <div class="w-12 h-12 bg-emerald-500/20 rounded-2xl flex items-center justify-center border border-emerald-500/30">
+            <i class="bi bi-arrow-up-circle-fill text-emerald-400 text-xl"></i>
+          </div>
+          <div>
+            <h2 class="text-xl font-bold mb-2">Update available</h2>
+            <p class="text-white/60 text-sm leading-relaxed">
+              <span class="text-white/40">{{ appStore.appUpdate.localVersion || 'this build' }}</span>
+              <i class="bi bi-arrow-right mx-2 text-white/30"></i>
+              <span class="text-emerald-300 font-mono text-xs">{{ appStore.appUpdate.remoteVersion }}</span>
+            </p>
+            <p class="text-white/50 text-xs mt-2 italic border-l-2 border-white/10 pl-3">
+              The updater downloads the new build, swaps it in place, and relaunches WKVRCProxy. Your settings and bypass memory are preserved.
+            </p>
+          </div>
+          <div class="flex flex-col gap-3 pt-4">
+            <button @click="acceptAppUpdate" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2">
+              <i class="bi bi-download"></i> Update now
+            </button>
+            <div class="flex gap-3">
+              <button @click="laterAppUpdate" class="flex-1 bg-white/5 hover:bg-white/10 text-white/70 py-3 px-6 rounded-xl transition-all text-sm font-semibold">
+                Later
+              </button>
+              <button @click="skipAppUpdate" class="flex-1 bg-white/5 hover:bg-red-500/20 hover:text-red-400 text-white/50 py-3 px-6 rounded-xl transition-all text-sm">
+                Skip this version
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Global activity bar + toasts (z-index above all content) -->
     <ActivityBar />
     <ToastContainer />
@@ -104,6 +148,19 @@ onMounted(() => {
 
     <!-- Main Content -->
     <main class="flex-grow flex flex-col relative z-10 h-full overflow-hidden">
+      <!-- Persistent update banner — visible whenever an update is available, even after the modal is dismissed -->
+      <button
+        v-if="appStore.appUpdate.status === 'UpdateAvailable'"
+        @click="appStore.launchUpdater"
+        class="w-full px-6 py-2 bg-emerald-500/15 hover:bg-emerald-500/25 border-b border-emerald-500/30 flex items-center justify-center gap-3 text-xs font-semibold text-emerald-200 transition-all"
+        :title="appStore.appUpdate.detail"
+      >
+        <i class="bi bi-arrow-up-circle-fill text-emerald-400"></i>
+        <span>Update available:</span>
+        <span class="font-mono text-emerald-300">{{ appStore.appUpdate.remoteVersion }}</span>
+        <span class="text-emerald-400/70">— click to update</span>
+      </button>
+
       <div class="flex-grow overflow-y-auto no-scrollbar">
         <transition mode="out-in"
                     enter-active-class="transition duration-500 ease-out"
