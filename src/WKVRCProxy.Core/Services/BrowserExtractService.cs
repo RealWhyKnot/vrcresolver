@@ -40,6 +40,7 @@ public class BrowserExtractService : IDisposable
     private readonly Logger _logger;
     private readonly SettingsManager _settings;
     private readonly BrowserSessionCache _sessionCache;
+    private readonly WarpService? _warp;
     private readonly HttpClient _probeClient;
 
     private IBrowser? _browser;
@@ -68,11 +69,12 @@ public class BrowserExtractService : IDisposable
     // AVPro-style UA used for probe-first. Same seed value the Tier 1 vrchat-ua strategy uses.
     private const string ProbeUserAgent = "UnityPlayer/2022.3.22f1 (UnityWebRequest/1.0, libcurl/7.84.0-DEV)";
 
-    public BrowserExtractService(Logger logger, SettingsManager settings, BrowserSessionCache sessionCache)
+    public BrowserExtractService(Logger logger, SettingsManager settings, BrowserSessionCache sessionCache, WarpService? warp = null)
     {
         _logger = logger;
         _settings = settings;
         _sessionCache = sessionCache;
+        _warp = warp;
         _probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         _probeClient.DefaultRequestHeaders.UserAgent.ParseAdd(ProbeUserAgent);
     }
@@ -399,25 +401,37 @@ public class BrowserExtractService : IDisposable
             _resolvedExecutablePath = exe;
 
             _logger.Info("[BrowserExtract] Launching headless browser: " + exe);
+            var args = new List<string>
+            {
+                "--headless=new",
+                "--disable-blink-features=AutomationControlled",
+                "--mute-audio",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-extensions",
+                "--disable-dev-shm-usage",
+                // Keep GPU enabled — the previous --disable-gpu was another fingerprint signal
+                // that clearly marks us as headless/automation to sites that WebGL-probe.
+            };
+            // Mask IP also routes the headless browser through WARP. Refuse to launch on direct
+            // egress when the user opted into IP masking — same loud-fail policy as tier 1/3.
+            if (_settings.Config.MaskIp)
+            {
+                if (_warp == null || !await _warp.EnsureRunningAsync())
+                {
+                    _logger.Warning("[BrowserExtract] Mask IP is on but WARP is unavailable (" + (_warp?.StatusDetail ?? "service not registered") + ") — refusing to launch browser-extract on direct egress.");
+                    return null;
+                }
+                args.Add("--proxy-server=socks5://127.0.0.1:" + WarpService.SocksPort);
+            }
+            // new headless mode has fewer automation tells (real Chromium runtime, real GPU stack,
+            // WebGL that doesn't scream "puppeteer"). Old headless sets enough webdriver-ish flags
+            // that YouTube serves decoy videoplayback URLs on sight.
             var options = new LaunchOptions
             {
                 Headless = true,
                 ExecutablePath = exe,
-                // new headless mode has fewer automation tells (real Chromium runtime, real GPU
-                // stack, WebGL that doesn't scream "puppeteer"). Old headless sets enough
-                // webdriver-ish flags that YouTube serves decoy videoplayback URLs on sight.
-                Args = new[]
-                {
-                    "--headless=new",
-                    "--disable-blink-features=AutomationControlled",
-                    "--mute-audio",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-extensions",
-                    "--disable-dev-shm-usage",
-                    // Keep GPU enabled — the previous --disable-gpu was another fingerprint signal
-                    // that clearly marks us as headless/automation to sites that WebGL-probe.
-                }
+                Args = args.ToArray(),
             };
             _browser = await Puppeteer.LaunchAsync(options);
             _browser.Closed += (_, _) => _logger.Debug("[BrowserExtract] Browser process exited.");

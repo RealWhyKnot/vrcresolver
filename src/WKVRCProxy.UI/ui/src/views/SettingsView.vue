@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useAppStore, TIER_DISPLAY, STRATEGY_PRIORITY_DEFAULTS, STRATEGY_PRIORITY_DEFAULTS_VERSION } from '../stores/appStore'
+import { useAppStore, TIER_DISPLAY, STRATEGY_PRIORITY_DEFAULTS } from '../stores/appStore'
 
 const appStore = useAppStore()
 
@@ -41,12 +41,14 @@ function addNativeUaHost(raw: string) {
   if (list.some(h => h.toLowerCase() === host)) return
   appStore.config.nativeAvProUaHosts = [...list, host]
   hostInputDraft.value = ''
+  appStore.markOverridden('nativeAvProUaHosts')
   appStore.saveConfig()
 }
 
 function removeNativeUaHost(host: string) {
   const list = appStore.config.nativeAvProUaHosts ?? []
   appStore.config.nativeAvProUaHosts = list.filter(h => h !== host)
+  appStore.markOverridden('nativeAvProUaHosts')
   appStore.saveConfig()
 }
 
@@ -70,6 +72,7 @@ function onHostInputPaste(e: ClipboardEvent) {
 
 function resetNativeAvProUaHosts() {
   appStore.config.nativeAvProUaHosts = [...DEFAULT_NATIVE_AVPRO_UA_HOSTS]
+  appStore.clearOverridden('nativeAvProUaHosts')
   appStore.saveConfig()
 }
 
@@ -156,6 +159,7 @@ function moveStrategy(name: string, delta: number) {
     // Not in list yet — append at the tail. Delta is ignored for first insertion.
     list.push(name)
     appStore.config.strategyPriority = list
+    appStore.markOverridden('strategyPriority')
     appStore.saveConfig()
     return
   }
@@ -164,6 +168,7 @@ function moveStrategy(name: string, delta: number) {
   list.splice(idx, 1)
   list.splice(target, 0, name)
   appStore.config.strategyPriority = list
+  appStore.markOverridden('strategyPriority')
   appStore.saveConfig()
 }
 
@@ -172,6 +177,7 @@ function addToPriority(name: string) {
   if (!list.includes(name)) {
     list.push(name)
     appStore.config.strategyPriority = list
+    appStore.markOverridden('strategyPriority')
     appStore.saveConfig()
   }
 }
@@ -179,12 +185,13 @@ function addToPriority(name: string) {
 function removeFromPriority(name: string) {
   const list = (appStore.config.strategyPriority ?? []).filter(n => n !== name)
   appStore.config.strategyPriority = list
+  appStore.markOverridden('strategyPriority')
   appStore.saveConfig()
 }
 
 function resetStrategyPriority() {
   appStore.config.strategyPriority = [...STRATEGY_PRIORITY_DEFAULTS]
-  appStore.config.strategyPriorityDefaultsVersion = STRATEGY_PRIORITY_DEFAULTS_VERSION
+  appStore.clearOverridden('strategyPriority')
   appStore.saveConfig()
 }
 
@@ -354,7 +361,13 @@ function clearHistory() {
               <i class="bi bi-sort-down-alt text-xl"></i>
             </div>
             <div>
-              <h4 class="text-lg font-black uppercase tracking-tighter italic">Strategy Priority</h4>
+              <div class="flex items-center gap-2">
+                <h4 class="text-lg font-black uppercase tracking-tighter italic">Strategy Priority</h4>
+                <span :class="['text-[8px] font-black uppercase tracking-[0.2em] italic px-2 py-0.5 rounded-md',
+                               appStore.isOverridden('strategyPriority') ? 'text-amber-400/80 bg-amber-500/10' : 'text-emerald-400/70 bg-emerald-500/5']">
+                  {{ appStore.isOverridden('strategyPriority') ? 'Custom' : 'Default' }}
+                </span>
+              </div>
               <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Order strategies are tried in when nothing is cached yet</p>
             </div>
           </div>
@@ -549,6 +562,16 @@ function clearHistory() {
             </div>
           </div>
           <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Use only IPv4 when resolving video URLs.</p>
+        </div>
+
+        <div @click="appStore.config.maskIp = !appStore.config.maskIp; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Mask IP (always WARP)</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.maskIp ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.maskIp ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Routes every video resolution and probe through Cloudflare WARP, so the host sees a Cloudflare edge IP instead of yours. Adds latency. The cloud resolver (Tier 2) stays direct. Switching this on while a YouTube session is active may need a fresh resolve.</p>
         </div>
 
         <div @click="appStore.config.autoPatchOnStart = !appStore.config.autoPatchOnStart; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">

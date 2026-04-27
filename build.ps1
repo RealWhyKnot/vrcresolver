@@ -403,11 +403,16 @@ try {
 $Versions | ConvertTo-Json | Out-File $VersionFile
 
 # --- Daily Versioning Logic ---
+# Two shapes are accepted:
+#   - Release: YYYY.M.D.N           — N = release iteration for the day (0, 1, 2, ...). No suffix.
+#   - Dev:     YYYY.M.D.N-XXXX      — N = local build count for the day; XXXX = 4-hex UID. The
+#                                     suffix exists because a dev session produces many builds and
+#                                     the UID disambiguates rebuilds at the same N.
+# Local builds always emit the dev shape. Release-pipeline calls supply -Version explicitly with
+# whichever shape is appropriate (release.yml passes the bare tag minus the leading "v").
 if ($Version) {
-    # Caller-supplied version (release pipeline). Validate the shape so a malformed tag fails the
-    # build cleanly instead of producing a release with a bad version baked into the assembly.
-    if ($Version -notmatch '^\d{4}\.\d+\.\d+\.\d+-[A-Fa-f0-9]{4}$') {
-        throw "Invalid -Version '$Version'. Expected YYYY.M.D.N-XXXX (XXXX = 4 hex chars)."
+    if ($Version -notmatch '^\d{4}\.\d+\.\d+\.\d+(-[A-Fa-f0-9]{4})?$') {
+        throw "Invalid -Version '$Version'. Expected YYYY.M.D.N (release) or YYYY.M.D.N-XXXX (dev, XXXX = 4 hex chars)."
     }
     $FullVersion = $Version
     Write-Host "Using caller-supplied version (skipping local-state increment)." -ForegroundColor DarkGray

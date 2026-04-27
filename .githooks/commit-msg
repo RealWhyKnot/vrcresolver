@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Reject commit subjects that contain more than one build-version stamp.
 #
-# The version pattern is the one stamped by build.ps1: (YYYY.M.D.N-XXXX) where N is the build
-# count for the day and XXXX is a 4-char hex UID — e.g. (2026.4.27.6-005F).
+# The version pattern is the one stamped by build.ps1. Two shapes are recognized:
+#   (YYYY.M.D.N)        — release stamp (e.g. (2026.4.27.0)); .N = release iteration for the day
+#   (YYYY.M.D.N-XXXX)   — dev stamp     (e.g. (2026.4.27.6-005F)); XXXX = 4-hex UID for the build
+# Most prepare-commit-msg activity stamps the dev shape since most commits happen between releases.
 #
 # Why this hook exists: editor commit-message templates can autocomplete the trailing version
 # from the previous commit alongside the fresh one, producing subjects like
@@ -28,7 +30,7 @@ subject="$(grep -m1 -vE '^(#|$)' "$msg_file" || true)"
 # `grep || true` absorbs the no-match exit code (grep returns 1 when nothing matches);
 # without it, set -e + pipefail would kill the hook on every commit that has no version
 # stamp at all — i.e. most of them.
-count=$( ( printf '%s\n' "$subject" | grep -oE '\([0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+-[A-Fa-f0-9]{4}\)' || true ) \
+count=$( ( printf '%s\n' "$subject" | grep -oE '\([0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+(-[A-Fa-f0-9]{4})?\)' || true ) \
   | grep -c . \
   || true )
 count=${count//[^0-9]/}

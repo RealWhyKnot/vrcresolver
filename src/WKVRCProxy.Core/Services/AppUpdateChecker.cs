@@ -14,9 +14,13 @@ namespace WKVRCProxy.Core.Services;
 // enum + event) so the IPC surface is uniform. Does not download or apply anything itself —
 // that is updater.exe's job. This module only signals the UI so the user can choose to update.
 //
-// Version stamp format is "YYYY.M.d.<count>-<UID>". Tags are expected to be "v<FullVersion>".
-// Comparison strips the leading "v" and the trailing "-UID" then parses with System.Version,
-// since lexicographic compare across single/double-digit days breaks ordering.
+// Version stamp shapes: release "YYYY.M.D.N" (.N = release iteration for the day) and dev
+// "YYYY.M.D.N-XXXX" (XXXX = 4-hex UID disambiguating local rebuilds at the same N). Release
+// tags are "v<FullVersion>"; dev builds aren't tagged. Comparison strips the leading "v" and
+// any "-XXXX" suffix, then parses the YYYY.M.D.N chunk with System.Version, since lexicographic
+// compare across single/double-digit days breaks ordering. Dev and release versions sharing the
+// same .N compare as equal — a dev build isn't a release, so treating it as the same point is
+// the right behavior for the update prompt.
 [SupportedOSPlatform("windows")]
 public class AppUpdateChecker : IProxyModule
 {

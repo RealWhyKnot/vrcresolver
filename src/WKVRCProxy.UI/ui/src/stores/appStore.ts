@@ -60,8 +60,15 @@ export interface AppConfig {
   enablePreflightProbe: boolean;
   nativeAvProUaHosts: string[];
   strategyPriority: string[];
-  strategyPriorityDefaultsVersion: number;
   enableWaveRace: boolean;
+  // When true, every origin-facing strategy egresses through Cloudflare WARP. Tier 2 (whyknot.dev)
+  // stays direct. Backend gates yt-dlp/browser-extract/yt-dlp-og on this; UI just sets the bool
+  // (plus calls EnsureRunningAsync via SAVE_CONFIG echo).
+  maskIp: boolean;
+  // Names of fields the user has explicitly customized via the UI. Backend re-pulls the current
+  // code default for any default-tracked field NOT in this set on next load. Helpers
+  // markOverridden / clearOverridden manage entries.
+  userOverriddenKeys: string[];
   waveSize: number;
   waveStageDeadlineSeconds: number;
   perHostRequestBudget: number;
@@ -75,10 +82,10 @@ export interface AppConfig {
   enableRelaySmoothnessDebug: boolean;
 }
 
-// Canonical default StrategyPriority list + version, mirrored from AppConfig.cs. When the
-// backend bumps StrategyPriorityDefaultsVersion with a new list, users whose saved priority
-// exactly equals a prior default get auto-migrated on next load. Customized lists are preserved.
-export const STRATEGY_PRIORITY_DEFAULTS_VERSION = 2
+// Canonical default StrategyPriority list, mirrored from StrategyDefaults.PriorityDefaults
+// in AppConfig.cs / StrategyDefaults.cs. The backend re-pulls this on load for any user whose
+// userOverriddenKeys does NOT contain "strategyPriority" — so editing this constant flows out
+// to non-customized users automatically. Customized lists are preserved verbatim.
 export const STRATEGY_PRIORITY_DEFAULTS: string[] = [
   'tier1:yt-combo',        // one subprocess tries every YouTube player_client internally
   'tier2:cloud-whyknot',   // cross-IP fallback
@@ -88,6 +95,8 @@ export const STRATEGY_PRIORITY_DEFAULTS: string[] = [
   'tier1:impersonate-only',// TLS-fingerprint-sensitive origins
   'tier1:plain',           // bare yt-dlp last-resort
   'tier1:browser-extract', // JS-gated sites
+  'tier1:warp+default',    // WARP-egress mirror of Default
+  'tier1:warp+vrchat-ua',  // WARP-egress mirror of VRChat UA
   'tier3:plain',           // VRChat's pinned yt-dlp-og
 ]
 
@@ -196,8 +205,9 @@ export const useAppStore = defineStore('app', () => {
     enablePreflightProbe: true,
     nativeAvProUaHosts: ['vr-m.net'],
     strategyPriority: [...STRATEGY_PRIORITY_DEFAULTS],
-    strategyPriorityDefaultsVersion: STRATEGY_PRIORITY_DEFAULTS_VERSION,
     enableWaveRace: true,
+    maskIp: false,
+    userOverriddenKeys: [],
     waveSize: 2,
     waveStageDeadlineSeconds: 3,
     perHostRequestBudget: 3,
@@ -322,7 +332,12 @@ export const useAppStore = defineStore('app', () => {
         const incoming = parsed.data as AppConfig
         if (!incoming.strategyPriority || incoming.strategyPriority.length === 0) {
           incoming.strategyPriority = [...STRATEGY_PRIORITY_DEFAULTS]
-          incoming.strategyPriorityDefaultsVersion = STRATEGY_PRIORITY_DEFAULTS_VERSION
+        }
+        if (!Array.isArray(incoming.userOverriddenKeys)) {
+          incoming.userOverriddenKeys = []
+        }
+        if (typeof incoming.maskIp !== 'boolean') {
+          incoming.maskIp = false
         }
         if (incoming.enableWaveRace === undefined) incoming.enableWaveRace = true
         if (!incoming.waveSize || incoming.waveSize < 1) incoming.waveSize = 2
@@ -463,6 +478,28 @@ export const useAppStore = defineStore('app', () => {
     sendMessage('SAVE_CONFIG', config.value)
   }
 
+  // Override-tracking helpers. Call markOverridden(key) right after mutating a default-tracked
+  // field so the backend stops re-syncing it from source on subsequent loads. clearOverridden
+  // pairs with a "reset to default" action: it removes the key, leaving the next backend load
+  // to pull the current code default in.
+  function markOverridden(key: string) {
+    const list = config.value.userOverriddenKeys ?? []
+    if (!list.includes(key)) {
+      config.value.userOverriddenKeys = [...list, key]
+    }
+  }
+
+  function clearOverridden(key: string) {
+    const list = config.value.userOverriddenKeys ?? []
+    if (list.includes(key)) {
+      config.value.userOverriddenKeys = list.filter(k => k !== key)
+    }
+  }
+
+  function isOverridden(key: string): boolean {
+    return (config.value.userOverriddenKeys ?? []).includes(key)
+  }
+
   function pickVrcPath() {
     sendMessage('PICK_VRC_PATH')
   }
@@ -579,6 +616,9 @@ export const useAppStore = defineStore('app', () => {
     initBridge,
     sendMessage,
     saveConfig,
+    markOverridden,
+    clearOverridden,
+    isOverridden,
     pickVrcPath,
     wipeTools,
     terminate,

@@ -1572,12 +1572,19 @@ public class ResolutionEngine
 
         // WARP variants: same yt-dlp recipes but egress via Cloudflare WARP (SOCKS5 loopback).
         // Useful for origins that geo-block or IP-flag the user's home ISP — WARP presents a
-        // Cloudflare edge IP that many CDNs trust by default. Fires last in the race (priority 90+)
-        // since most direct requests succeed; WARP is the "try a different network" retry.
-        // Listed unconditionally and filtered out via DisabledTiers (default: both off — the user
-        // opts in from the Strategy Panel). The strategies lazily start wireproxy on first run via
-        // WarpService.EnsureRunningAsync, so listing them here costs nothing if they never run.
-        if (!disabled.Contains("tier1") && _warp != null)
+        // Cloudflare edge IP that many CDNs trust by default. Fires last in the race (priority
+        // 90/95) since most direct requests succeed; WARP is the "try a different network" retry.
+        // Registered whenever WarpService is available and listed in the default priority list at
+        // the tail; users can disable a specific variant via the Settings Strategy Panel.
+        // EnsureRunningAsync lazily starts wireproxy on first run, so listing them costs nothing
+        // when they never get raced.
+        //
+        // When MaskIp is on, every other tier-1 variant already routes through WARP (see the
+        // effectiveUseWarp branch in RunTier1Attempt). The warp+ entries become byte-identical
+        // duplicates of `tier1:default` and `tier1:vrchat-ua` in that mode, so we skip them to
+        // avoid noise in the strategy panel and StrategyMemory.
+        bool maskIp = _settings.Config.MaskIp;
+        if (!disabled.Contains("tier1") && _warp != null && !maskIp)
         {
             list.Add(new ResolveStrategy("tier1:warp+default", "tier1", 90, true,
                 sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
@@ -1763,21 +1770,31 @@ public class ResolutionEngine
         // Cloudflare WARP route-through: yt-dlp (and the generic extractor's HTTP probes) go out via
         // our on-host wireproxy SOCKS5 listener, which is user-space WG to the Cloudflare edge. Only
         // this specific yt-dlp subprocess is affected — nothing else on the host routes through WARP.
-        // Strategies opt in via useWarp=true. EnsureRunningAsync lazily starts wireproxy on first
-        // call (subsequent calls are O(1)). If WARP genuinely can't start (binaries missing, port
-        // collision, wgcf failure), the strategy fails outright rather than silently falling back
-        // to direct — otherwise the cold-race winner would look like "warp+default" while in reality
-        // doing exactly what tier1:default would have done, and StrategyMemory would learn nonsense.
-        if (useWarp)
+        //
+        // Two ways to opt in:
+        //   - useWarp=true        — strategy-level (the warp+ variants pass this).
+        //   - Config.MaskIp=true  — global; every tier-1 yt-dlp call routes through WARP regardless
+        //                           of which variant is firing.
+        //
+        // EnsureRunningAsync lazily starts wireproxy on first call (subsequent calls are O(1)). If
+        // WARP genuinely can't start (binaries missing, port collision, wgcf failure), the strategy
+        // fails outright rather than silently falling back to direct — otherwise a Mask-IP user
+        // would think their IP is masked while it's actually leaking, and the cold-race winner
+        // would look like "warp+default" while in reality doing exactly what tier1:default would.
+        bool effectiveUseWarp = useWarp || _settings.Config.MaskIp;
+        if (effectiveUseWarp)
         {
             if (_warp == null || !await _warp.EnsureRunningAsync())
             {
-                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] WARP unavailable (" + (_warp?.StatusDetail ?? "service not registered") + ") — strategy aborted. Disable warp+ strategies in Settings if WARP isn't usable on this machine.");
+                string reason = _settings.Config.MaskIp && !useWarp
+                    ? "Mask IP is on but WARP is unavailable (" + (_warp?.StatusDetail ?? "service not registered") + ") — refusing to leak real IP. Turn Mask IP off in Settings if WARP isn't usable on this machine."
+                    : "WARP unavailable (" + (_warp?.StatusDetail ?? "service not registered") + ") — strategy aborted. Disable warp+ strategies in Settings if WARP isn't usable on this machine.";
+                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] " + reason);
                 return null;
             }
             args.Add("--proxy");
             args.Add(_warp.SocksProxyUrl);
-            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] Routing yt-dlp through WARP SOCKS5 (" + _warp.SocksProxyUrl + ").");
+            _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1:" + variantLabel + "] Routing yt-dlp through WARP SOCKS5 (" + _warp.SocksProxyUrl + (useWarp ? ", strategy-level" : ", Mask IP global") + ").");
         }
 
         if (injectPot)
@@ -1962,6 +1979,19 @@ public class ResolutionEngine
         {
             args.Add("--referer");
             args.Add(referer);
+        }
+        // Mask IP applies here too — tier 3 is the last-resort fallback, and we don't want it
+        // leaking the real IP after the user opted into IP masking. Same loud-fail behavior as
+        // tier 1: if WARP can't start, abort rather than silently going direct.
+        if (_settings.Config.MaskIp)
+        {
+            if (_warp == null || !await _warp.EnsureRunningAsync())
+            {
+                _logger.Warning("[" + ctx.CorrelationId + "] [Tier 3:" + variantLabel + "] Mask IP is on but WARP is unavailable (" + (_warp?.StatusDetail ?? "service not registered") + ") — refusing to leak real IP through yt-dlp-og.");
+                return null;
+            }
+            args.Add("--proxy");
+            args.Add(_warp.SocksProxyUrl);
         }
         var (result, _) = await RunYtDlp("yt-dlp-og.exe", args, ctx);
         return result;

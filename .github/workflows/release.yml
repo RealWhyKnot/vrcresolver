@@ -1,9 +1,11 @@
 name: Release
 
-# Triggered by pushing a tag like v2026.4.27.7-4974. The tag (minus the leading "v") drives the
+# Triggered by pushing a tag like v2026.4.27.0 (release; .N = release iteration for the day,
+# starting at 0). Dev-style tags like v2026.4.27.7-4974 are also accepted but should be rare on
+# the release stream — the -XXXX suffix is intended for local dev builds where many rebuilds at
+# the same daily counter need to be disambiguated. The tag (minus the leading "v") drives the
 # build's version: it's passed to build.ps1 -Version so the assembly version, version.txt, and the
-# zip filename all match the tag. build.ps1 validates the shape (YYYY.M.D.N-XXXX with a 4-char hex
-# UID) and fails fast on a malformed tag.
+# zip filename all match the tag. build.ps1 validates the shape and fails fast on a malformed tag.
 # Builds the full distribution via build.ps1 on a Windows runner — required because the build
 # produces win-x64 single-file exes and uses PowerShell-only cmdlets — then attaches the zip
 # from release/ to a GitHub release with a SHA256 line so updater.exe can verify the download.

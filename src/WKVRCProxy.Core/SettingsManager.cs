@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using WKVRCProxy.Core.Logging;
@@ -45,12 +46,23 @@ public class SettingsManager
             try
             {
                 string json = File.ReadAllText(_filePath);
+
+                // Pre-deserialize peek: was the userOverriddenKeys field present in the raw JSON?
+                // System.Text.Json returns an empty HashSet for both "present and empty" and
+                // "absent" once deserialized, but those mean different things — the latter is a
+                // pre-override-tracking config whose override state must be inferred from its
+                // field values (see InferLegacyOverrides).
+                bool hadOverrideField = JsonHasProperty(json, "userOverriddenKeys");
+
                 var config = JsonSerializer.Deserialize(json, CoreJsonContext.Default.AppConfig);
-                if (config != null)
+                if (config == null) return new AppConfig();
+
+                if (!hadOverrideField)
                 {
-                    ApplyStrategyPriorityMigration(config);
+                    InferLegacyOverrides(config);
                 }
-                return config ?? new AppConfig();
+                SyncDefaultsForNonOverriddenFields(config);
+                return config;
             }
             catch (Exception ex)
             {
@@ -66,31 +78,42 @@ public class SettingsManager
         }
     }
 
-    // Auto-upgrade a stored StrategyPriority list from an older default to the current default,
-    // but ONLY if the user hadn't customized it. See Models/StrategyDefaults.cs for version
-    // semantics. Runs inline during Load — no separate user action required.
-    private void ApplyStrategyPriorityMigration(AppConfig config)
+    private static bool JsonHasProperty(string json, string propertyName)
     {
-        if (StrategyDefaults.TryMigratePriorityList(
-                config.StrategyPriority,
-                config.StrategyPriorityDefaultsVersion,
-                out var migrated))
+        try
         {
-            _logger?.Info("[Settings] Strategy priority defaults migrated v"
-                + config.StrategyPriorityDefaultsVersion + " → v" + StrategyDefaults.CurrentVersion
-                + " (your list matched the old default, so it's been updated; customized lists are preserved).");
-            config.StrategyPriority = migrated;
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty(propertyName, out _);
         }
-        // Always stamp the current version forward so we don't re-check the migration next load.
-        config.StrategyPriorityDefaultsVersion = StrategyDefaults.CurrentVersion;
-
-        // Defensive fill: older configs predate YouTubeComboClientOrder entirely. Seed with
-        // current default so yt-combo can run the new broad client list without the user editing
-        // JSON by hand.
-        if (config.YouTubeComboClientOrder == null || config.YouTubeComboClientOrder.Count == 0)
+        catch
         {
-            config.YouTubeComboClientOrder = new System.Collections.Generic.List<string>(
-                StrategyDefaults.YouTubeComboClientOrderDefault);
+            return false;
+        }
+    }
+
+    // For configs saved before the override-tracking schema landed, decide whether each
+    // default-tracked field's stored value matches a known shipped default (→ not overridden;
+    // user gets future default updates) or a customization (→ overridden; preserved verbatim).
+    private void InferLegacyOverrides(AppConfig config)
+    {
+        foreach (var (jsonKey, matcher) in DefaultTrackedFields.LegacyMatchers)
+        {
+            if (matcher(config)) continue; // Looks like a known default — leave key out of overrides
+            config.UserOverriddenKeys.Add(jsonKey);
+            _logger?.Info("[Settings] Inferred user customization on '" + jsonKey + "' from legacy config — preserving verbatim, future default updates will skip it.");
+        }
+    }
+
+    // For each default-tracked field NOT in UserOverriddenKeys, copy the current code default in.
+    // Net effect: editing a default constant in source flows out to every user who hasn't
+    // customized that field, with no version bump or per-field migration code.
+    private void SyncDefaultsForNonOverriddenFields(AppConfig config)
+    {
+        foreach (var (jsonKey, resetter) in DefaultTrackedFields.Resetters)
+        {
+            if (config.UserOverriddenKeys.Contains(jsonKey)) continue;
+            resetter(config);
         }
     }
 

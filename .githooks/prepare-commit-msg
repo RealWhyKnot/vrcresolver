@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Append the current build version to the commit subject.
 #
-# build.ps1 writes the latest stamp to <repo-root>/version.txt as YYYY.M.D.N-XXXX
-# (the same string baked into the assembly version and dist/version.txt). This hook
-# tacks "(YYYY.M.D.N-XXXX)" onto the subject so `git log` shows which build a commit
-# corresponds to without needing to map hashes by hand.
+# build.ps1 writes the latest stamp to <repo-root>/version.txt — either the dev shape
+# YYYY.M.D.N-XXXX (the common case for local builds) or the release shape YYYY.M.D.N
+# (no suffix; only when a release tag drives the build). This hook tacks the stamp onto the
+# subject in parens so `git log` shows which build a commit corresponds to without needing
+# to map hashes by hand.
 #
 # Companion hook commit-msg rejects duplicate stamps if an editor template
 # autocompletes a stale one; keep these two in sync.

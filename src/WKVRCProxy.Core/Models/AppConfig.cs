@@ -106,23 +106,14 @@ public class AppConfig
     // Ordered list of strategy names the cold-race consults before falling back to memory ranking
     // or the built-in priority numbers. Users can reorder this in Settings to make a specific
     // strategy wave-1 primary. Strategies missing from this list still run (at the tail, ordered
-    // by their built-in priority). Strategies in the list that aren't in the current catalog are
-    // ignored.
+    // by their built-in priority).
     //
-    // The default ordering tracks what empirically works best — currently `tier1:yt-combo`
-    // (server-aligned `web_safari,web,mweb` combo) first, then `tier2:cloud-whyknot` as the
-    // cross-IP fallback. When the community-wise "best working" order changes, bump
-    // StrategyPriorityDefaultsVersion and users whose config still holds a stale default migrate
-    // automatically (customized lists are preserved).
+    // Default-syncing: on load, if "strategyPriority" is NOT in UserOverriddenKeys, this field
+    // gets reset to StrategyDefaults.PriorityDefaults. Once the user touches the list in the UI,
+    // the UI adds "strategyPriority" to UserOverriddenKeys and the user's choices are preserved
+    // verbatim across launches and default updates. See SettingsManager.SyncDefaultsForNonOverriddenFields.
     [JsonPropertyName("strategyPriority")]
-    public List<string> StrategyPriority { get; set; } = new(StrategyDefaults.PriorityDefaultsV2);
-
-    // Auto-migration version for StrategyPriority. Store the version that produced the current
-    // defaults; on load, if StrategyPriority exactly equals the embedded defaults for an older
-    // version, overwrite with the new defaults. Customized lists (that don't match any known
-    // default) are preserved untouched. See StrategyDefaults for the version history.
-    [JsonPropertyName("strategyPriorityDefaultsVersion")]
-    public int StrategyPriorityDefaultsVersion { get; set; } = StrategyDefaults.CurrentVersion;
+    public List<string> StrategyPriority { get; set; } = new(StrategyDefaults.PriorityDefaults);
 
     // Ordered YouTube player_client list the `tier1:yt-combo` strategy passes to yt-dlp. yt-dlp
     // tries these in order and stops at the first client that returns a usable format, so we get
@@ -170,4 +161,68 @@ public class AppConfig
     // stream eventually resumes.
     [JsonPropertyName("enableRelaySmoothnessDebug")]
     public bool EnableRelaySmoothnessDebug { get; set; } = true;
+
+    // When true, every origin-facing resolution strategy (yt-dlp tier 1, browser-extract,
+    // yt-dlp-og tier 3) egresses through the local Cloudflare WARP SOCKS5 proxy, masking the
+    // user's real IP from origin servers. Tier 2 (whyknot.dev) intentionally stays direct — it's
+    // a trusted endpoint and adding WARP just for the call home would tax the cloud resolver and
+    // add latency for no privacy gain.
+    //
+    // Requires the bundled tools/warp/wgcf.exe + wireproxy.exe. When WARP can't start, strategies
+    // abort with a "WARP unavailable" warning rather than silently leaking the real IP.
+    //
+    // Note: switching from off→on while a session is active doesn't retroactively re-route
+    // already-in-flight requests, and origin-side IP-binding (notably YouTube) may briefly
+    // require a fresh resolution pass after the toggle.
+    [JsonPropertyName("maskIp")]
+    public bool MaskIp { get; set; } = false;
+
+    // Names (in JSON-key form) of fields the user has explicitly customized via the UI. On load,
+    // SettingsManager re-pulls the current code default for any default-tracked field NOT in this
+    // set, so editing a default constant in source automatically flows out to all users who
+    // haven't customized that field. See Models.DefaultTrackedFields for the registry of
+    // affected fields.
+    //
+    // The UI is responsible for adding/removing entries (markOverridden/clearOverridden in
+    // appStore.ts). Legacy configs without this field get their override state inferred on first
+    // load by comparing values to historical defaults (see SettingsManager.InferLegacyOverrides).
+    [JsonPropertyName("userOverriddenKeys")]
+    public HashSet<string> UserOverriddenKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+// Registry of AppConfig fields whose default values should track the embedded-source defaults
+// when the user hasn't explicitly customized them. SettingsManager iterates this on load: for
+// each entry whose JSON key is absent from AppConfig.UserOverriddenKeys, the resetter runs.
+//
+// To add a new default-tracked field: add a `Resetters` entry mapping its JSON key (camelCase,
+// matches [JsonPropertyName]) to an Action that copies the current code default into the
+// AppConfig instance. Optionally add a `LegacyMatchers` entry — a predicate that returns true
+// iff the saved value matches a known historical default — so pre-override-tracking configs
+// can be auto-classified as not-overridden on first load.
+public static class DefaultTrackedFields
+{
+    public static readonly Dictionary<string, Action<AppConfig>> Resetters =
+        new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "strategyPriority",        c => c.StrategyPriority = new List<string>(StrategyDefaults.PriorityDefaults) },
+        { "youtubeComboClientOrder", c => c.YouTubeComboClientOrder = new List<string>(StrategyDefaults.YouTubeComboClientOrderDefault) },
+        { "nativeAvProUaHosts",      c => c.NativeAvProUaHosts = new List<string> { "vr-m.net" } },
+    };
+
+    // Predicates used by SettingsManager.InferLegacyOverrides for configs missing the
+    // userOverriddenKeys field entirely. Returns true if the field's loaded value matches any
+    // shipped historical default (so the user is "still on a default") — the field is then NOT
+    // marked overridden. A mismatch means the user customized at some point — the field IS
+    // marked overridden and its value is preserved.
+    public static readonly Dictionary<string, Func<AppConfig, bool>> LegacyMatchers =
+        new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "strategyPriority",        c => StrategyDefaults.MatchesAnyHistoricalPriorityDefault(c.StrategyPriority) },
+        { "youtubeComboClientOrder", c => c.YouTubeComboClientOrder == null
+                                           || c.YouTubeComboClientOrder.Count == 0
+                                           || StrategyDefaults.MatchesYouTubeComboDefault(c.YouTubeComboClientOrder) },
+        // nativeAvProUaHosts has only ever shipped one default; an empty list also reads as default.
+        { "nativeAvProUaHosts",      c => c.NativeAvProUaHosts == null
+                                           || (c.NativeAvProUaHosts.Count == 1 && c.NativeAvProUaHosts[0] == "vr-m.net") },
+    };
 }

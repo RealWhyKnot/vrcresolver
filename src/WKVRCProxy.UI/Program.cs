@@ -141,9 +141,9 @@ class Program
         // BrowserExtractService is not a module (no InitializeAsync lifecycle needed — its browser
         // is lazy-initialised on first extraction call). Constructed here so Program.cs owns its
         // dispose lifecycle and it can be passed into ResolutionEngine by constructor.
-        var browserExtractService = new BrowserExtractService(_logger, _settings, browserSessionCache);
-        _browserExtractor = browserExtractService;
         var warpService = new WarpService();
+        var browserExtractService = new BrowserExtractService(_logger, _settings, browserSessionCache, warpService);
+        _browserExtractor = browserExtractService;
 
         _coordinator.Register(logMonitor);
         _coordinator.Register(codecInstaller);
@@ -327,6 +327,16 @@ class Program
                     if (_settings.Config.AutoPatchOnStart) {
                         string wrapperPath = Path.Combine(baseDir, "tools", "redirector.exe");
                         if (File.Exists(wrapperPath)) patcherService.StartMonitoring(wrapperPath);
+                    }
+
+                    // Mask IP eagerly spins up wireproxy so the first request after launch doesn't
+                    // eat the cold-start latency. Failures still leave the service in Failed state;
+                    // strategies will refuse to run rather than leak the real IP.
+                    if (_settings.Config.MaskIp) {
+                        _ = Task.Run(async () => {
+                            try { await warpService.EnsureRunningAsync(); }
+                            catch (Exception ex) { _logger.Warning("[Warp] Eager start (Mask IP) failed: " + ex.Message); }
+                        });
                     }
 
                     // Start periodic health broadcast (every 10 seconds)
@@ -599,6 +609,7 @@ class Program
                     if (root.TryGetProperty("data", out var configData)) {
                         var newConfig = JsonSerializer.Deserialize<WKVRCProxy.Core.Models.AppConfig>(configData.GetRawText());
                         if (newConfig != null && _settings != null) {
+                            bool wasMaskIp = _settings.Config.MaskIp;
                             _settings.Config.DebugMode = newConfig.DebugMode;
                             _settings.Config.PreferredResolution = newConfig.PreferredResolution;
                             _settings.Config.ForceIPv4 = newConfig.ForceIPv4;
@@ -611,14 +622,30 @@ class Program
                             if (newConfig.StrategyPriority != null)
                             {
                                 _settings.Config.StrategyPriority = newConfig.StrategyPriority;
-                                _settings.Config.StrategyPriorityDefaultsVersion = newConfig.StrategyPriorityDefaultsVersion;
                             }
                             _settings.Config.EnableWaveRace = newConfig.EnableWaveRace;
                             if (newConfig.WaveSize > 0) _settings.Config.WaveSize = newConfig.WaveSize;
                             if (newConfig.WaveStageDeadlineSeconds > 0) _settings.Config.WaveStageDeadlineSeconds = newConfig.WaveStageDeadlineSeconds;
                             if (newConfig.PerHostRequestBudget > 0) _settings.Config.PerHostRequestBudget = newConfig.PerHostRequestBudget;
                             if (newConfig.PerHostRequestWindowSeconds > 0) _settings.Config.PerHostRequestWindowSeconds = newConfig.PerHostRequestWindowSeconds;
+                            _settings.Config.MaskIp = newConfig.MaskIp;
+                            _settings.Config.UserOverriddenKeys = newConfig.UserOverriddenKeys ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                             _settings.Save();
+
+                            // Mask-IP off→on: eagerly spin up wireproxy so the next request doesn't
+                            // pay the cold-start latency. Failures stay in Failed state; the next
+                            // strategy attempt will surface the reason.
+                            if (!wasMaskIp && _settings.Config.MaskIp)
+                            {
+                                var warp = _coordinator?.GetModule<WarpService>();
+                                if (warp != null)
+                                {
+                                    _ = Task.Run(async () => {
+                                        try { await warp.EnsureRunningAsync(); }
+                                        catch (Exception ex) { _logger?.Warning("[Warp] Eager start (Mask IP toggled on) failed: " + ex.Message); }
+                                    });
+                                }
+                            }
                         }
                     }
                     break;
