@@ -5,7 +5,7 @@ import { useAppStore } from '../../stores/appStore'
 const appStore = useAppStore()
 
 // The Website tab embeds whyknot.dev and is the canonical surface for share/upload/browse
-// flows; native ShareView was retired in favour of it. See docs/embed-website/.
+// flows; native ShareView was retired in favour of it.
 const tabs = [
   { id: 'dashboard', label: 'Dashboard', icon: 'bi-grid-1x2-fill' },
   { id: 'history', label: 'History', icon: 'bi-collection-play-fill' },

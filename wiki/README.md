@@ -1,6 +1,6 @@
 # Wiki source
 
-The `.md` files in this folder are the **source of truth** for the GitHub Wiki at <https://github.com/RealWhyKnot/WKVRCProxy/wiki>. They are mirrored to the wiki repo by [`.github/workflows/wiki-sync.yml`](../../.github/workflows/wiki-sync.yml) on every push to `main` that touches `docs/wiki/**`.
+The `.md` files in this folder are the **source of truth** for the GitHub Wiki at <https://github.com/RealWhyKnot/WKVRCProxy/wiki>. They are mirrored to the wiki repo by [`.github/workflows/wiki-sync.yml`](../.github/workflows/wiki-sync.yml) on every push to `main` that touches `wiki/**`.
 
 ## Why source-control the wiki?
 

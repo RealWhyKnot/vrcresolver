@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths-ignore:
       - '**.md'
-      - 'docs/**'
+      - 'wiki/**'
       - 'LICENSE'
       - '.gitignore'
       - '.gitattributes'
@@ -16,7 +16,7 @@ on:
     branches: [main]
     paths-ignore:
       - '**.md'
-      - 'docs/**'
+      - 'wiki/**'
       - 'LICENSE'
       - '.gitignore'
       - '.gitattributes'

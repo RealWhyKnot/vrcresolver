@@ -130,7 +130,7 @@ Per-release notes live in [CHANGELOG.md](CHANGELOG.md) (also mirrored to the wik
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the short version, and [Engineering Standards](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Engineering-Standards) for the load-bearing rules (no C# string interpolation in stamped files, raw-bytes stdout in the Redirector, wrap-by-default, etc.). The wiki content itself lives at [`docs/wiki/`](docs/wiki/) — edit there, the [`wiki-sync.yml`](.github/workflows/wiki-sync.yml) workflow mirrors to the GitHub Wiki on push to `main`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the short version, and [Engineering Standards](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Engineering-Standards) for the load-bearing rules (no C# string interpolation in stamped files, raw-bytes stdout in the Redirector, wrap-by-default, etc.). The wiki content itself lives at [`wiki/`](wiki/) — edit there, the [`wiki-sync.yml`](.github/workflows/wiki-sync.yml) workflow mirrors to the GitHub Wiki on push to `main`.
 
 ## Reporting bugs
 
