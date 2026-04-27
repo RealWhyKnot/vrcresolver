@@ -94,6 +94,31 @@ ffmpeg -i input.mov -c:v libsvtav1 -pix_fmt yuv420p -crf 23 -preset 6 \
 
 Always include `-movflags +faststart` for streaming / progressive playback. Quest deployments should stick to H.264/HEVC at 720p–1080p / 5–12 Mbps.
 
+## Audio channels (PCVR reality)
+
+WKVRCProxy is Windows-only, so this section is framed for PCVR. Quest/iOS users in the same world hit upstream directly and aren't affected by anything we do.
+
+The headline rule, from VRChat's own creators docs: AVPro **reliably plays up to 6 channels (5.1)**. Anything beyond that is codec-specific and full of footguns.
+
+| Source | PCVR outcome |
+|---|---|
+| AAC-LC ≤ 6ch (5.1) | Plays |
+| AAC-LC 7ch | Video plays, audio silent (Media Foundation cap) |
+| AAC-LC 8ch / 7.1 | Fails to load |
+| EAC3 5.1 / 7.1 | Plays — the only documented 7.1 path |
+| AC3 5.1 | Plays (most Win10/11 systems have the extension) |
+| Opus 5.1 | Plays on Win10 1607+ |
+| FLAC 5.1 | Plays on Win10+ or with LAV Filters |
+| Vorbis surround | Treat as unreliable |
+
+Misconceptions to flag in user-facing answers:
+
+- **"AVPro speaker component supports 8 channels"** — the component implies it but VRChat creators docs explicitly say only 6 are reliably playable. The "8" is an internal buffer, not a render path.
+- **"It will downmix to stereo automatically"** — often it won't. Without an explicit `VRCAVProVideoSpeaker` mode mapping in the world, center / rear / LFE channels go silent on stereo output devices. Voice-heavy content with the center track unmapped goes silent.
+- **"7.1 works on PCVR"** — only with **EAC3**. AAC 7.1 is silent. This is a world-author concern, not something the relay can fix.
+
+WKVRCProxy does not currently filter or transform audio renditions. If a 7+ channel source produces no sound, the source itself is the problem (or the user is missing a Windows codec extension). Tracking ideas for any future relay-side handling live in [issue #11](https://github.com/RealWhyKnot/WKVRCProxy/issues/11).
+
 ## Common error: "Loading failed. File not found, codec not supported, video resolution too high or insufficient system resources."
 
 Catch-all from AVPro. Real meanings:

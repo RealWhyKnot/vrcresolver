@@ -33,6 +33,16 @@ Twitch live needs `tier0:streamlink`. Check that `dist/tools/streamlink/bin/stre
 
 `strategy_memory.json` is wiped on version change to avoid stale rankings. The first request to each host re-cascades from cold; expect a few seconds longer than usual until memory rebuilds.
 
+### Video plays but audio is silent (or only some channels)
+
+Almost always a multi-channel source AVPro can't fully decode on Windows. WKVRCProxy doesn't touch audio — this is a property of the source file plus the user's Media Foundation install.
+
+- **AAC 7-channel** plays video with silent audio; **AAC 8-channel / 7.1** fails to load entirely. Media Foundation's AAC decoder caps at 6 channels.
+- **EAC3 5.1 / 7.1** is the only documented 7.1 path on PCVR. Requires the AC-3 / Dolby codec extension (most Win10/11 systems already have it).
+- **No auto-downmix**: if the world's `VRCAVProVideoSpeaker` setup doesn't map every channel and the user is on stereo output, center / rear / LFE go silent. This is a world-author concern, not something WKVRCProxy can fix.
+
+If you suspect this, run `ffprobe` on the resolved URL — if the audio stream reports `channels > 6`, that's the source. See [[AVPro vs Unity|AVPro-vs-Unity#audio-channels-pcvr-reality]] for the full table.
+
 ### Patcher won't apply (yt-dlp.exe in Tools is locked)
 
 VRChat is probably still running. The patcher is idempotent — the next monitor tick (every 3 s) will retry. If it persists, close VRChat fully and check Task Manager for stray `yt-dlp.exe` or `redirector.exe` processes.
