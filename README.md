@@ -4,7 +4,7 @@ A Windows desktop app that makes VRChat's in-world video players resolve and pla
 
 > **Status: alpha.** It works, but expect rough edges. Run it alongside VRChat; shut it down if something misbehaves.
 
-📚 **Long-form documentation lives in the [wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki).** This README is the quick-start.
+**Long-form documentation lives in the [wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki).** This README is the quick-start.
 
 ---
 
@@ -25,7 +25,7 @@ WKVRCProxy sits in front of VRChat's resolver pipeline and fixes both problems:
 
 - **Pre-flight probe.** Verifies each resolved URL is reachable (using AVPro-shaped headers) before handing back to VRChat. Catches dead cloud URLs early.
 
-➡ Full request flow: [[Architecture]] · How strategies are picked: [[Resolution Cascade]] · Why the relay is the default: [[Relay Server]]
+Full request flow: [Architecture](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Architecture) · How strategies are picked: [Resolution Cascade](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Resolution-Cascade) · Why the relay is the default: [Relay Server](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Relay-Server)
 
 ---
 
@@ -51,7 +51,7 @@ The bundled `updater.exe` and `uninstall.exe` live next to it. **Settings → Ma
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-What the script does (full breakdown in [[Build Pipeline]]):
+What the script does (full breakdown in [Build Pipeline](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Build-Pipeline)):
 
 1. Vendors third-party tools into `vendor/` on first run, cached by version: `yt-dlp.exe`, `deno.exe`, `curl-impersonate-win.exe`, `streamlink`, `wgcf` + `wireproxy` for WARP, and the compiled `bgutil-ytdlp-pot-provider.exe` PO-token sidecar. Subsequent builds skip the network entirely for any binary whose pinned version in `vendor/versions.json` matches upstream and whose vendor file still exists.
 2. Builds the Vue UI (`vite build`) into `src/WKVRCProxy.UI/wwwroot/`.
@@ -91,13 +91,13 @@ Target framework is `net10.0` (Core + Redirector + TestHarness) / `net10.0-windo
 
 ### Settings & runtime state
 
-Lives next to the exe — for dev, that's `src/WKVRCProxy.UI/bin/Debug/net10.0-windows/`. Full inventory in [[Runtime State]].
+Lives next to the exe — for dev, that's `src/WKVRCProxy.UI/bin/Debug/net10.0-windows/`. Full inventory in [Runtime State](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Runtime-State).
 
 Highlights:
 
 | File | Purpose |
 | --- | --- |
-| `app_config.json` | User settings — every field documented in [[Settings Reference]] |
+| `app_config.json` | User settings — every field documented in [Settings Reference](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Settings-Reference) |
 | `strategy_memory.json` | Per-host W/L per strategy. **Wiped on version change.** |
 | `proxy-rules.json` | Per-domain relay behaviour: forwarded headers, UA overrides, PO-token injection |
 | `wkvrcproxy_<timestamp>.log` | Session log with correlation IDs |
@@ -115,7 +115,7 @@ Highlights:
 - **`[WARNING] [Playback] AVPro rejected resolved URL from 'X'`** — explicit demotion with the correlation ID so you can grep back.
 - **`Relay wrap skipped for <host>` at INFO level** — only expected for hosts on the deny-list (`vr-m.net` by default) or on VRChat's trusted list. If you see it for a random CDN, that CDN slipped into the trusted-host table by mistake — file it.
 
-Full troubleshooting playbook: [[Troubleshooting]].
+Full troubleshooting playbook: [Troubleshooting](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting).
 
 ### Knobs you might actually use
 
@@ -126,7 +126,7 @@ Full troubleshooting playbook: [[Troubleshooting]].
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the short version, and [[Engineering Standards]] for the load-bearing rules (no C# string interpolation in stamped files, raw-bytes stdout in the Redirector, wrap-by-default, etc.). The wiki content itself lives at [`docs/wiki/`](docs/wiki/) — edit there, the [`wiki-sync.yml`](.github/workflows/wiki-sync.yml) workflow mirrors to the GitHub Wiki on push to `main`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the short version, and [Engineering Standards](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Engineering-Standards) for the load-bearing rules (no C# string interpolation in stamped files, raw-bytes stdout in the Redirector, wrap-by-default, etc.). The wiki content itself lives at [`docs/wiki/`](docs/wiki/) — edit there, the [`wiki-sync.yml`](.github/workflows/wiki-sync.yml) workflow mirrors to the GitHub Wiki on push to `main`.
 
 ## Reporting bugs
 
