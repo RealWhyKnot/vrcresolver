@@ -221,8 +221,21 @@ partial class Program
 
     private static void BridgeGetHistory(string requestId)
     {
-        var history = _settings?.Config.History ?? new List<HistoryEntry>();
-        SendBridgeResponse(requestId, ok: true, data: history);
+        // Mapping the C# HistoryEntry shape onto the website's expected
+        // { history: [{ link, resolvedAt, type }] } envelope. wkBridge.ts filters out anything
+        // missing a string `link`, so entries with no original URL are dropped here too rather
+        // than letting the page do the work. `type` doubles as the cascade tier so the page
+        // can label entries; `title` isn't tracked locally so it's omitted.
+        var entries = (_settings?.Config.History ?? new List<HistoryEntry>())
+            .Where(h => !string.IsNullOrEmpty(h.OriginalUrl))
+            .Select(h => new
+            {
+                link = h.OriginalUrl,
+                resolvedAt = h.Timestamp.ToString("O"),
+                type = string.IsNullOrEmpty(h.Tier) ? null : h.Tier,
+            })
+            .ToList();
+        SendBridgeResponse(requestId, ok: true, data: new { history = entries });
     }
 
     private static void BridgeGetVersion(string requestId)
@@ -243,6 +256,11 @@ partial class Program
         // ShareView.vue used (history.find(h => h.Success && h.OriginalUrl)) — same surface,
         // different consumer. Avoids reaching into ResolutionEngine's recent-resolutions ring,
         // which is short-TTL state for playback feedback, not a "last link" feed.
+        //
+        // Shape: { link, resolvedAt? } — matches the website's LastLink type. `link` is the
+        // original (user-shared) URL, not the resolved manifest, since that's what the page
+        // wants to surface for "share again" / re-paste flows. wkBridge.ts treats both null
+        // payloads and `link === ''` as "no last link", so a missing entry returns null.
         var entry = _settings?.Config.History.FirstOrDefault(
             h => h.Success && !string.IsNullOrEmpty(h.OriginalUrl));
         if (entry == null)
@@ -252,12 +270,8 @@ partial class Program
         }
         SendBridgeResponse(requestId, ok: true, data: new
         {
-            originalUrl = entry.OriginalUrl,
-            resolvedUrl = entry.ResolvedUrl,
-            tier = entry.Tier,
-            timestamp = entry.Timestamp,
-            resolutionHeight = entry.ResolutionHeight,
-            resolutionWidth = entry.ResolutionWidth,
+            link = entry.OriginalUrl,
+            resolvedAt = entry.Timestamp.ToString("O"),
         });
     }
 }

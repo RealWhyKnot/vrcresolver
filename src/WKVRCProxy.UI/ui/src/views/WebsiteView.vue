@@ -2,13 +2,20 @@
 // Frame whyknot.dev inside the program window. The Website tab is unconditionally rendered
 // (no flag); the embedded site is the canonical surface for share/upload/browse flows.
 //
-// Native bridge: the iframe at https://whyknot.dev posts
-//   { type: 'wkBridge', method, requestId, args }
-// to its parent. We validate event.origin against EMBED_ORIGIN, then forward to the host
-// via the existing photino IPC as `WEBSITE_BRIDGE`. The host responds with
-// `WEBSITE_BRIDGE_RESPONSE` carrying { requestId, ok, data?, error? }; we route that back to
-// the iframe via iframe.contentWindow.postMessage with EMBED_ORIGIN as the explicit
-// targetOrigin.
+// Native bridge protocol (must stay in lockstep with WhyKnot.Frontend/src/lib/wkBridge.ts):
+//   1. Iframe posts { type: 'wkBridgeHello', version: 1, origin } to its parent on load.
+//   2. We validate event.origin and reply with
+//        { type: 'wkBridgeReady', version: 1, features: [...allowlist], programOrigin: 'null' }
+//      via event.source.postMessage(... , event.origin). `programOrigin = 'null'` because
+//      Photino loads index.html from file://, which serializes to the opaque-origin string
+//      'null' on the iframe side; wkBridge.ts explicitly tolerates that via its `=== 'null'`
+//      escape clause.
+//   3. Each method posts { type: 'wkBridge', method, requestId, args } to the parent. We
+//      forward to the host as `WEBSITE_BRIDGE`. The host replies via `WEBSITE_BRIDGE_RESPONSE`
+//      with { requestId, ok, data?, error? }; we route that back as
+//        { type: 'wkBridgeResponse', requestId, ok, data?, error? }
+//      to the originating iframe contentWindow with the iframe's origin as the explicit
+//      targetOrigin (never '*').
 //
 // Allowlist (host-enforced too — see Program.WebsiteBridge.cs): PICK_FILE,
 // COPY_TO_CLIPBOARD, OPEN_IN_BROWSER, GET_HISTORY, GET_VERSION, GET_LAST_LINK.
@@ -22,14 +29,22 @@ const EMBED_ORIGIN = 'https://whyknot.dev'
 // Vite dev server origin — only honoured when the UI was built in dev mode (import.meta.env.DEV
 // is replaced by the bundler at build time, so production builds reject this origin).
 const DEV_ORIGIN = 'http://localhost:5173'
-const ALLOWED_METHODS = new Set([
+const ALLOWED_METHODS = [
   'PICK_FILE',
   'COPY_TO_CLIPBOARD',
   'OPEN_IN_BROWSER',
   'GET_HISTORY',
   'GET_VERSION',
   'GET_LAST_LINK',
-])
+] as const
+const ALLOWED_METHOD_SET = new Set<string>(ALLOWED_METHODS)
+// Protocol version — mirrors PROTOCOL_VERSION in WhyKnot.Frontend/src/lib/wkBridge.ts.
+const BRIDGE_PROTOCOL_VERSION = 1
+// Photino loads index.html from disk, so the iframe sees the parent's origin as the opaque
+// 'null' string. wkBridge.ts has an explicit `event.origin === 'null'` escape clause for the
+// handshake AND uses programOrigin verbatim for subsequent response-origin checks, so
+// advertising 'null' here is the only value that lets later wkBridgeResponse messages through.
+const PROGRAM_ORIGIN = 'null'
 
 function isAllowedOrigin(origin: string): boolean {
   if (origin === EMBED_ORIGIN) return true
@@ -93,13 +108,38 @@ function handleBridgeMessage(event: MessageEvent) {
   if (!isAllowedOrigin(event.origin)) return
   const data = event.data
   if (!data || typeof data !== 'object') return
+
+  // Handshake: iframe announces itself with wkBridgeHello on load; we reply with
+  // wkBridgeReady so it can flip into "embedded" mode and learn which methods we expose.
+  // The handshake is what unlocks the rest of the protocol on the iframe side — without
+  // a wkBridgeReady reply the iframe stays in not-embedded mode and never sends method calls.
+  if (data.type === 'wkBridgeHello') {
+    if (data.version !== BRIDGE_PROTOCOL_VERSION) return
+    if (event.source instanceof Window) {
+      try {
+        event.source.postMessage(
+          {
+            type: 'wkBridgeReady',
+            version: BRIDGE_PROTOCOL_VERSION,
+            features: [...ALLOWED_METHODS],
+            programOrigin: PROGRAM_ORIGIN,
+          },
+          event.origin as any,
+        )
+      } catch (e) {
+        console.warn('[wkBridge] failed to send wkBridgeReady:', e)
+      }
+    }
+    return
+  }
+
   if (data.type !== 'wkBridge') return
 
   const method = typeof data.method === 'string' ? data.method : ''
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const args = data.args ?? {}
 
-  if (!ALLOWED_METHODS.has(method)) {
+  if (!ALLOWED_METHOD_SET.has(method)) {
     const key = event.origin + '|' + method
     if (!warnedRejections.has(key)) {
       warnedRejections.add(key)
@@ -108,7 +148,7 @@ function handleBridgeMessage(event: MessageEvent) {
     if (requestId && event.source) {
       try {
         ;(event.source as Window).postMessage(
-          { type: 'wkBridge', requestId, ok: false, error: 'method not allowed' },
+          { type: 'wkBridgeResponse', requestId, ok: false, error: 'method not allowed' },
           event.origin as any,
         )
       } catch { /* best-effort reply */ }
@@ -134,7 +174,7 @@ function handleHostResponse(event: Event) {
   try {
     pending.source.postMessage(
       {
-        type: 'wkBridge',
+        type: 'wkBridgeResponse',
         requestId,
         ok: !!payload.ok,
         data: payload.data,

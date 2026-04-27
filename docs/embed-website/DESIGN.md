@@ -108,35 +108,67 @@ If Phase 1 validates, add a `wkBridge` SDK on whyknot.dev that the iframe uses t
 
 #### Bridge protocol
 
-The iframe (origin: `https://whyknot.dev`) calls into the program via `window.parent.postMessage`. The program window listens on `window` and forwards approved messages to Photino's IPC.
+The iframe (origin: `https://whyknot.dev`) calls into the program via `window.parent.postMessage`. The program window listens on `window` (in `WebsiteView.vue`) and forwards approved messages to Photino's IPC.
 
-**Outbound (iframe → program):**
+**As shipped, the protocol is the one implemented in [`WhyKnot.Frontend/src/lib/wkBridge.ts`](https://github.com/RealWhyKnot/WhyKnot.dev/blob/main/src/WhyKnot.Frontend/src/lib/wkBridge.ts) and [`src/WKVRCProxy.UI/ui/src/views/WebsiteView.vue`](../../src/WKVRCProxy.UI/ui/src/views/WebsiteView.vue) — anything below that conflicts with those files is wrong; the canonical shape is defined by the code.**
+
+**1. Handshake (iframe → program → iframe)**
+
+On load, the SDK posts:
 
 ```ts
-window.parent.postMessage({
-  source: 'wkBridge',
-  version: 1,
-  id: '<uuid>',
-  type: 'PICK_FILE' | 'COPY_TO_CLIPBOARD' | 'OPEN_IN_BROWSER' |
-        'GET_HISTORY' | 'GET_VERSION' | 'GET_LAST_LINK',
-  payload: { … },
-}, '*');
+window.parent.postMessage(
+  { type: 'wkBridgeHello', version: 1, origin: window.location.origin },
+  '*', // unavoidable until the iframe knows its parent's origin
+);
 ```
 
-**Inbound (program → iframe):** the program's `WebsiteView` parent component listens for `wkBridge` messages, validates `event.origin === 'https://whyknot.dev'` (or the configured dev origin), forwards approved types to Photino IPC, and posts the response back to the iframe's `contentWindow` with the matching `id`.
+The program's `WebsiteView.vue` validates `event.origin` against the embed allowlist (prod: `https://whyknot.dev`; dev: `http://localhost:5173` only when `import.meta.env.DEV`), then replies via `event.source.postMessage(..., event.origin)` with:
 
-**Allowlist enforced in the program (everything else is dropped, logged once):**
+```ts
+{
+  type: 'wkBridgeReady',
+  version: 1,
+  features: ['PICK_FILE', 'COPY_TO_CLIPBOARD', 'OPEN_IN_BROWSER',
+             'GET_HISTORY', 'GET_VERSION', 'GET_LAST_LINK'],
+  programOrigin: 'null', // Photino loads index.html from file:// → opaque origin "null"
+}
+```
 
-| `type` | Forwards to | Returns |
+The SDK refuses to flip into "embedded" mode until it receives a `wkBridgeReady` whose claimed `programOrigin` matches the actual `event.origin` (or is `'null'`, the documented escape clause for opaque file:// parents). After the handshake, `programOrigin` is the strict origin check applied to every subsequent `wkBridgeResponse`.
+
+**2. Method call (iframe → program)**
+
+```ts
+window.parent.postMessage(
+  { type: 'wkBridge', method, requestId: '<uuid>', args: { … } },
+  programOrigin, // explicit, never '*'
+);
+```
+
+**3. Response (program → iframe)**
+
+The program forwards the approved call to Photino IPC as `WEBSITE_BRIDGE`; the C# side dispatches against the same allowlist (second line of defense — origin validation in `WebsiteView.vue` is the first) and replies via `WEBSITE_BRIDGE_RESPONSE`. `WebsiteView.vue` routes that back to the originating iframe's `contentWindow` with the iframe's origin as the explicit `targetOrigin` (never `'*'`):
+
+```ts
+event.source.postMessage(
+  { type: 'wkBridgeResponse', requestId, ok: boolean, data?: …, error?: string },
+  event.origin,
+);
+```
+
+**Allowlist (host-enforced; anything else is dropped + logged once per session per (origin, method) tuple):**
+
+| `method` | `args` | `data` on success |
 |---|---|---|
-| `PICK_FILE` `{ accept?: string[] }` | New IPC `PICK_FILE` (Windows `CommonOpenFileDialog`, single file). Returns *path only* — uploading is the website's job over its own HTTPS. | `{ path, name, size }` or `null` |
-| `COPY_TO_CLIPBOARD` `{ text }` | Native `System.Windows.Forms.Clipboard.SetText` — already trivially available in WebView2's `navigator.clipboard.writeText` so this exists mostly for parity in case clipboard permission is blocked in the iframe. | `{ ok: bool }` |
-| `OPEN_IN_BROWSER` `{ url }` | Existing `OPEN_BROWSER` IPC. | ack |
-| `GET_HISTORY` | Returns `appStore.config.history` (read-only). | `HistoryEntry[]` |
-| `GET_VERSION` | Returns `version` ref. | `string` |
-| `GET_LAST_LINK` | Returns last successful `OriginalUrl` from history. | `string \| null` |
+| `PICK_FILE` | `{ accept?: string[] }` | `{ path, name, sizeBytes }` (or `ok: false, error: 'cancelled'`) |
+| `COPY_TO_CLIPBOARD` | `{ text }` | (none — `ok: true`) |
+| `OPEN_IN_BROWSER` | `{ url }` | (none — `ok: true`; rejects non-http(s) schemes) |
+| `GET_HISTORY` | none | `{ history: [{ link, resolvedAt, type? }] }` |
+| `GET_VERSION` | none | `{ version }` |
+| `GET_LAST_LINK` | none | `{ link, resolvedAt }` or `null` |
 
-Anything outside this list is dropped silently with a single `Logger.Warning` per (origin, type) tuple per session — denial-of-service via spammed unknown types should not flood the log.
+`PICK_FILE` returns *path only* — uploading is the website's job over its own HTTPS. `COPY_TO_CLIPBOARD` exists mostly for parity in case `navigator.clipboard.writeText` is blocked in the cross-origin iframe.
 
 **Origin handling:** the program holds `WebsiteEmbedOrigin = "https://whyknot.dev"` (config-overridable for dev where it becomes `http://localhost:5173`). Any `postMessage` whose `event.origin` doesn't match is dropped *before* type-routing. This is the security boundary.
 
