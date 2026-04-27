@@ -20,7 +20,15 @@ The cascade is the heart of WKVRCProxy. Source: [`src/WKVRCProxy.Core/Services/R
 | `tier3` | `tier3:yt-dlp-og` | VRChat's *original* `yt-dlp.exe` (backed up at first patch as `yt-dlp-og.exe`). | After tier1 + tier2 both fail |
 | `tier4` | `tier4:passthrough` | Returns the original URL pristine, no wrapping, no verification. | Backstop. Cannot be disabled. |
 
-Strategies are toggled in **Settings → Advanced → Individual Strategies**. The order of cold-race waves comes from `AppConfig.strategyPriority`, with sensible defaults in `StrategyDefaults.PriorityDefaultsV2`.
+Strategies are toggled in **Settings → Advanced → Individual Strategies**. The order of cold-race waves comes from `AppConfig.strategyPriority`, with sensible defaults in `StrategyDefaults.PriorityDefaults`. Editing the constant at the source flows out to all users who haven't customized the list (see Settings Reference → `userOverriddenKeys`).
+
+## Mask IP (always-WARP egress)
+
+`Settings → Network → Mask IP` is a single toggle that forces every origin-facing strategy through Cloudflare WARP — tier 1 yt-dlp, tier 3 yt-dlp-og, and the headless browser-extract. Tier 2 (`whyknot.dev`) intentionally stays direct: it's a trusted endpoint, and routing the cloud call through WARP would just add latency for no privacy gain.
+
+When `MaskIp = true` and WARP can't start (binaries missing, port collision, wgcf register failure), strategies abort with a "Mask IP is on but WARP is unavailable" warning rather than silently leaking the real IP. WARP eager-starts on launch and on toggle off→on so the first request after enabling doesn't pay wireproxy's cold-start latency.
+
+The standalone `tier1:warp+default` and `tier1:warp+vrchat-ua` variants are suppressed from the cold-race catalog while Mask IP is on — they'd be byte-identical duplicates of `tier1:default` and `tier1:vrchat-ua` (which now both route through WARP).
 
 ## Fast path: `StrategyMemory`
 

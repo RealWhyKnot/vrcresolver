@@ -22,9 +22,10 @@ Settings live in `app_config.json` next to the exe. Most are exposed in **Settin
 | Field | Type | Default | What it does |
 |---|---|---|---|
 | `disabledTiers` | `List<string>` | `[]` | Tiers to skip entirely (e.g., `["tier0"]`) |
-| `strategyPriority` | `List<string>` | `StrategyDefaults.PriorityDefaultsV2` | Cold-race wave-1 primaries, in order |
-| `strategyPriorityDefaultsVersion` | int | `StrategyDefaults.CurrentVersion` | Migration version; default list auto-upgrades when the in-code constant bumps |
-| `youtubeComboClientOrder` | `List<string>` | `StrategyDefaults.YouTubeComboClientOrderDefault` | `--player-client` order for `tier1:yt-combo` |
+| `strategyPriority` | `List<string>` | `StrategyDefaults.PriorityDefaults` | Cold-race wave-1 primaries, in order. Default-tracked: re-pulled from source on load unless `"strategyPriority"` is in `userOverriddenKeys`. |
+| `youtubeComboClientOrder` | `List<string>` | `StrategyDefaults.YouTubeComboClientOrderDefault` | `--player-client` order for `tier1:yt-combo`. Default-tracked. |
+| `userOverriddenKeys` | `HashSet<string>` | `[]` | JSON-key names of fields the user has explicitly customized via the UI. Default-tracked fields not listed here re-pull source defaults on load. Managed by the UI; touch only if you know what you're doing. |
+| `maskIp` | bool | `false` | Routes every origin-facing strategy (tier 1, tier 3, browser-extract) through Cloudflare WARP. Tier 2 stays direct. WARP unavailable → strategies abort rather than leak. |
 | `enableWaveRace` | bool | `true` | Staggered (wave) cold-race vs. all-at-once |
 | `waveSize` | int | `2` | Strategies per wave |
 | `waveStageDeadlineSeconds` | int | `3` | Seconds per wave before kicking the next |
