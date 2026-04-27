@@ -48,6 +48,15 @@ public class RelayServer : IProxyModule, IDisposable
     private const long SmoothnessStallThroughputBytesPerSec = 192 * 1024;
     private const long SmoothnessMinBytesForThroughputCheck = 256 * 1024;
 
+    // Upstream-side deadline. If the underlying HTTP fetch (headers + first body byte + body
+    // copy) does not complete within this window, the per-request CTS fires and the handler
+    // emits a WARN line + 504 instead of pinning a thread on a hung upstream forever. Conservative
+    // ceiling — worst real segment in observed logs was ~800 ms; well below "indefinitely stuck".
+    private const int UpstreamDeadlineMs = 30_000;
+    // Watchdog: if a handler runs longer than this without already having tripped the deadline,
+    // emit a one-line breakdown so the user can see *where* the time went (upstream vs body vs client).
+    private const long HandlerWatchdogMs = UpstreamDeadlineMs / 2;
+
     private Logger? _logger;
     private IModuleContext? _context;
     private HttpListener? _listener;
@@ -183,6 +192,26 @@ public class RelayServer : IProxyModule, IDisposable
     {
         Stream? sourceStream = null;
         HttpResponseMessage? response = null;
+        // Per-request linked CTS so a hung upstream cannot pin this handler forever.
+        // _cts.Token still propagates shutdown; reqCts.CancelAfter caps the upstream wait.
+        using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        reqCts.CancelAfter(UpstreamDeadlineMs);
+
+        // One stopwatch, multiple checkpoints — keeps the timeline coherent and the math simple.
+        // upstreamSentAtMs is captured just before the upstream send begins, firstByteAtMs is
+        // captured when the first body byte arrives, bodyDoneAtMs when the copy loop exits.
+        // The previous wiring started a body-copy stopwatch *after* SendAsync returned, which
+        // made TTFB always read 0 ms because the HTTP client had already buffered the first chunk.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        bool smoothness = _context?.Settings.Config.EnableRelaySmoothnessDebug ?? false;
+        long? upstreamSentAtMs = null;
+        long? firstByteAtMs = null;
+        long? bodyDoneAtMs = null;
+        long bytesTransferred = 0;
+        bool clientAbortedShort = false;
+        bool upstreamDeadlineTripped = false;
+        string loggedShortUrl = "";
+        string loggedCorrelationId = "";
         try
         {
             if (!context.Request.Url!.AbsolutePath.StartsWith("/play", StringComparison.OrdinalIgnoreCase))
@@ -207,6 +236,8 @@ public class RelayServer : IProxyModule, IDisposable
             var ctx = RequestContext.Create(targetUrl);
             // Truncate URLs in logs to keep them readable
             string shortUrl = targetUrl.Length > 120 ? targetUrl.Substring(0, 120) + "..." : targetUrl;
+            loggedShortUrl = shortUrl;
+            loggedCorrelationId = ctx.CorrelationId;
 
             // Only log the first relay of a given URL within the dedupe window. Manifests re-polled
             // every few seconds and segment GETs that reuse /api/proxy?url= would otherwise flood
@@ -330,41 +361,16 @@ public class RelayServer : IProxyModule, IDisposable
                 {
                     dict[h.Key] = string.Join(", ", h.Value);
                 }
+                upstreamSentAtMs = sw.ElapsedMilliseconds;
                 sourceStream = await _curlClient.SendRequestAsync(context.Request.HttpMethod, targetUrl, dict);
 
-                // Parse HTTP headers from curl's -i output (headers then blank line then body)
-                var headerLines = new List<string>();
-                var currentLine = new StringBuilder();
-                int emptyLineCount = 0;
-
-                while (true)
-                {
-                    byte[] b = new byte[1];
-                    int r = await sourceStream.ReadAsync(b, 0, 1, _cts.Token);
-                    if (r == 0) break;
-
-                    if (b[0] == '\r') continue;
-
-                    if (b[0] == '\n')
-                    {
-                        if (currentLine.Length == 0)
-                        {
-                            emptyLineCount++;
-                            if (emptyLineCount >= 1) break;
-                        }
-                        else
-                        {
-                            headerLines.Add(currentLine.ToString());
-                            currentLine.Clear();
-                            emptyLineCount = 0;
-                        }
-                    }
-                    else
-                    {
-                        currentLine.Append((char)b[0]);
-                        emptyLineCount = 0;
-                    }
-                }
+                // Parse HTTP headers from curl's -i output (headers then blank line then body).
+                // Read in chunks (up to 16 KB) and scan for CRLF CRLF or LF LF terminator —
+                // the previous loop did one async ReadAsync per byte, which added dozens of
+                // awaits per response. Any leftover body bytes that came in with the headers
+                // get prepended back in front of the rest of the stream.
+                var (headerLines, prefixedBody) = await ReadCurlHeadersAsync(sourceStream, reqCts.Token);
+                if (prefixedBody != null) sourceStream = prefixedBody;
 
                 if (headerLines.Count > 0 && headerLines[0].StartsWith("HTTP/"))
                 {
@@ -423,7 +429,7 @@ public class RelayServer : IProxyModule, IDisposable
                 if (isHls)
                 {
                     using var reader = new StreamReader(sourceStream, Encoding.UTF8);
-                    string rawManifest = await reader.ReadToEndAsync();
+                    string rawManifest = await reader.ReadToEndAsync(reqCts.Token);
                     string rewritten = HlsManifestRewriter.Rewrite(rawManifest, targetUrl, _portManager!.CurrentPort, _logger);
                     byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                     context.Response.ContentLength64 = manifestBytes.Length;
@@ -452,7 +458,8 @@ public class RelayServer : IProxyModule, IDisposable
             }
             else
             {
-                response = await _httpClient.SendAsync(outboundRequest, HttpCompletionOption.ResponseHeadersRead, _cts.Token);
+                upstreamSentAtMs = sw.ElapsedMilliseconds;
+                response = await _httpClient.SendAsync(outboundRequest, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
 
                 int upstreamStatus = (int)response.StatusCode;
                 context.Response.StatusCode = upstreamStatus;
@@ -469,7 +476,7 @@ public class RelayServer : IProxyModule, IDisposable
                         _browserSessionCache.Invalidate(relayHost);
                         _logger?.Info("[" + ctx.CorrelationId + "] [Relay] Invalidated browser session for " + relayHost + " after upstream " + upstreamStatus + ".");
                     }
-                    string errorBody = await response.Content.ReadAsStringAsync();
+                    string errorBody = await response.Content.ReadAsStringAsync(reqCts.Token);
                     byte[] errorBytes = Encoding.UTF8.GetBytes(errorBody);
                     context.Response.ContentLength64 = errorBytes.Length;
                     await context.Response.OutputStream.WriteAsync(errorBytes, 0, errorBytes.Length, _cts.Token);
@@ -515,7 +522,7 @@ public class RelayServer : IProxyModule, IDisposable
                 // then serve the rewritten content with correct Content-Length.
                 if (isHls)
                 {
-                    string rawManifest = await response.Content.ReadAsStringAsync();
+                    string rawManifest = await response.Content.ReadAsStringAsync(reqCts.Token);
                     bool looksValid = rawManifest.TrimStart().StartsWith("#EXTM3U");
                     if (!looksValid)
                         _logger?.Warning("[" + ctx.CorrelationId + "] HLS manifest does not start with #EXTM3U — may be compressed or corrupt (first 100 bytes: " + rawManifest.Substring(0, Math.Min(100, rawManifest.Length)) + ")");
@@ -537,7 +544,7 @@ public class RelayServer : IProxyModule, IDisposable
                     return;
                 }
 
-                sourceStream = await response.Content.ReadAsStreamAsync();
+                sourceStream = await response.Content.ReadAsStreamAsync(reqCts.Token);
             }
 
             // Non-HLS binary streaming path: fire one final event with status + bytes once done.
@@ -546,28 +553,38 @@ public class RelayServer : IProxyModule, IDisposable
             // rejections abort within the first few KB as the player reads enough to decide
             // "I can't play this." We fire OnClientAbortedEarly only below AbortBytesThreshold.
             //
-            // Smoothness probe: time the upstream's TTFB (first byte from sourceStream) and the
-            // overall throughput of the body copy. Slow segments here translate directly to
-            // AVPro buffer underruns — the user sees stutter even though the request "worked".
-            bool clientAbortedShort = false;
-            bool smoothness = _context?.Settings.Config.EnableRelaySmoothnessDebug ?? false;
-            var bodySw = smoothness ? System.Diagnostics.Stopwatch.StartNew() : null;
-            long? ttfbMs = null;
+            // Smoothness probe: ttfbMs is the wall-clock from upstream-send to first body byte
+            // (captured against the outer stopwatch; the previous wiring measured only the
+            // post-buffer interval and always read 0 ms). Throughput is body-copy only.
             try
             {
                 byte[] buffer = new byte[81920];
                 int bytesRead;
-                while ((bytesRead = await sourceStream!.ReadAsync(buffer, 0, buffer.Length, _cts.Token)) > 0)
+                while ((bytesRead = await sourceStream!.ReadAsync(buffer, 0, buffer.Length, reqCts.Token)) > 0)
                 {
-                    if (smoothness && ttfbMs == null) ttfbMs = bodySw!.ElapsedMilliseconds;
+                    if (firstByteAtMs == null) firstByteAtMs = sw.ElapsedMilliseconds;
                     await context.Response.OutputStream.WriteAsync(buffer, 0, bytesRead, _cts.Token);
                     relayEvent.BytesTransferred += bytesRead;
+                    bytesTransferred = relayEvent.BytesTransferred;
                 }
+                bodyDoneAtMs = sw.ElapsedMilliseconds;
             }
-            catch (HttpListenerException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; }
-            catch (IOException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; }
-            catch (TaskCanceledException) { /* System shutting down */ }
-            catch (OperationCanceledException) { /* System shutting down */ }
+            catch (HttpListenerException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; bodyDoneAtMs = sw.ElapsedMilliseconds; }
+            catch (IOException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; bodyDoneAtMs = sw.ElapsedMilliseconds; }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+                // Application shutdown — stay silent.
+                bodyDoneAtMs = sw.ElapsedMilliseconds;
+            }
+            catch (OperationCanceledException) when (reqCts.IsCancellationRequested)
+            {
+                // Per-request upstream deadline — the freeze just became visible in the log
+                // instead of a thread silently parked on a hung socket.
+                upstreamDeadlineTripped = true;
+                bodyDoneAtMs = sw.ElapsedMilliseconds;
+                _logger?.Warning("[" + ctx.CorrelationId + "] [Relay] upstream timed out after " + (UpstreamDeadlineMs / 1000) + "s for " + shortUrl + " (bytes=" + relayEvent.BytesTransferred + ")");
+                try { context.Response.StatusCode = 504; } catch { }
+            }
 
             if (clientAbortedShort)
             {
@@ -576,12 +593,27 @@ public class RelayServer : IProxyModule, IDisposable
 
             if (smoothness)
             {
-                bodySw!.Stop();
-                LogSmoothness(ctx.CorrelationId, shortUrl, ttfbMs, bodySw.ElapsedMilliseconds, relayEvent.BytesTransferred, clientAbortedShort);
+                long ttfbValue = (firstByteAtMs.HasValue && upstreamSentAtMs.HasValue)
+                    ? firstByteAtMs.Value - upstreamSentAtMs.Value
+                    : 0;
+                long bodyMs = (bodyDoneAtMs ?? sw.ElapsedMilliseconds) - (firstByteAtMs ?? sw.ElapsedMilliseconds);
+                LogSmoothness(ctx.CorrelationId, shortUrl, firstByteAtMs.HasValue ? ttfbValue : (long?)null, bodyMs, relayEvent.BytesTransferred, clientAbortedShort);
             }
 
             relayEvent.StatusCode = context.Response.StatusCode;
             OnRelayEvent?.Invoke(relayEvent);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            // Application shutdown caught above the body-copy block (e.g. during manifest read).
+        }
+        catch (OperationCanceledException) when (reqCts.IsCancellationRequested)
+        {
+            // Upstream stalled before the body-copy block could run — manifest fetch or header
+            // parse exceeded UpstreamDeadlineMs. Surface it explicitly so freezes have a fingerprint.
+            upstreamDeadlineTripped = true;
+            _logger?.Warning("[" + loggedCorrelationId + "] [Relay] upstream timed out after " + (UpstreamDeadlineMs / 1000) + "s during pre-body phase for " + loggedShortUrl);
+            try { context.Response.StatusCode = 504; } catch { }
         }
         catch (Exception ex)
         {
@@ -593,15 +625,76 @@ public class RelayServer : IProxyModule, IDisposable
             try { sourceStream?.Dispose(); } catch { }
             try { response?.Dispose(); } catch { }
             try { context.Response.Close(); } catch { }
+
+            // Watchdog: any handler over half the upstream deadline gets a one-line breakdown so
+            // the user can tell upstream-stall ("ttfb=..." dominates) from body-copy-stall
+            // ("body=..." dominates) from a slow client (handler total much greater than body).
+            // Suppressed when the deadline already tripped — that path emits its own line.
+            long handlerTotalMs = sw.ElapsedMilliseconds;
+            if (!upstreamDeadlineTripped && handlerTotalMs >= HandlerWatchdogMs && !string.IsNullOrEmpty(loggedShortUrl))
+            {
+                long ttfb = (firstByteAtMs.HasValue && upstreamSentAtMs.HasValue) ? firstByteAtMs.Value - upstreamSentAtMs.Value : -1;
+                long body = (bodyDoneAtMs.HasValue && firstByteAtMs.HasValue) ? bodyDoneAtMs.Value - firstByteAtMs.Value : -1;
+                _logger?.Warning("[" + loggedCorrelationId + "] [Relay] handler took " + handlerTotalMs + "ms — ttfb=" + ttfb + "ms body=" + body + "ms bytes=" + bytesTransferred + " " + loggedShortUrl);
+            }
         }
+    }
+
+    // Read curl-impersonate's '-i' output until the end-of-headers terminator (CRLF CRLF or LF LF),
+    // returning the parsed header lines and a stream that re-serves any body bytes that arrived
+    // alongside the headers in the same buffer. Caps at 16 KB; real header blocks are <2 KB.
+    private static async Task<(List<string> headers, Stream? bodyPrefixed)> ReadCurlHeadersAsync(Stream src, CancellationToken ct)
+    {
+        const int Cap = 16 * 1024;
+        byte[] buf = new byte[Cap];
+        int filled = 0;
+        int bodyStart = -1;
+
+        while (filled < Cap)
+        {
+            int r = await src.ReadAsync(buf, filled, Cap - filled, ct);
+            if (r == 0) break;
+            int scanFrom = Math.Max(0, filled - 3); // span the boundary between previous and new bytes
+            filled += r;
+            for (int i = scanFrom; i + 1 < filled; i++)
+            {
+                if (buf[i] == '\n' && buf[i + 1] == '\n') { bodyStart = i + 2; break; }
+                if (i + 3 < filled && buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n')
+                { bodyStart = i + 4; break; }
+            }
+            if (bodyStart >= 0) break;
+        }
+
+        if (bodyStart < 0)
+            throw new InvalidOperationException("curl response did not contain an HTTP header terminator within " + Cap + " bytes.");
+
+        // Split header block (excluding the terminator) into individual lines. Drop CRs and blanks.
+        var headers = new List<string>();
+        int lineStart = 0;
+        int headerEnd = bodyStart - 2; // back off the trailing \n\n or \r\n\r\n
+        if (headerEnd > 0 && buf[headerEnd - 1] == '\r') headerEnd--;
+        for (int i = 0; i < headerEnd; i++)
+        {
+            if (buf[i] == '\n')
+            {
+                int len = i - lineStart;
+                if (len > 0 && buf[i - 1] == '\r') len--;
+                if (len > 0) headers.Add(Encoding.UTF8.GetString(buf, lineStart, len));
+                lineStart = i + 1;
+            }
+        }
+        if (lineStart < headerEnd)
+            headers.Add(Encoding.UTF8.GetString(buf, lineStart, headerEnd - lineStart));
+
+        int leftover = filled - bodyStart;
+        if (leftover <= 0) return (headers, null);
+        var prefix = new MemoryStream(buf, bodyStart, leftover, writable: false);
+        return (headers, new PrependStream(prefix, src));
     }
 
     // Emit a one-line smoothness report for a completed segment relay. Quiet on healthy segments
     // (DEBUG-level pass-through), louder when TTFB or throughput cross the slow/stall thresholds.
-    // Only the body-copy span is timed; the upstream's response-headers latency is hidden inside
-    // the surrounding curl/HttpClient call and not measured here. TTFB is the gap between starting
-    // the body read and receiving the first byte from sourceStream, which is the user-perceptible
-    // "buffer is empty waiting for upstream" interval.
+    // TTFB now spans the upstream send through the first body byte; throughput is body-copy only.
     private void LogSmoothness(string correlationId, string shortUrl, long? ttfbMs, long totalMs, long bytes, bool clientAborted)
     {
         if (_logger == null) return;
@@ -656,5 +749,70 @@ public class RelayServer : IProxyModule, IDisposable
     {
         Shutdown();
         _cts.Dispose();
+    }
+
+    // Read-only stream that drains a leading buffer first and then falls through to a tail stream.
+    // Used by ReadCurlHeadersAsync to put any body bytes that came in alongside the headers back
+    // in front of the rest of the curl process's stdout.
+    private sealed class PrependStream : Stream
+    {
+        private readonly Stream _prefix;
+        private readonly Stream _tail;
+        private bool _prefixDrained;
+
+        public PrependStream(Stream prefix, Stream tail) { _prefix = prefix; _tail = tail; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (!_prefixDrained)
+            {
+                int n = _prefix.Read(buffer, offset, count);
+                if (n > 0) return n;
+                _prefixDrained = true;
+            }
+            return _tail.Read(buffer, offset, count);
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_prefixDrained)
+            {
+                int n = await _prefix.ReadAsync(buffer, cancellationToken);
+                if (n > 0) return n;
+                _prefixDrained = true;
+            }
+            return await _tail.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if (!_prefixDrained)
+            {
+                int n = await _prefix.ReadAsync(buffer, offset, count, cancellationToken);
+                if (n > 0) return n;
+                _prefixDrained = true;
+            }
+            return await _tail.ReadAsync(buffer, offset, count, cancellationToken);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try { _prefix.Dispose(); } catch { }
+                try { _tail.Dispose(); } catch { }
+            }
+            base.Dispose(disposing);
+        }
     }
 }

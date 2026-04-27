@@ -776,6 +776,18 @@ public class ResolutionEngine
                 _logger.Info("[" + ctx.CorrelationId + "] Tier 4 active: Returning original URL (Passthrough)");
                 winnerResult = new YtDlpResult(targetUrl, null, null, null, null, null);
             }
+            else if (RequiresNativeAvProUa(targetUrl))
+            {
+                // The deny-list (NativeAvProUaHosts) marks hosts whose origin only serves to AVPro's
+                // native UA; wrapping breaks playback and yt-dlp on these hosts has no path to a
+                // better URL (the manifest is already final). Without this branch, the cascade still
+                // runs through tier1→2→3, all fail, and the user waits 30+ seconds for an inevitable
+                // tier4 fallback (see vr-m.net 32-second resolution at 13:54:45 in the 04-26 logs).
+                string host = Uri.TryCreate(targetUrl, UriKind.Absolute, out var u) ? u.Host : "<unparseable>";
+                _logger.Info("[" + ctx.CorrelationId + "] " + host + " is in NativeAvProUaHosts — short-circuiting to tier 4 passthrough (cascade would only waste time).");
+                winnerResult = new YtDlpResult(targetUrl, null, null, null, null, null);
+                activeTier = "tier4";
+            }
             else
             {
                 // Build ordered cascade starting from preferred tier, skipping disabled tiers
