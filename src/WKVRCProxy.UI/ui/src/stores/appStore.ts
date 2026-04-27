@@ -66,6 +66,14 @@ export interface AppConfig {
   waveStageDeadlineSeconds: number;
   perHostRequestBudget: number;
   perHostRequestWindowSeconds: number;
+  // Newly surfaced — backend supported these all along, the UI just didn't expose them.
+  enableTierMemory: boolean;
+  tier2TimeoutSeconds: number;
+  enableBrowserExtract: boolean;
+  downloadBundledChromium: boolean;
+  enableWarp: boolean;
+  streamlinkDisableTwitchAds: boolean;
+  enableRelaySmoothnessDebug: boolean;
 }
 
 // Canonical default StrategyPriority list + version, mirrored from AppConfig.cs. When the
@@ -186,6 +194,13 @@ export const useAppStore = defineStore('app', () => {
     waveStageDeadlineSeconds: 3,
     perHostRequestBudget: 3,
     perHostRequestWindowSeconds: 10,
+    enableTierMemory: true,
+    tier2TimeoutSeconds: 60,
+    enableBrowserExtract: true,
+    downloadBundledChromium: false,
+    enableWarp: false,
+    streamlinkDisableTwitchAds: false,
+    enableRelaySmoothnessDebug: true,
   })
   
   const showHostsPrompt = ref(false)
@@ -204,7 +219,7 @@ export const useAppStore = defineStore('app', () => {
   const cloudResolveError = ref('')
   
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.26.2-E532')
+  const version = ref('2026.4.26.3-E86D')
 
   const demotions = ref<DemotionNotification[]>([])
   const DEMOTION_CAP = 20
@@ -295,6 +310,13 @@ export const useAppStore = defineStore('app', () => {
         if (!incoming.waveStageDeadlineSeconds || incoming.waveStageDeadlineSeconds < 1) incoming.waveStageDeadlineSeconds = 3
         if (!incoming.perHostRequestBudget || incoming.perHostRequestBudget < 1) incoming.perHostRequestBudget = 3
         if (!incoming.perHostRequestWindowSeconds || incoming.perHostRequestWindowSeconds < 1) incoming.perHostRequestWindowSeconds = 10
+        if (incoming.enableTierMemory === undefined) incoming.enableTierMemory = true
+        if (!incoming.tier2TimeoutSeconds || incoming.tier2TimeoutSeconds < 5) incoming.tier2TimeoutSeconds = 60
+        if (incoming.enableBrowserExtract === undefined) incoming.enableBrowserExtract = true
+        if (incoming.downloadBundledChromium === undefined) incoming.downloadBundledChromium = false
+        if (incoming.enableWarp === undefined) incoming.enableWarp = false
+        if (incoming.streamlinkDisableTwitchAds === undefined) incoming.streamlinkDisableTwitchAds = false
+        if (incoming.enableRelaySmoothnessDebug === undefined) incoming.enableRelaySmoothnessDebug = true
         config.value = incoming
         if (_pendingSaveToast) {
           enqueueToast({ variant: 'success', title: 'Settings saved' })

@@ -6,17 +6,54 @@ const appStore = useAppStore()
 
 const DEFAULT_NATIVE_AVPRO_UA_HOSTS = ['vr-m.net']
 
-// The config stores the deny-list as a string[]; the UI edits a comma-separated string for
-// simplicity. `saveNativeAvProUaHosts` parses it back and persists, trimming empty entries.
-const nativeAvProUaHostsText = computed<string>({
-  get: () => (appStore.config.nativeAvProUaHosts ?? []).join(', '),
-  set: (v: string) => {
-    appStore.config.nativeAvProUaHosts = v.split(',').map(s => s.trim()).filter(s => s.length > 0)
-  }
-})
+// Chip editor for the deny-list. Users type one host into `hostInputDraft`, then press Enter
+// or click + to commit it. Backspace on an empty input pops the last chip — standard chip-list
+// keyboard shortcut. Trims/lowercases on add and de-dupes case-insensitively. Strips a leading
+// http(s):// in case the user pastes a URL instead of a bare host.
+const hostInputDraft = ref('')
 
-function saveNativeAvProUaHosts() {
+function normaliseHost(raw: string): string {
+  let h = raw.trim().toLowerCase()
+  // Tolerate full URLs pasted in — extract the host.
+  const proto = h.match(/^https?:\/\//)
+  if (proto) h = h.slice(proto[0].length)
+  // Trim path/query/port — only the bare host belongs in the deny-list.
+  h = h.split('/')[0].split('?')[0].split(':')[0]
+  return h
+}
+
+function addNativeUaHost(raw: string) {
+  const host = normaliseHost(raw)
+  if (!host) return
+  const list = appStore.config.nativeAvProUaHosts ?? []
+  if (list.some(h => h.toLowerCase() === host)) return
+  appStore.config.nativeAvProUaHosts = [...list, host]
+  hostInputDraft.value = ''
   appStore.saveConfig()
+}
+
+function removeNativeUaHost(host: string) {
+  const list = appStore.config.nativeAvProUaHosts ?? []
+  appStore.config.nativeAvProUaHosts = list.filter(h => h !== host)
+  appStore.saveConfig()
+}
+
+function onHostInputKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault()
+    addNativeUaHost(hostInputDraft.value)
+  } else if (e.key === 'Backspace' && hostInputDraft.value === '') {
+    const list = appStore.config.nativeAvProUaHosts ?? []
+    if (list.length > 0) removeNativeUaHost(list[list.length - 1])
+  }
+}
+
+function onHostInputPaste(e: ClipboardEvent) {
+  // Allow pasting "vr-m.net, foo.bar, baz.com" — split and add each.
+  const text = e.clipboardData?.getData('text') ?? ''
+  if (!text.includes(',') && !/\s/.test(text)) return
+  e.preventDefault()
+  for (const part of text.split(/[,\s]+/)) addNativeUaHost(part)
 }
 
 function resetNativeAvProUaHosts() {
@@ -139,6 +176,19 @@ function resetStrategyPriority() {
 }
 
 const showSystemInfo = ref(false)
+const showRaceTuning = ref(false)
+
+// Numeric inputs save on blur and clamp to safe bounds. The backend defends itself too (defaults
+// kick in for nonsense values), but clamping here keeps the UI from displaying obvious nonsense
+// like waveSize=0 between blur events.
+function saveNumberClamped(key: 'waveSize' | 'waveStageDeadlineSeconds' | 'perHostRequestBudget' | 'perHostRequestWindowSeconds' | 'tier2TimeoutSeconds', min: number, max: number) {
+  const raw = appStore.config[key] as number | undefined
+  let v = typeof raw === 'number' && !Number.isNaN(raw) ? Math.floor(raw) : min
+  if (v < min) v = min
+  if (v > max) v = max
+  ;(appStore.config[key] as number) = v
+  appStore.saveConfig()
+}
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
@@ -347,7 +397,94 @@ function clearHistory() {
           </div>
         </div>
 
-        <p class="text-[8px] text-white/25 font-bold uppercase tracking-widest italic leading-relaxed">Wave 1 launches the top <span class="text-emerald-400/60">{{ appStore.config.waveSize ?? 2 }}</span> entries (skipping any disabled above). Each wave waits <span class="text-emerald-400/60">{{ appStore.config.waveStageDeadlineSeconds ?? 3 }}s</span> for a winner before launching the next.</p>
+        <p class="text-[8px] text-white/25 font-bold uppercase tracking-widest italic leading-relaxed">Wave 1 launches the top <span class="text-emerald-400/60">{{ appStore.config.waveSize ?? 2 }}</span> entries (skipping any disabled above). Each wave waits <span class="text-emerald-400/60">{{ appStore.config.waveStageDeadlineSeconds ?? 3 }}s</span> for a winner before launching the next. Tune these in <span class="text-emerald-400/60">Race Tuning</span> below.</p>
+      </section>
+
+      <!-- Race Tuning: numeric knobs for the wave-race dispatcher. Collapsed by default — the
+           defaults are good and tweaking them wrong (waveSize=8, deadline=1s) hammers upstream
+           rate limits. Each input clamps to a safe range on blur. -->
+      <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-5 hover:border-emerald-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl">
+        <div class="flex items-center justify-between cursor-pointer" @click="showRaceTuning = !showRaceTuning">
+          <div class="flex items-center gap-4">
+            <div class="w-10 h-10 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-emerald-400">
+              <i class="bi bi-stopwatch text-xl"></i>
+            </div>
+            <div>
+              <h4 class="text-lg font-black uppercase tracking-tighter italic">Race Tuning</h4>
+              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Wave dispatch + per-host rate limits + cloud timeout</p>
+            </div>
+          </div>
+          <i :class="['bi transition-transform text-white/45 text-lg', showRaceTuning ? 'bi-chevron-up rotate-0' : 'bi-chevron-down']"></i>
+        </div>
+
+        <div v-if="showRaceTuning" class="space-y-5 pt-2">
+          <p class="text-[8px] text-white/40 font-bold uppercase tracking-widest leading-relaxed italic">Defaults are calibrated against yt-dlp's 2–3-concurrent guidance. Increase only if your network is rock-solid; decrease if you keep getting rate-flagged.</p>
+
+          <!-- Wave race master toggle -->
+          <div @click="appStore.config.enableWaveRace = !appStore.config.enableWaveRace; appStore.saveConfig()"
+               class="flex items-center gap-4 p-4 bg-white/[0.02] border border-white/5 rounded-2xl cursor-pointer hover:bg-white/[0.04] hover:border-white/10 transition-all">
+            <div class="flex-grow min-w-0">
+              <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Wave Mode</p>
+              <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">Off = legacy "fire all strategies at once" race. Most users want this on.</p>
+            </div>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-500 shrink-0', appStore.config.enableWaveRace ? 'bg-emerald-600 shadow-[0_0_12px_rgba(16,185,129,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-500', appStore.config.enableWaveRace ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+
+          <!-- Numeric knobs -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div class="p-4 bg-white/[0.02] border border-white/5 rounded-2xl flex items-center gap-3">
+              <div class="flex-grow min-w-0">
+                <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Wave Size</p>
+                <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">Strategies per wave. 1–8.</p>
+              </div>
+              <input type="number" min="1" max="8" v-model.number="appStore.config.waveSize"
+                     @blur="saveNumberClamped('waveSize', 1, 8)"
+                     class="w-20 bg-white/[0.02] border border-white/10 rounded-xl px-3 py-2 text-[11px] font-mono text-white/80 italic text-center focus:outline-none focus:border-emerald-500/40 transition-colors" />
+            </div>
+
+            <div class="p-4 bg-white/[0.02] border border-white/5 rounded-2xl flex items-center gap-3">
+              <div class="flex-grow min-w-0">
+                <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Stage Deadline (s)</p>
+                <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">How long each wave waits before launching the next. 1–30.</p>
+              </div>
+              <input type="number" min="1" max="30" v-model.number="appStore.config.waveStageDeadlineSeconds"
+                     @blur="saveNumberClamped('waveStageDeadlineSeconds', 1, 30)"
+                     class="w-20 bg-white/[0.02] border border-white/10 rounded-xl px-3 py-2 text-[11px] font-mono text-white/80 italic text-center focus:outline-none focus:border-emerald-500/40 transition-colors" />
+            </div>
+
+            <div class="p-4 bg-white/[0.02] border border-white/5 rounded-2xl flex items-center gap-3">
+              <div class="flex-grow min-w-0">
+                <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Per-Host Budget</p>
+                <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">Max yt-dlp spawns per host per window before falling back to cloud. 1–10.</p>
+              </div>
+              <input type="number" min="1" max="10" v-model.number="appStore.config.perHostRequestBudget"
+                     @blur="saveNumberClamped('perHostRequestBudget', 1, 10)"
+                     class="w-20 bg-white/[0.02] border border-white/10 rounded-xl px-3 py-2 text-[11px] font-mono text-white/80 italic text-center focus:outline-none focus:border-emerald-500/40 transition-colors" />
+            </div>
+
+            <div class="p-4 bg-white/[0.02] border border-white/5 rounded-2xl flex items-center gap-3">
+              <div class="flex-grow min-w-0">
+                <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Per-Host Window (s)</p>
+                <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">Sliding window for the budget above. 5–120.</p>
+              </div>
+              <input type="number" min="5" max="120" v-model.number="appStore.config.perHostRequestWindowSeconds"
+                     @blur="saveNumberClamped('perHostRequestWindowSeconds', 5, 120)"
+                     class="w-20 bg-white/[0.02] border border-white/10 rounded-xl px-3 py-2 text-[11px] font-mono text-white/80 italic text-center focus:outline-none focus:border-emerald-500/40 transition-colors" />
+            </div>
+
+            <div class="md:col-span-2 p-4 bg-white/[0.02] border border-white/5 rounded-2xl flex items-center gap-3">
+              <div class="flex-grow min-w-0">
+                <p class="text-[11px] font-black uppercase tracking-widest italic text-white/80">Cloud (Tier 2) Timeout (s)</p>
+                <p class="text-[8px] font-bold uppercase tracking-widest text-white/35 mt-0.5 leading-relaxed">Max time the cloud resolver can spend before being treated as a failure. Cold-cache YouTube can legitimately take 30–60s. 5–180.</p>
+              </div>
+              <input type="number" min="5" max="180" v-model.number="appStore.config.tier2TimeoutSeconds"
+                     @blur="saveNumberClamped('tier2TimeoutSeconds', 5, 180)"
+                     class="w-20 bg-white/[0.02] border border-white/10 rounded-xl px-3 py-2 text-[11px] font-mono text-white/80 italic text-center focus:outline-none focus:border-emerald-500/40 transition-colors" />
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Preferred Tier -->
@@ -433,34 +570,130 @@ function clearHistory() {
           </div>
           <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Verify resolved URLs are playable before handing them to VRChat. Catches dead CDN URLs and cloud-resolver drift; adds up to 5s on cold resolve.</p>
         </div>
+
+        <div @click="appStore.config.enableTierMemory = !appStore.config.enableTierMemory; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Strategy Memory</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableTierMemory ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableTierMemory ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Remember which strategy worked per host so the next play skips the cold race. Off = every play runs the full race.</p>
+        </div>
+
+        <div @click="appStore.config.autoUpdateYtDlp = !appStore.config.autoUpdateYtDlp; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Auto-Update yt-dlp</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.autoUpdateYtDlp ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.autoUpdateYtDlp ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Check GitHub for a newer yt-dlp on every launch. The Tier 3 fallback (yt-dlp-og) always stays pinned to VRChat's own copy.</p>
+        </div>
+
+        <div @click="appStore.config.enableBrowserExtract = !appStore.config.enableBrowserExtract; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Browser Extract Strategy</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableBrowserExtract ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableBrowserExtract ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Headless Edge/Chrome fallback for JS-gated sites that yt-dlp can't crack. Uses your installed browser; no download.</p>
+        </div>
+
+        <!-- Sub-toggle: only meaningful when browser-extract is on AND no system browser is found.
+             Off keeps PuppeteerSharp from grabbing a ~180 MB Chromium build behind your back. -->
+        <div v-if="appStore.config.enableBrowserExtract"
+             @click="appStore.config.downloadBundledChromium = !appStore.config.downloadBundledChromium; appStore.saveConfig()"
+             class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Bundled Chromium Fallback</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.downloadBundledChromium ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.downloadBundledChromium ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">If no Edge/Chrome/Brave is found on this system, allow downloading a ~180 MB Chromium build for browser-extract. One-time per install.</p>
+        </div>
+
+        <div @click="appStore.config.enableWarp = !appStore.config.enableWarp; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Cloudflare WARP</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableWarp ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableWarp ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Run wireproxy + wgcf locally so resolution strategies can route through WARP. Only affects this app's subprocesses; your system traffic is untouched.</p>
+        </div>
+
+        <div @click="appStore.config.streamlinkDisableTwitchAds = !appStore.config.streamlinkDisableTwitchAds; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Filter Twitch Ads</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.streamlinkDisableTwitchAds ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.streamlinkDisableTwitchAds ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Strip Twitch ad segments from the Streamlink (Tier 0) feed. The picture freezes on the last good frame for the ad's duration; off = ads play through normally.</p>
+        </div>
+
+        <div @click="appStore.config.enableRelaySmoothnessDebug = !appStore.config.enableRelaySmoothnessDebug; appStore.saveConfig()" class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] cursor-pointer hover:bg-white/[0.05] transition-all duration-500 group backdrop-blur-3xl">
+          <div class="flex justify-between items-start mb-4">
+            <h4 class="text-lg font-black uppercase tracking-tighter italic">Relay Smoothness Debug</h4>
+            <div :class="['w-10 h-5 rounded-full relative transition-all duration-700', appStore.config.enableRelaySmoothnessDebug ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-white/10 border border-white/10']">
+              <div :class="['absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-700', appStore.config.enableRelaySmoothnessDebug ? 'left-6' : 'left-1']"></div>
+            </div>
+          </div>
+          <p class="text-[9px] text-white/50 font-black uppercase tracking-widest leading-relaxed">Per-segment relay timing in the log (TTFB + throughput). Slow segments log at info, stalls at warning. Useful for diagnosing stutter that isn't a hard playback failure.</p>
+        </div>
       </div>
 
       <!-- Direct-connect hosts (skipped by the relay wrap) -->
       <section class="bg-white/[0.03] border border-white/5 p-8 rounded-[32px] space-y-6 hover:border-blue-500/20 transition-all duration-500 shadow-2xl backdrop-blur-3xl group">
-        <div class="flex items-center gap-4">
-          <div class="w-10 h-10 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500 group-hover:scale-110 transition-transform">
-            <i class="bi bi-shield-lock text-xl"></i>
+        <div class="flex items-center justify-between gap-4">
+          <div class="flex items-center gap-4">
+            <div class="w-10 h-10 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500 group-hover:scale-110 transition-transform">
+              <i class="bi bi-shield-lock text-xl"></i>
+            </div>
+            <div>
+              <h4 class="text-lg font-black uppercase tracking-tighter italic">Direct-Connect Hosts (relay skip-list)</h4>
+              <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Hosts that need a direct connection from the player</p>
+            </div>
           </div>
-          <div>
-            <h4 class="text-lg font-black uppercase tracking-tighter italic">Direct-Connect Hosts (relay skip-list)</h4>
-            <p class="text-[9px] text-white/50 font-black uppercase tracking-widest mt-0.5">Comma-separated — hosts that need a direct connection from the player</p>
-          </div>
-        </div>
-        <div class="flex gap-3">
-          <div class="flex-grow">
-            <input
-              v-model="nativeAvProUaHostsText"
-              @blur="saveNativeAvProUaHosts()"
-              type="text"
-              placeholder="vr-m.net, some-other-host.net"
-              class="w-full bg-white/[0.02] border border-white/5 rounded-2xl px-6 py-3 text-[9px] font-mono text-white/60 italic placeholder:text-white/25 focus:outline-none focus:border-blue-500/40 transition-colors group-hover:bg-white/[0.04]"
-            />
-          </div>
-          <button @click="resetNativeAvProUaHosts()" class="px-6 py-3 bg-white/5 hover:bg-blue-500/10 text-white/50 hover:text-blue-400 rounded-2xl font-black text-[9px] uppercase tracking-[0.2em] transition-all italic active:scale-95 border border-white/5 hover:border-blue-500/20">
+          <button @click="resetNativeAvProUaHosts()" class="shrink-0 px-4 py-2 bg-white/5 hover:bg-blue-500/10 text-white/50 hover:text-blue-400 rounded-xl font-black text-[8px] uppercase tracking-[0.2em] transition-all italic active:scale-95 border border-white/5 hover:border-blue-500/20">
             Reset Default
           </button>
         </div>
-        <p class="text-[9px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">Hosts that need to see traffic coming directly from VRChat's player (e.g. vr-m.net). These are skipped by the relay; every other host is routed through it by default.</p>
+
+        <!-- Chip list. Click × on a chip to remove it. The input below adds new entries on Enter
+             or comma; Backspace on empty input pops the last chip. Pasting a comma/space-delimited
+             string splits and adds each entry. -->
+        <div class="flex flex-wrap gap-2 items-center bg-white/[0.02] border border-white/5 rounded-2xl px-4 py-3 min-h-[58px] focus-within:border-blue-500/40 transition-colors group-hover:bg-white/[0.04]">
+          <span v-for="host in (appStore.config.nativeAvProUaHosts ?? [])" :key="host"
+                class="inline-flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-xl bg-blue-500/10 border border-blue-500/25 text-[10px] font-mono text-blue-300/90 italic">
+            {{ host }}
+            <button @click="removeNativeUaHost(host)"
+                    :title="`Remove ${host}`"
+                    class="w-5 h-5 rounded-md flex items-center justify-center text-blue-200/60 hover:text-white hover:bg-red-500/40 transition-all">
+              <i class="bi bi-x text-sm"></i>
+            </button>
+          </span>
+          <input
+            v-model="hostInputDraft"
+            @keydown="onHostInputKeydown"
+            @paste="onHostInputPaste"
+            @blur="addNativeUaHost(hostInputDraft)"
+            type="text"
+            :placeholder="(appStore.config.nativeAvProUaHosts ?? []).length === 0 ? 'Add a host (e.g. vr-m.net) and press Enter' : 'Add another…'"
+            class="flex-grow min-w-[140px] bg-transparent text-[10px] font-mono text-white/70 italic placeholder:text-white/25 focus:outline-none px-2 py-1"
+          />
+          <button v-if="hostInputDraft.trim().length > 0"
+                  @click="addNativeUaHost(hostInputDraft)"
+                  title="Add host"
+                  class="shrink-0 w-7 h-7 rounded-lg bg-blue-600/80 hover:bg-blue-500 text-white flex items-center justify-center transition-all active:scale-90">
+            <i class="bi bi-plus-lg text-xs"></i>
+          </button>
+        </div>
+
+        <p class="text-[9px] text-white/40 font-bold uppercase tracking-widest leading-relaxed">Hosts that need to see traffic coming directly from VRChat's player (e.g. vr-m.net). These are skipped by the relay and resolution short-circuits straight to passthrough; every other host is routed through the relay by default.</p>
       </section>
 
       <!-- Custom User Agent -->
