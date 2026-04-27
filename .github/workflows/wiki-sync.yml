@@ -1,0 +1,73 @@
+name: Sync wiki
+
+# Mirrors docs/wiki/ into the GitHub Wiki repo (RealWhyKnot/WKVRCProxy.wiki.git).
+# The wiki repo only materialises after a maintainer creates the first page via the
+# web UI; before that, the clone step below fails fast and skips the sync.
+# See docs/wiki/README.md for the one-time bootstrap.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/wiki/**'
+      - '.github/workflows/wiki-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Sync to wiki
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
+
+          # The wiki git repo only exists once the wiki has had at least one
+          # page created through the web UI. If we can't clone, skip cleanly
+          # with a clear message rather than failing the workflow.
+          if ! git clone --depth 1 "$REPO_URL" wiki 2>clone.err; then
+            if grep -qi "repository not found" clone.err; then
+              echo "::warning::Wiki repo doesn't exist yet — visit the wiki on github.com and create the first page, then re-run this workflow."
+              cat clone.err
+              exit 0
+            fi
+            echo "::error::Failed to clone wiki repo"
+            cat clone.err
+            exit 1
+          fi
+
+          git -C wiki config user.name  "github-actions[bot]"
+          git -C wiki config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Mirror docs/wiki/ into the wiki working tree.
+          # Excludes: README.md (source-of-truth doc, not a wiki page); .git directory.
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='README.md' \
+            docs/wiki/ wiki/
+
+          if [ -z "$(git -C wiki status --porcelain)" ]; then
+            echo "No wiki changes to sync."
+            exit 0
+          fi
+
+          git -C wiki add -A
+          git -C wiki commit -m "Sync wiki from docs/wiki/ @ ${GITHUB_SHA::7}
+
+          Source: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+          git -C wiki push origin HEAD
+          echo "Wiki synced."

@@ -1,14 +1,22 @@
 name: Feature request
 description: Suggest a new capability, strategy, host support, or UX improvement.
 title: "[feat] "
-labels: ["enhancement"]
+labels: ["enhancement", "needs-triage"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, scan [open issues](https://github.com/RealWhyKnot/WKVRCProxy/issues?q=is%3Aissue) and the [wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki) — the architecture and resolution cascade pages explain a lot of "why isn't this already in here?" questions.
+
+        For non-trivial changes, please **open this issue first** so we can agree on direction before you spend time on a PR.
+
   - type: textarea
     id: problem
     attributes:
       label: Problem
-      description: What are you trying to do that WKVRCProxy doesn't currently support? Describe the situation, not a solution.
-      placeholder: "When I paste a URL from <host>, …"
+      description: |
+        What are you trying to do that WKVRCProxy doesn't currently support? Describe the situation, not a solution. The clearer the problem, the easier the design conversation.
+      placeholder: "When I paste a URL from <host>, the resolver returns a 480p stream even though the host serves 1080p. I'd like a way to …"
     validations:
       required: true
 
@@ -16,7 +24,23 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: What would you like to see happen?
+      description: What would you like to see happen? Implementation detail welcome but optional.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Roughly where this lives. Helps with triage.
+      options:
+        - "New resolution strategy or tier"
+        - "Relay server / hosts-file behaviour"
+        - "Settings / UI / UX"
+        - "Build pipeline / vendoring / release"
+        - "Updater / Uninstaller"
+        - "Documentation / wiki"
+        - "Other / not sure"
     validations:
       required: true
 
@@ -33,5 +57,13 @@ body:
     attributes:
       label: Contribution
       options:
-        - label: I'd be willing to open a PR for this (bonus, not required).
+        - label: I'd be willing to open a PR for this (bonus — not required).
           required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Mockups, log snippets that motivated this, links to similar features in other projects, etc.
+    validations:
+      required: false

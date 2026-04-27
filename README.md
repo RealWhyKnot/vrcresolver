@@ -2,128 +2,76 @@
 
 A Windows desktop app that makes VRChat's in-world video players resolve and play URLs reliably — including sources VRChat's built-in resolver can't handle, URLs blocked by bot detection, and hosts that aren't on VRChat's trusted allowlist.
 
-> **Status:** alpha. It works, but expect rough edges. Run it alongside VRChat; shut it down if something misbehaves.
+> **Status: alpha.** It works, but expect rough edges. Run it alongside VRChat; shut it down if something misbehaves.
+
+📚 **Long-form documentation lives in the [wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki).** This README is the quick-start.
+
+---
 
 ## What it does
 
-VRChat's in-game video players resolve URLs with a bundled `yt-dlp.exe` and play them through AVPro. Two things break that pipeline in practice:
+VRChat's in-game video players resolve URLs with a bundled `yt-dlp.exe` and play them through AVPro Video. Two things break that pipeline in practice:
 
 1. **AVPro's trusted-URL list.** Only a narrow set of hosts (`*.youtube.com`, `*.vimeo.com`, `*.vrcdn.live`, etc.) are allowed. Anything else is silently rejected with `[AVProVideo] Error: Loading failed.`
-2. **Anti-bot detection.** YouTube increasingly requires PO tokens, valid visitor_data binding, and a real browser TLS fingerprint. The vanilla yt-dlp that VRChat ships can't provide any of that.
+2. **Anti-bot detection.** YouTube increasingly requires PO tokens, valid `visitor_data` binding, and a real browser TLS fingerprint. The vanilla yt-dlp that VRChat ships can't provide any of that.
 
 WKVRCProxy sits in front of VRChat's resolver pipeline and fixes both problems:
 
-- A **hosts-file mapping** `127.0.0.1 localhost.youtube.com` routes any URL we "wrap" through a **local relay**. AVPro sees the trusted `*.youtube.com` host and plays it; our relay proxies the real target. Hosts already on VRChat's allowlist pass through pristine. A narrow deny-list handles hosts (like `vr-m.net`) that need to see traffic coming directly from the in-game player.
-- A **tiered resolution cascade** (local yt-dlp → cloud resolver → VRChat's pinned yt-dlp → passthrough) tries multiple strategies in parallel for each URL, with per-host learning that remembers which strategy worked for which host. PO-token minting (via the `bgutil-ytdlp-pot-provider` sidecar + its yt-dlp plugin), `curl-impersonate` TLS fingerprinting, and an optional headless browser strategy cover the bot-detection cases.
-- A **playback-feedback loop** watches VRChat's output log. When AVPro reports `Loading failed` on a URL we resolved, the responsible strategy is demoted immediately, the cache entry is evicted, and the next request re-cascades. This prevents the engine from locking onto a strategy that "returned a URL" but whose URLs don't actually play.
-- A **pre-flight probe** verifies each resolved URL is reachable (using the same UA/headers AVPro would send) before we hand it back to VRChat.
+- **Trust-bypass via local relay.** A hosts-file mapping `127.0.0.1 localhost.youtube.com` routes any URL we "wrap" through a local relay that AVPro sees as a trusted YouTube host. Our relay then fetches the real upstream and streams it back. Hosts already on AVPro's allowlist pass through pristine. A narrow deny-list handles hosts (like `vr-m.net`) that need to see traffic coming directly from AVPro.
 
-## Architecture
+- **Tiered resolution cascade.** Multiple strategies (vanilla yt-dlp, PO-token via the bgutil sidecar, Chrome-TLS fingerprinting via `curl-impersonate`, a UnityPlayer UA path, mobile clients, headless-browser JS-challenge bypass, Cloudflare WARP egress, and a cloud resolver at `whyknot.dev`) race in parallel for each URL. Per-host **strategy memory** remembers what worked and skips the race next time.
 
-Three .NET projects plus a Vue frontend:
+- **Playback-feedback loop.** A log monitor watches VRChat's output for `[AVProVideo] Error: Loading failed`. When that fires, the responsible strategy is demoted, the cache entry is evicted, and the next request re-cascades. Prevents the engine from locking onto a strategy that returns URLs that don't actually play.
 
-```
-WKVRCProxy.UI/          Photino desktop shell (WebView2)
- ├── Program.cs         IPC bridge: webmessages ↔ SystemEventBus
- └── ui/                Vue 3 + TypeScript + Tailwind + Pinia
-     └── src/
-         ├── views/     DashboardView, LogsView, HistoryView, SettingsView, …
-         ├── stores/    appStore.ts (Pinia)
-         └── components/
+- **Pre-flight probe.** Verifies each resolved URL is reachable (using AVPro-shaped headers) before handing back to VRChat. Catches dead cloud URLs early.
 
-WKVRCProxy.Core/        The engine. Referenced by UI + Redirector.
- ├── Services/
- │   ├── ResolutionEngine.cs      tiered cascade + race + feedback loop
- │   ├── StrategyMemory.cs        per-host W/L ranking (version-gated)
- │   ├── RelayServer.cs           localhost.youtube.com trust-bypass proxy
- │   ├── HostsManager.cs          hosts-file setup + integrity checks
- │   ├── PatcherService.cs        hooks VRChat's yt-dlp.exe → Redirector
- │   ├── VrcLogMonitor.cs         tails VRChat output log; raises playback events
- │   ├── PotProviderService.cs    bgutil PO-token sidecar
- │   ├── BgutilPluginUpdater.cs   live updates the yt-dlp bgutil plugin
- │   ├── BrowserExtractService.cs Puppeteer-based JS-challenge bypass
- │   ├── WarpService.cs           Cloudflare WARP SOCKS5 (lazy-started; powers the warp+ strategies)
- │   ├── CurlImpersonateClient.cs real-Chrome TLS fingerprint probe/fetch
- │   ├── Tier2WebSocketClient.cs  cloud resolver (WhyKnot.dev)
- │   └── …
- ├── Diagnostics/       SystemEventBus, SystemEvent, ErrorCodes
- ├── IPC/               HttpIpcServer, PipeServer, WebSocketIpcServer
- ├── Models/            AppConfig, HistoryEntry
- └── Logging/
+➡ Full request flow: [[Architecture]] · How strategies are picked: [[Resolution Cascade]] · Why the relay is the default: [[Relay Server]]
 
-WKVRCProxy.Redirector/  Tiny wrapper yt-dlp-replacement. VRChat's yt-dlp.exe
-                        is patched to call this; it marshals the request into
-                        WKVRCProxy's IPC and returns the resolved URL.
-
-WKVRCProxy.HlsTests/    xUnit suite (131 tests).
-WKVRCProxy.TestHarness/ Standalone scenario runner for local exploration.
-```
-
-### Request flow
-
-```
-VRChat world script → VRChat yt-dlp (patched) → Redirector.exe
-                                                     │
-                                                     ▼ (IPC)
-                               ResolutionEngine
-                               ├── cache hit? → return
-                               ├── fast-path? → run remembered strategy
-                               ├── else       → cold-race tier1 strategies
-                               │                  (plain, PO, impersonate, browser,
-                               │                   vrchat-UA, mweb, WARP, …)
-                               │                + tier2 (cloud) in parallel
-                               ├── stealthy pre-flight probe
-                               └── relay-wrap if host not on VRChat allowlist
-                                                     │
-                                                     ▼
-                               returns http://localhost.youtube.com:{port}/play?target=…
-                                                     │
-                                                     ▼
-                               AVPro plays it via our RelayServer
-                                                     │
-                                                     ▼
-             VrcLogMonitor watches for "[AVProVideo] Error: Loading failed"
-                 → demote strategy + evict cache + publish StrategyDemoted
-```
+---
 
 ## Requirements
 
-- **Windows 10/11 x64** (the WebView2 runtime must be installed; VRChat is Windows-only anyway).
+- **Windows 10/11 x64.** WebView2 runtime must be installed (it usually is). VRChat is Windows-only anyway.
 - **VRChat** installed on the same machine.
 - **.NET 10 SDK** (`dotnet --version` ≥ 10.0).
-- **Node.js 20+** (for the Vue UI build).
+- **Node.js 20+** (only needed if you build from source — for the Vue UI build).
 - **Git** + **PowerShell 5.1+** (the build script uses both).
 - **Administrator** access on first run — the hosts-file setup requires UAC.
 
-## Building
+## Install (release build)
+
+Download the latest `WKVRCProxy-*.zip` from [Releases](https://github.com/RealWhyKnot/WKVRCProxy/releases), extract anywhere (avoid `Program Files` so the in-app updater can swap files without elevation), and run `WKVRCProxy.exe`.
+
+The bundled `updater.exe` and `uninstall.exe` live next to it. **Settings → Maintenance** has buttons for both.
+
+## Build from source
 
 ```powershell
 # From the repo root
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-What the script does:
+What the script does (full breakdown in [[Build Pipeline]]):
 
-1. Vendors third-party tools into `vendor/` on first run, cached by version: `yt-dlp.exe`, `deno.exe`, `curl-impersonate-win.exe`, `streamlink`, `warp` (wgcf + wireproxy), and the compiled `bgutil-ytdlp-pot-provider.exe` sidecar. Subsequent builds skip the network entirely for any binary whose pinned version in `vendor/versions.json` matches upstream and whose vendor file still exists; offline builds fall back to the cached binary.
+1. Vendors third-party tools into `vendor/` on first run, cached by version: `yt-dlp.exe`, `deno.exe`, `curl-impersonate-win.exe`, `streamlink`, `wgcf` + `wireproxy` for WARP, and the compiled `bgutil-ytdlp-pot-provider.exe` PO-token sidecar. Subsequent builds skip the network entirely for any binary whose pinned version in `vendor/versions.json` matches upstream and whose vendor file still exists.
 2. Builds the Vue UI (`vite build`) into `src/WKVRCProxy.UI/wwwroot/`.
-3. Publishes `WKVRCProxy.UI` (win-x64, self-contained) and `WKVRCProxy.Redirector` to `dist/`.
+3. Publishes `WKVRCProxy.UI`, `WKVRCProxy.Redirector`, `WKVRCProxy.Updater`, and `WKVRCProxy.Uninstaller` (all win-x64, self-contained, single-file) to `dist/`.
 4. Stamps `dist/version.txt` and the embedded assembly version with `YYYY.M.D.N-HASH`.
+5. Produces `release/WKVRCProxy-<version>.zip` plus a SHA256 (used by the tag-driven release workflow and verified by `updater.exe`).
 
-Output: `dist/WKVRCProxy.exe` plus `dist/tools/` (vendored helpers).
+> **Memory wipe on version change:** `strategy_memory.json` is wiped every time `dist/version.txt` changes, so learned rankings from a previous build can't silently survive logic changes. `dotnet run` against source is exempt so iteration isn't lossy.
 
-> **Memory wipe on version change:** `strategy_memory.json` is wiped every time the version in `dist/version.txt` changes, so learned rankings from a previous build can't silently survive logic changes. Dev runs without a `version.txt` (i.e. `dotnet run` against source) are exempt so iteration isn't lossy.
+## Develop
 
-## Developing
-
-### UI (Vue + Tailwind)
+### UI (Vue 3 + Tailwind)
 
 ```powershell
 cd src/WKVRCProxy.UI/ui
 npm install
-npm run dev   # hot-reload dev server
+npm run dev   # hot-reload dev server on http://localhost:5173
 ```
 
-The Vite dev server is only useful for pure UI work — it doesn't have the Photino bridge, so runtime config/logs/events don't flow. For full-stack work, edit Vue files and run `npm run build` then `dotnet run` on the UI project, or use `build.ps1` and launch `dist/WKVRCProxy.exe`.
+The Vite dev server is only useful for pure UI work — it has no Photino bridge, so runtime config / logs / events don't flow. For full-stack iteration: edit Vue files, then `npm run build` and `dotnet run` on the UI project, or run `build.ps1` and launch `dist/WKVRCProxy.exe`.
 
 ### .NET
 
@@ -132,52 +80,59 @@ The Vite dev server is only useful for pure UI work — it doesn't have the Phot
 dotnet build
 dotnet run --project src/WKVRCProxy.UI
 
-# Tests (xUnit, 131 tests)
+# Tests (xUnit, 131 tests). HlsTests is intentionally not in the slnx, so target it directly.
 dotnet test src/WKVRCProxy.HlsTests
 
-# Standalone scenario runner
+# Standalone scenario runner (resolves a URL from the CLI without VRChat)
 dotnet run --project src/WKVRCProxy.TestHarness -- <url>
 ```
 
-Target framework is `net10.0` (Core + Redirector) / `net10.0-windows` (UI + HlsTests, because they pull in `SupportedOSPlatform("windows")`).
+Target framework is `net10.0` (Core + Redirector + TestHarness) / `net10.0-windows` (UI + HlsTests + Updater + Uninstaller).
 
-### Settings & state (local)
+### Settings & runtime state
 
-Runtime state lives next to the exe — for dev runs that's `src/WKVRCProxy.UI/bin/Debug/net10.0-windows/`, for release it's `dist/`.
+Lives next to the exe — for dev, that's `src/WKVRCProxy.UI/bin/Debug/net10.0-windows/`. Full inventory in [[Runtime State]].
+
+Highlights:
 
 | File | Purpose |
 | --- | --- |
-| `app_config.json` | User settings: preferred tier, resolution floor, `NativeAvProUaHosts`, `EnablePreflightProbe`, history, … |
-| `strategy_memory.json` | Learned W/L per `host:stream-type` / strategy. Wiped on version change. |
-| `proxy-rules.json` | Per-domain relay behavior: forwarded headers, UA overrides, PO-token injection, curl-impersonate toggle. |
-| `wkvrcproxy_<timestamp>.log` | Session log with correlation IDs. |
+| `app_config.json` | User settings — every field documented in [[Settings Reference]] |
+| `strategy_memory.json` | Per-host W/L per strategy. **Wiped on version change.** |
+| `proxy-rules.json` | Per-domain relay behaviour: forwarded headers, UA overrides, PO-token injection |
+| `wkvrcproxy_<timestamp>.log` | Session log with correlation IDs |
+| `%LOCALAPPDATA%\WKVRCProxy\ipc_port.dat` | Dynamic port the Redirector connects to |
 
-## Running
+## Run
 
-1. **Launch WKVRCProxy before VRChat.** It will prompt (once) for UAC to add `127.0.0.1 localhost.youtube.com` to your hosts file. Decline and the trust-bypass won't work — any resolution that doesn't hit a VRChat-trusted host will fail at playback.
-2. **Start VRChat.** WKVRCProxy patches VRChat's `yt-dlp.exe` on first run if `autoPatchOnStart` is on (default), swapping it for the Redirector.
-3. **Play a video in-world.** Watch the Logs tab — you should see `Starting resolution for: …`, a tier decision, `URL relay-wrapped on port …`, and `Final Resolution [tier1] [vod] in Xms`.
+1. **Launch WKVRCProxy before VRChat.** First run prompts for UAC to add `127.0.0.1 localhost.youtube.com` to your hosts file. Decline and the trust-bypass won't work — any resolution that doesn't hit a VRChat-trusted host will fail at playback.
+2. **Start VRChat.** WKVRCProxy patches VRChat's `yt-dlp.exe` on first run if `autoPatchOnStart` is on (default), swapping it for the Redirector. The patch is reverted on graceful shutdown and on uninstall.
+3. **Play a video in-world.** Watch the **Logs** tab — you should see `Starting resolution for: …`, a tier decision, `URL relay-wrapped on port …`, and `Final Resolution [tier1] [vod] in Xms`.
 
 ### What to look for if playback fails
 
 - **`Demoted` chips in the Logs view** — the feedback loop caught a strategy whose URL AVPro rejected. Red dots on History entries show which specific resolutions failed playback. The next request for that host will re-cascade.
-- **`[WARNING] [Playback] AVPro rejected resolved URL from 'X'`** — explicit demotion, with the correlation ID so you can grep back.
-- **`Relay wrap skipped for <host>`** at INFO level — only expected for hosts on the deny-list (`vr-m.net` by default) or on VRChat's trusted list. If you see it for a random CDN, that CDN slipped into the trusted-host table by mistake; file it.
+- **`[WARNING] [Playback] AVPro rejected resolved URL from 'X'`** — explicit demotion with the correlation ID so you can grep back.
+- **`Relay wrap skipped for <host>` at INFO level** — only expected for hosts on the deny-list (`vr-m.net` by default) or on VRChat's trusted list. If you see it for a random CDN, that CDN slipped into the trusted-host table by mistake — file it.
 
-Runtime knobs live under **Settings → Network**:
-- **Pre-Flight URL Probe** — verify URLs before handoff (catches dead cloud URLs; adds up to 5s on cold resolve).
-- **Direct-Connect Hosts** — chip-list of hosts (default `vr-m.net`) that need to see traffic coming directly from the in-game player. URLs on these hosts skip both the relay and the resolution cascade.
+Full troubleshooting playbook: [[Troubleshooting]].
 
-Cloudflare WARP is wired in as two opt-in resolution strategies (`tier1:warp+default`, `tier1:warp+vrchat-ua`) rather than a global toggle. Toggle them in **Settings → Advanced — Individual Strategies**. The first run starts a local WireGuard helper (`wgcf` registers an account once, then `wireproxy` exposes a SOCKS5 listener); subsequent invocations are zero-cost. After WARP comes up, `WarpService.VerifyEgressAsync` hits Cloudflare's `cdn-cgi/trace` through the SOCKS5 proxy to confirm `warp=on` and logs the egress IP — useful for confirming your real address is masked before any strategy actually uses the path.
+### Knobs you might actually use
+
+- **Settings → Network → Pre-Flight URL Probe** — verify URLs before handoff (catches dead cloud URLs; adds up to 5 s on cold resolves).
+- **Settings → Network → Direct-Connect Hosts** — chip-list of hosts (default `vr-m.net`) that need to see traffic from AVPro directly. URLs on these hosts skip both the relay and the resolution cascade.
+- **Settings → Advanced → Individual Strategies** — toggle `tier1:warp+default`, `tier1:warp+vrchat-ua`, `tier1:browser-extract`, etc. The first WARP run starts a local WireGuard helper (`wgcf` registers an account once, then `wireproxy` exposes a SOCKS5 listener); subsequent invocations are zero-cost.
+- **Settings → Maintenance** — manual update check, update apply, uninstall.
 
 ## Contributing
 
-1. Fork, branch off `main`.
-2. `dotnet test` must pass; add tests for behavior changes.
-3. Keep the rationale in comments where non-obvious — the `=== WHY WE WRAP ===` block in `ResolutionEngine.cs` is the template.
-4. Run `powershell -File build.ps1` at least once before PR to confirm the full pipeline builds. The build script also flips `git config core.hooksPath = .githooks` once, which activates `.githooks/commit-msg` — a small bash hook that rejects commit subjects containing more than one `(YYYY.M.D.N-XXXX)` build-version stamp (a common editor-template autocompletion footgun).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the short version, and [[Engineering Standards]] for the load-bearing rules (no C# string interpolation in stamped files, raw-bytes stdout in the Redirector, wrap-by-default, etc.). The wiki content itself lives at [`docs/wiki/`](docs/wiki/) — edit there, the [`wiki-sync.yml`](.github/workflows/wiki-sync.yml) workflow mirrors to the GitHub Wiki on push to `main`.
 
-Code style follows the surrounding file. The project deliberately avoids heavy abstraction layers — a new feature usually means extending an existing service, not introducing a new one.
+## Reporting bugs
+
+Use the [bug report template](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml). Paste the correlation-ID block from the Logs view verbatim — that's the difference between "we'll figure it out" and "we can't help from here."
+
+For security issues, use the private [Security Advisories](https://github.com/RealWhyKnot/WKVRCProxy/security/advisories/new) flow. Don't open a public issue.
 
 ## License
 

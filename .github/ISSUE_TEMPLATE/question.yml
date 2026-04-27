@@ -1,0 +1,48 @@
+name: Question / help
+description: Setup help, "is this a bug or am I holding it wrong?", or anything you'd ask in chat.
+title: "[question] "
+labels: ["question", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Welcome. Questions are issues here — don't worry about filing one for something that turns out to be obvious. If it leads to a doc fix or a real bug we'll relabel.
+
+        **Read first:**
+        - [Wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki) — especially [Architecture](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Architecture), [Settings Reference](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Settings-Reference), and [Troubleshooting](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting).
+        - [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) — install / build / first-run.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to figure out, set up, or understand?
+      placeholder: "I want to use WKVRCProxy with a custom VRChat install path. The Settings → Advanced field exists but I'm not sure how it interacts with the patcher — does it auto-detect changes if I move VRChat?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried so far?
+      description: |
+        Helps us not retread ground. "Nothing yet" is fine — but if you've checked the wiki / settings / logs, say what you saw.
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: WKVRCProxy version
+      description: From the **About** panel or `dist/version.txt`.
+      placeholder: "2026.4.27.7-4974"
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Screenshots, log snippets, the part of the wiki/README that confused you, etc. Optional.
+    validations:
+      required: false
