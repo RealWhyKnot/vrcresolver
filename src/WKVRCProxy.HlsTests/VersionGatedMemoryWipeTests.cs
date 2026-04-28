@@ -25,7 +25,21 @@ public class VersionGatedMemoryWipeTests : IDisposable
         try { Directory.Delete(_tmpDir, true); } catch { }
     }
 
-    private void WriteVersion(string v) => File.WriteAllText(Path.Combine(_tmpDir, "version.txt"), v);
+    private void WriteVersion(string v) => WriteWithRetry(Path.Combine(_tmpDir, "version.txt"), v);
+
+    // Windows Defender on the windows-latest CI runner intermittently holds a transient lock on
+    // a file just after a managed read/write returns, surfacing as "process cannot access the
+    // file ... because it is being used by another process" on the next write. Retry rides through
+    // it. The production code is fine — every read uses File.ReadAllText, which fully closes.
+    private static void WriteWithRetry(string path, string contents)
+    {
+        const int maxAttempts = 3;
+        for (int attempt = 1; ; attempt++)
+        {
+            try { File.WriteAllText(path, contents); return; }
+            catch (IOException) when (attempt < maxAttempts) { System.Threading.Thread.Sleep(75); }
+        }
+    }
 
     [Fact]
     public void LoadSave_Preserves_WhenVersionMatches()
@@ -65,7 +79,7 @@ public class VersionGatedMemoryWipeTests : IDisposable
         {
             ["example.com:vod"] = new() { new StrategyMemoryEntry { StrategyName = "tier2:cloud-whyknot", SuccessCount = 28, LastSuccess = DateTime.UtcNow } }
         };
-        File.WriteAllText(Path.Combine(_tmpDir, "strategy_memory.json"),
+        WriteWithRetry(Path.Combine(_tmpDir, "strategy_memory.json"),
             JsonSerializer.Serialize(legacy, new JsonSerializerOptions { WriteIndented = true }));
 
         var m = new StrategyMemory(null, _tmpDir);
