@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { VERSION } from '../version'
 
 // Types + constants live in appStore.types.ts so this file can stay focused on store logic.
 // Re-export so existing `import { LogEntry, AppConfig, ... } from '../stores/appStore'` calls
@@ -98,7 +99,7 @@ export const useAppStore = defineStore('app', () => {
   const relayEvents = ref<RelayEvent[]>([])
 
   const isBridgeReady = ref(false)
-  const version = ref('2026.4.27.14-A130')
+  const version = ref(VERSION)
 
   // Session uptime — store-owned ticker so the value survives DashboardView unmounts.
   // Previously DashboardView held its own setInterval + Date.now() baseline, which meant

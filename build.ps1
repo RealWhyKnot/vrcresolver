@@ -445,14 +445,11 @@ if ($Version) {
 Write-Host "Building Version: $FullVersion" -ForegroundColor Magenta
 
 # --- Inject Version into Store ---
-$AppStorePath = "src/WKVRCProxy.UI/ui/src/stores/appStore.ts"
-$StoreContent = Get-Content $AppStorePath -Raw
-$RegexPattern = 'version = ref\(''(.+?)''\)'
-$RegexReplace = 'version = ref(''{0}'')' -f $FullVersion
-$NewStoreContent = $StoreContent -replace $RegexPattern, $RegexReplace
-# -NoNewline: Get-Content -Raw preserves the file's existing trailing newline, and Set-Content
-# appends one by default. Without -NoNewline the file grows by one blank line per build.
-Set-Content $AppStorePath $NewStoreContent -NoNewline
+# Stamp written to a dedicated, gitignored file so the working tree stays clean across builds.
+# appStore.ts imports VERSION from here. Fresh clones need a build.ps1 run before standalone
+# `npm run dev` can resolve this import; the file is recreated on every build.
+$VersionTsPath = Join-Path $PSScriptRoot "src/WKVRCProxy.UI/ui/src/version.ts"
+"export const VERSION = '$FullVersion';" | Out-File $VersionTsPath -Encoding utf8
 
 # --- Build Frontend ---
 # npm (and vite) write informational warnings to stderr. Under PS 5.1 with

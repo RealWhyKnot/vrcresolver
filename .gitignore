@@ -40,6 +40,7 @@ build.txt
 build.utf8.txt
 wrapper_state.json
 version.txt
+/src/WKVRCProxy.UI/ui/src/version.ts
 system.db
 system.db-journal
 
