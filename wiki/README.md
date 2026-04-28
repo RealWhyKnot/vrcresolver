@@ -19,10 +19,12 @@ The `.md` files in this folder are the **source of truth** for the GitHub Wiki a
 ## Pages
 
 - [Home](Home.md) — landing
+- [Quick Start](Quick-Start.md) — install, first launch, troubleshooting hints (the user-facing quick path)
 - [Architecture](Architecture.md)
 - [Resolution Cascade](Resolution-Cascade.md)
 - [Relay Server](Relay-Server.md)
 - [IPC and Redirector](IPC-and-Redirector.md)
+- [Development](Development.md) — build from source, dev workflow, tests
 - [Build Pipeline](Build-Pipeline.md)
 - [Settings Reference](Settings-Reference.md)
 - [Runtime State](Runtime-State.md)

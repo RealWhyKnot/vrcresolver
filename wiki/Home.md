@@ -1,38 +1,40 @@
 # WKVRCProxy Wiki
 
-WKVRCProxy is a Windows desktop app that makes VRChat's in-world video players resolve and play URLs reliably — including sources VRChat's built-in resolver can't handle, URLs blocked by bot detection, and hosts that aren't on VRChat's trusted allowlist.
+WKVRCProxy is a Windows desktop app that runs alongside VRChat and rebuilds the video-resolution pipeline so URLs that fail with `[AVProVideo] Error: Loading failed.` actually play. The main pain it solves is YouTube's escalating bot-detection: PO tokens, browser TLS fingerprints, and `visitor_data` binding — the vanilla yt-dlp shipped with VRChat can't keep up. WKVRCProxy runs several resolution methods in parallel, learns what worked per-host, and self-heals when a resolved URL fails to play.
 
-This wiki is the long-form documentation. The [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) is the quick-start; everything below goes deeper.
+The [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) is the pitch; this wiki is everything else.
 
 ## How it works (90 seconds)
 
-VRChat's in-game video players resolve URLs with a bundled `yt-dlp.exe` and play them through AVPro. Two things break that pipeline in practice:
+VRChat's in-game video players resolve URLs with a bundled `yt-dlp.exe` and play them through AVPro Video. Two things break that:
 
-1. **AVPro's trusted-URL list.** Only a narrow set of hosts (`*.youtube.com`, `*.vimeo.com`, `*.vrcdn.live`, etc.) are allowed. Anything else is silently rejected with `[AVProVideo] Error: Loading failed.`
-2. **Anti-bot detection.** YouTube increasingly requires PO tokens, valid `visitor_data` binding, and a real browser TLS fingerprint. The vanilla yt-dlp that VRChat ships can't provide any of that.
+1. **The resolver loses to anti-bot.** YouTube increasingly requires PO tokens, valid `visitor_data` binding, and a browser TLS fingerprint. The vanilla yt-dlp can't supply any of that, and resolution silently fails. This is the dominant pain — it bites every user, in every instance type.
+2. **AVPro's trusted-URL list (when in force).** AVPro will only play URLs from a small allowlist (`*.youtube.com`, `*.vrcdn.live`, etc.) when the user hasn't enabled "Allow Untrusted URLs" in VRChat's comfort settings. Mostly relevant in public-world play; private and friends-only instances where the toggle is on don't see it.
 
-WKVRCProxy sits in front of VRChat's resolver pipeline and fixes both problems. The [[Architecture]] page walks the request flow end-to-end; [[Resolution Cascade]] explains how strategies are picked and learned per-host; [[Relay Server]] explains the `localhost.youtube.com` trick that bypasses AVPro's allowlist.
+WKVRCProxy sits in front of VRChat's resolver pipeline and fixes both. [[Architecture]] walks the request flow end-to-end; [[Resolution Cascade]] explains how strategies are picked, raced, and learned per-host; [[Relay Server]] explains the `localhost.youtube.com` trick that bypasses the trust list when needed.
 
-## Read these first
+## For users
 
-- **[[Architecture]]** — the request flow and how the projects fit together
-- **[[Resolution Cascade]]** — tiers, strategies, the parallel race, the playback-feedback demotion loop
+- **[[Quick Start]]** — install, first launch, and what to do when something fails
+- **[[Settings Reference]]** — every knob in `app_config.json`
+- **[[Troubleshooting]]** — common failure modes and how to read the Logs view
+- **[[Update and Uninstall]]** — what the updater and uninstaller touch
+
+## For maintainers
+
+- **[[Architecture]]** — request flow and how the projects fit together
+- **[[Resolution Cascade]]** — tiers, strategies, the parallel race, the demotion loop
 - **[[Relay Server]]** — trust-bypass, hosts file, the AVPro UA deny-list, and why we wrap by default
-- **[[Engineering Standards]]** — coding rules that future contributors MUST follow
-
-## Reference
-
-- **[[Settings Reference]]** — every field in `app_config.json` with what it does
-- **[[Runtime State]]** — every file the app writes, where, and what wipes it
+- **[[Engineering Standards]]** — coding rules contributors MUST follow
+- **[[Development]]** — build from source, run tests, dev workflow
 - **[[Build Pipeline]]** — `build.ps1` phase by phase, vendored binaries, version stamping
 - **[[IPC and Redirector]]** — VRChat → patched yt-dlp → Redirector → IPC → Core
-- **[[Update and Uninstall]]** — the standalone updater/uninstaller binaries and what they touch
-- **[[Troubleshooting]]** — common failure modes and how to read the Logs view
+- **[[Runtime State]]** — every file the app writes, where, and what wipes it
 
 ## Background
 
-- **[[AVPro vs Unity]]** — VRChat's two video players, what each supports, what fails where, encoding recipes. Useful context for anyone reasoning about why a given URL plays or doesn't.
+- **[[AVPro vs Unity]]** — VRChat's two video players, what each supports, what fails where, encoding recipes
 
 ## For new maintainers
 
-If you're new to this repo, read [[Architecture]] then [[Resolution Cascade]] then [[Engineering Standards]]. The README is fine for orientation; the wiki has the load-bearing detail.
+If you're new to this repo, read [[Architecture]] then [[Resolution Cascade]] then [[Engineering Standards]]. [[Development]] has the dev workflow you'll need.

@@ -1,5 +1,6 @@
 **Start here**
 - [Home](Home)
+- [Quick Start](Quick-Start)
 - [Architecture](Architecture)
 - [Resolution Cascade](Resolution-Cascade)
 - [Relay Server](Relay-Server)
@@ -9,6 +10,7 @@
 - [Settings Reference](Settings-Reference)
 - [Runtime State](Runtime-State)
 - [Build Pipeline](Build-Pipeline)
+- [Development](Development)
 - [IPC and Redirector](IPC-and-Redirector)
 - [Update and Uninstall](Update-and-Uninstall)
 - [Troubleshooting](Troubleshooting)
