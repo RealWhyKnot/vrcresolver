@@ -15,8 +15,10 @@ name: Release
 # linking to this release. The build then embeds the promoted CHANGELOG.md inside the exe (via
 # WKVRCProxy.UI.csproj <EmbeddedResource>) so the in-app changelog viewer for this version
 # carries that version's notes. After the GitHub release is created, the promoted files are
-# committed back to main on top of the tag's commit so the next push starts with a fresh
-# empty Unreleased section.
+# pushed to a release/promote-changelog-<tag> branch and a PR is opened with auto-merge so
+# main eventually carries the promotion (squashed in by github-actions[bot] once CI passes).
+# Direct push doesn't work on protected main: the dotnet-build-+-test required check is missing
+# on bot pushes, so branch protection rejects them.
 on:
   push:
     tags:
@@ -24,6 +26,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write   # release step opens a PR for the changelog promotion
 
 # Share a concurrency group with changelog-append so the appender can't run
 # during a release build and add entries to main's Unreleased that the release
@@ -43,8 +46,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          # PAT not required: token only needs contents:write to push the
-          # promotion commit back to main, which the default GITHUB_TOKEN has.
+          # GITHUB_TOKEN is enough: the promotion-PR step pushes the bot's
+          # branch (not main) and uses gh to open + auto-merge the PR.
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup .NET 10
@@ -138,54 +141,56 @@ jobs:
           # gh release create accepts the asset paths as positional arguments after the tag.
           gh release create $tag $zip --title $tag --notes $notes
 
-      - name: Push promoted CHANGELOG back to main
-        # Tags are immutable but the promotion lives on main as a follow-up
-        # commit. Subsequent pushes append to the fresh Unreleased section.
-        # Done last so a build/release failure doesn't leave a phantom
-        # "promoted on main but never released" state.
+      - name: Open promotion PR + enable auto-merge
+        # We can't push directly to main: branch protection requires the
+        # "dotnet build + test" status check, which a bot push bypasses (so
+        # the push is rejected). Instead we open a PR off the tag and let
+        # auto-merge squash it once CI goes green. ci.yml has CHANGELOG.md
+        # and wiki/Changelog.md carved out of paths-ignore so the required
+        # check actually runs on changelog-only PRs.
         #
-        # We replay the stashed files (captured before build.ps1 ran) onto a
-        # fresh main checkout. The shared concurrency group with changelog-
-        # append prevents bot-driven appender pushes during this window, so
-        # main is normally still at the tag's commit. A human push during the
-        # build is the only race left — if that happens the cherry-pick may
-        # need manual reconciliation, surfaced as a workflow failure.
+        # Done last so a build/release failure doesn't leave a phantom
+        # "promotion PR open but never released" state.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
 
-          # Detach from the tag, sync main.
-          tag_sha="$(git rev-parse HEAD)"
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
+          branch="release/promote-changelog-${TAG_NAME}"
+          git checkout -b "$branch"
 
-          # If main moved past the tag during the build (a human push, since
-          # bot pushes are blocked by the shared concurrency group), refuse
-          # to overwrite. The release succeeded; promotion-on-main is now a
-          # manual follow-up. Bail loudly so the failure is obvious in the
-          # workflow run.
-          main_sha="$(git rev-parse HEAD)"
-          if [[ "$main_sha" != "$tag_sha" ]]; then
-            echo "::error::main advanced from $tag_sha to $main_sha during the release build."
-            echo "::error::Refusing to overwrite — manual changelog promotion required:"
-            echo "::error::  pwsh .github/scripts/Update-Changelog.ps1 -Mode Promote -Version ${GITHUB_REF_NAME}"
-            echo "::error::  git commit -am 'docs(changelog): promote Unreleased -> ${GITHUB_REF_NAME} [skip changelog]'"
-            echo "::error::  git push origin main"
-            exit 1
-          fi
-
+          # Replay the stashed files (captured before build.ps1 ran) so the
+          # bytes we put on main are exactly what shipped in the embedded exe.
           cp .changelog-stash/CHANGELOG.md           CHANGELOG.md
           cp .changelog-stash/wiki/Changelog.md wiki/Changelog.md
 
-          if [[ -n "$(git status --porcelain CHANGELOG.md wiki/Changelog.md)" ]]; then
-            git add CHANGELOG.md wiki/Changelog.md
-            git commit -m "docs(changelog): promote Unreleased -> ${GITHUB_REF_NAME} [skip changelog]"
-            git push origin main
-          else
-            echo "Nothing to promote on main (already in promoted state)."
+          if [[ -z "$(git status --porcelain CHANGELOG.md wiki/Changelog.md)" ]]; then
+            echo "Nothing to promote — main is already in promoted state."
+            exit 0
           fi
+
+          # [skip changelog] keeps changelog-append from re-bulleting this commit
+          # if the squash trigger ever races past the bot-actor filter.
+          git add CHANGELOG.md wiki/Changelog.md
+          git commit -m "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]"
+          git push origin "$branch"
+
+          pr_url="$(gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "docs(changelog): promote Unreleased -> ${TAG_NAME}" \
+            --body "Auto-generated by .github/workflows/release.yml after publishing **${TAG_NAME}**. Mirrors the embedded \`CHANGELOG.md\` (and \`wiki/Changelog.md\`) that shipped inside the exe back onto \`main\` so the next push starts with a fresh \`## Unreleased\` section. Auto-merge enabled — will squash once \`dotnet build + test\` passes.")"
+          echo "Opened: $pr_url"
+
+          # --auto queues the merge; it actually fires once required checks pass.
+          # Use --subject so the squash commit subject keeps the [skip changelog]
+          # marker (the appender also filters by bot actor, but belt-and-braces).
+          gh pr merge "$pr_url" \
+            --auto \
+            --squash \
+            --delete-branch \
+            --subject "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]"

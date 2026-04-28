@@ -3,9 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+    # Negations re-include CHANGELOG.md / wiki/Changelog.md so the auto-merged
+    # release-promotion PR clears its required status check (release.yml opens
+    # it after every tag push).
     paths-ignore:
       - '**.md'
       - 'wiki/**'
+      - '!CHANGELOG.md'
+      - '!wiki/Changelog.md'
       - 'LICENSE'
       - '.gitignore'
       - '.gitattributes'
@@ -17,6 +22,8 @@ on:
     paths-ignore:
       - '**.md'
       - 'wiki/**'
+      - '!CHANGELOG.md'
+      - '!wiki/Changelog.md'
       - 'LICENSE'
       - '.gitignore'
       - '.gitattributes'
