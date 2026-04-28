@@ -21,6 +21,20 @@ _Maintenance release; see commit log for details._
 
 ---
 
+## [v2026.4.27.3](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.4.27.3) — 2026-04-27
+
+### Added
+- **ui:** Promote website embed to permanent surface + native bridge (b53c591)
+- **ui:** Website-tab embed PoC, dark behind enableWebsiteTab flag (a795603)
+- **ui:** In-app changelog viewer + uptime persistence + traffic format hardening (7992bea)
+
+### Fixed
+- **ui:** Align wkBridge with canonical handshake + response shape (b6e9c14)
+- **relay:** Drop dead PO token visitor_data branch (1da7139)
+- **updater:** Require SHA256 in release notes; reject Zip Slip on extract (7c465d1)
+
+---
+
 ## [v2026.4.27.2](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.4.27.2) — 2026-04-27
 
 ### Fixed
