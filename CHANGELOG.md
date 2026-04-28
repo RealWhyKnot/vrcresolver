@@ -15,6 +15,12 @@ _No notable changes since the last release._
 
 ---
 
+## [v2026.4.28.0](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.4.28.0) — 2026-04-28
+
+_Maintenance release; see commit log for details._
+
+---
+
 ## [v2026.4.27.2](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.4.27.2) — 2026-04-27
 
 ### Fixed
