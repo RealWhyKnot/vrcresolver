@@ -9,6 +9,14 @@ name: Release
 # Builds the full distribution via build.ps1 on a Windows runner — required because the build
 # produces win-x64 single-file exes and uses PowerShell-only cmdlets — then attaches the zip
 # from release/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
+#
+# Changelog promotion: before the build runs, .github/scripts/Update-Changelog.ps1 renames the
+# "## Unreleased" heading in CHANGELOG.md and wiki/Changelog.md to "## [vTAG] - DATE",
+# linking to this release. The build then embeds the promoted CHANGELOG.md inside the exe (via
+# WKVRCProxy.UI.csproj <EmbeddedResource>) so the in-app changelog viewer for this version
+# carries that version's notes. After the GitHub release is created, the promoted files are
+# committed back to main on top of the tag's commit so the next push starts with a fresh
+# empty Unreleased section.
 on:
   push:
     tags:
@@ -16,6 +24,13 @@ on:
 
 permissions:
   contents: write
+
+# Share a concurrency group with changelog-append so the appender can't run
+# during a release build and add entries to main's Unreleased that the release
+# itself doesn't contain. Only one of these two workflows runs at a time.
+concurrency:
+  group: changelog-append
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -28,6 +43,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          # PAT not required: token only needs contents:write to push the
+          # promotion commit back to main, which the default GITHUB_TOKEN has.
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
@@ -44,6 +62,32 @@ jobs:
         shell: pwsh
         working-directory: src/WKVRCProxy.UI/ui
         run: npm ci
+
+      - name: Promote Unreleased -> tagged section
+        shell: pwsh
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          ./.github/scripts/Update-Changelog.ps1 -Mode Promote -Version '${{ github.ref_name }}'
+          # Stash the promoted files so we can re-apply them on main after the
+          # release. Doing it now (before build.ps1 mutates the worktree) means
+          # the bytes we push back to main are exactly what shipped in the exe.
+          New-Item -ItemType Directory -Force -Path .changelog-stash/wiki | Out-Null
+          Copy-Item CHANGELOG.md       .changelog-stash/CHANGELOG.md       -Force
+          Copy-Item wiki/Changelog.md  .changelog-stash/wiki/Changelog.md  -Force
+
+      - name: Capture release notes
+        id: notes
+        shell: pwsh
+        run: |
+          $body = & ./.github/scripts/Update-Changelog.ps1 -Mode Notes -ForVersion -Version '${{ github.ref_name }}'
+          if (-not $body) { $body = '_Maintenance release; see commit log for details._' }
+          # Multi-line outputs require the heredoc form. Use a unique delimiter
+          # so a stray "EOF" inside the body can't terminate it early.
+          $delim = "EOF_" + [Guid]::NewGuid().ToString('N')
+          "body<<$delim"  >> $env:GITHUB_OUTPUT
+          $body           >> $env:GITHUB_OUTPUT
+          $delim          >> $env:GITHUB_OUTPUT
 
       - name: Build distribution
         shell: pwsh
@@ -77,12 +121,71 @@ jobs:
           $zip    = "${{ steps.zip.outputs.path }}"
           $sha    = "${{ steps.zip.outputs.sha256 }}"
           $name   = "${{ steps.zip.outputs.name }}"
+          $body   = @'
+          ${{ steps.notes.outputs.body }}
+          '@
           $notes  = @"
           ## WKVRCProxy $tag
 
           Download **$name** below and extract anywhere. The bundled ``updater.exe`` and ``uninstall.exe`` live next to ``WKVRCProxy.exe``.
 
           SHA256: $sha
+
+          ---
+
+          $body
           "@
           # gh release create accepts the asset paths as positional arguments after the tag.
           gh release create $tag $zip --title $tag --notes $notes
+
+      - name: Push promoted CHANGELOG back to main
+        # Tags are immutable but the promotion lives on main as a follow-up
+        # commit. Subsequent pushes append to the fresh Unreleased section.
+        # Done last so a build/release failure doesn't leave a phantom
+        # "promoted on main but never released" state.
+        #
+        # We replay the stashed files (captured before build.ps1 ran) onto a
+        # fresh main checkout. The shared concurrency group with changelog-
+        # append prevents bot-driven appender pushes during this window, so
+        # main is normally still at the tag's commit. A human push during the
+        # build is the only race left — if that happens the cherry-pick may
+        # need manual reconciliation, surfaced as a workflow failure.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # Detach from the tag, sync main.
+          tag_sha="$(git rev-parse HEAD)"
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+
+          # If main moved past the tag during the build (a human push, since
+          # bot pushes are blocked by the shared concurrency group), refuse
+          # to overwrite. The release succeeded; promotion-on-main is now a
+          # manual follow-up. Bail loudly so the failure is obvious in the
+          # workflow run.
+          main_sha="$(git rev-parse HEAD)"
+          if [[ "$main_sha" != "$tag_sha" ]]; then
+            echo "::error::main advanced from $tag_sha to $main_sha during the release build."
+            echo "::error::Refusing to overwrite — manual changelog promotion required:"
+            echo "::error::  pwsh .github/scripts/Update-Changelog.ps1 -Mode Promote -Version ${GITHUB_REF_NAME}"
+            echo "::error::  git commit -am 'docs(changelog): promote Unreleased -> ${GITHUB_REF_NAME} [skip changelog]'"
+            echo "::error::  git push origin main"
+            exit 1
+          fi
+
+          cp .changelog-stash/CHANGELOG.md           CHANGELOG.md
+          cp .changelog-stash/wiki/Changelog.md wiki/Changelog.md
+
+          if [[ -n "$(git status --porcelain CHANGELOG.md wiki/Changelog.md)" ]]; then
+            git add CHANGELOG.md wiki/Changelog.md
+            git commit -m "docs(changelog): promote Unreleased -> ${GITHUB_REF_NAME} [skip changelog]"
+            git push origin main
+          else
+            echo "Nothing to promote on main (already in promoted state)."
+          fi

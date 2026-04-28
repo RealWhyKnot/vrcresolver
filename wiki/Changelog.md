@@ -4,6 +4,15 @@ All notable changes to WKVRCProxy. The format follows [Keep a Changelog](https:/
 
 The most recent release is at the top.
 
+<!-- Entries under "## Unreleased" are appended automatically by the changelog-append GitHub
+     workflow on every push to main, then promoted to the versioned section by release.yml when
+     a tag is cut. Don't hand-edit Unreleased — your edits will be overwritten on the next push.
+     To override an entry, amend the commit subject before merge. -->
+
+## Unreleased
+
+_No notable changes since the last release._
+
 ---
 
 ## [v2026.4.27.2](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.4.27.2) — 2026-04-27
