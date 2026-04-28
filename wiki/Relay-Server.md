@@ -1,6 +1,6 @@
 # Relay Server & Trust Bypass
 
-VRChat's AVPro player ships with a hardcoded **trusted-URL list**. URLs whose host doesn't match are silently rejected with `[AVProVideo] Error: Loading failed.` There is no in-game setting to bypass it. The relay is how WKVRCProxy works around it without modifying VRChat itself.
+VRChat's AVPro player ships with a hardcoded **trusted-URL list**. URLs whose host doesn't match are silently rejected with `[AVProVideo] Error: Loading failed.` Enforcement is contextual: the trust list applies when "Allow Untrusted URLs" is off in the user's VRChat comfort settings (typical for public-world play); private and friends-only instances where the toggle is on don't see it. The relay is how WKVRCProxy works around the trust list without depending on the user's setting or modifying VRChat itself.
 
 Sources: [`RelayServer.cs`](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/src/WKVRCProxy.Core/Services/RelayServer.cs), [`HostsManager.cs`](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/src/WKVRCProxy.Core/Services/HostsManager.cs).
 
