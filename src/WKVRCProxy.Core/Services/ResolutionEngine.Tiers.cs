@@ -22,9 +22,9 @@ namespace WKVRCProxy.Core.Services;
 public partial class ResolutionEngine
 {
     // --- moved from ResolutionEngine.cs (lines 1303-1351) ---
-    private async Task<YtDlpResult?> AttemptTier1(string url, string player, RequestContext ctx)
+    private async Task<YtDlpResult?> AttemptTier1(string url, string player, RequestContext ctx, CancellationToken ct = default)
     {
-        var (res, ms) = await TimedResolve(() => ResolveTier1(url, player, ctx));
+        var (res, ms) = await TimedResolve(() => ResolveTier1(url, player, ctx, ct));
         if (res == null)
         {
             _logger.Warning("[" + ctx.CorrelationId + "] [Tier 1] yt-dlp returned no URL after " + ms + "ms â€” check stderr above for cause.");
@@ -39,9 +39,9 @@ public partial class ResolutionEngine
         return res;
     }
 
-    private async Task<YtDlpResult?> AttemptTier2(string url, string player, RequestContext ctx)
+    private async Task<YtDlpResult?> AttemptTier2(string url, string player, RequestContext ctx, CancellationToken ct = default)
     {
-        var (res, ms) = await TimedResolve(() => ResolveTier2(url, player, ctx));
+        var (res, ms) = await TimedResolve(() => ResolveTier2(url, player, ctx, ct));
         if (res == null)
         {
             _logger.Warning("[" + ctx.CorrelationId + "] [Tier 2] Cloud resolver returned no URL after " + ms + "ms.");
@@ -73,7 +73,7 @@ public partial class ResolutionEngine
     // origin. Cloud (tier 2) is exempt â€” it hits whyknot.dev from a different IP.
 
     // --- moved from ResolutionEngine.cs (lines 1615-1656) ---
-    private async Task<YtDlpResult?> ResolveTier1(string url, string player, RequestContext ctx)
+    private async Task<YtDlpResult?> ResolveTier1(string url, string player, RequestContext ctx, CancellationToken ct = default)
     {
         _logger.Debug("[" + ctx.CorrelationId + "] [Tier 1] Attempting native yt-dlp resolution...");
 
@@ -86,7 +86,7 @@ public partial class ResolutionEngine
         // completes in 2-3s when YouTube is happy; PO token fetch adds 5-15s. So: only pay the PO cost
         // when we've recently seen a bot-check for this host.
         bool needsPot = isYouTube && DomainRequiresPot(host);
-        var result = await RunTier1Attempt(url, player, ctx, injectPot: needsPot, videoId);
+        var result = await RunTier1Attempt(url, player, ctx, injectPot: needsPot, videoId, ct: ct);
 
         // Fast-path failure mode: bot-check stderr even though we didn't send a PO token. Flag the
         // domain so the next request uses PO upfront. Don't retry in-call â€” the cascade falls through
@@ -145,8 +145,8 @@ public partial class ResolutionEngine
         return new YtDlpResult(result.MediaUrl, result.Height, null, null, null, null);
     }
 
-    private Task<YtDlpResult?> RunTier1Attempt(string url, string player, RequestContext ctx, bool injectPot, string? videoId)
-        => RunTier1Attempt(url, player, ctx, injectPot, injectImpersonate: _curlClient?.IsAvailable == true, userAgent: null, referer: null, videoId: videoId, variantLabel: "default", playerClient: null);
+    private Task<YtDlpResult?> RunTier1Attempt(string url, string player, RequestContext ctx, bool injectPot, string? videoId, CancellationToken ct = default)
+        => RunTier1Attempt(url, player, ctx, injectPot, injectImpersonate: _curlClient?.IsAvailable == true, userAgent: null, referer: null, videoId: videoId, variantLabel: "default", playerClient: null, ct: ct);
 
     // Variant-aware Tier 1 yt-dlp invocation. Strategies in the catalog call through this with
     // different flag combinations so the dispatcher can race them in parallel. The variantLabel
@@ -159,7 +159,7 @@ public partial class ResolutionEngine
     // multiple clients in --extractor-args is legal (comma-separated); we keep one per strategy
     // so the memory ranker can learn which specific client wins per host.
     private async Task<YtDlpResult?> RunTier1Attempt(string url, string player, RequestContext ctx,
-        bool injectPot, bool injectImpersonate, string? userAgent, string? referer, string? videoId, string variantLabel, string? playerClient = null, bool useWarp = false, bool forceIpv6 = false)
+        bool injectPot, bool injectImpersonate, string? userAgent, string? referer, string? videoId, string variantLabel, string? playerClient = null, bool useWarp = false, bool forceIpv6 = false, CancellationToken ct = default)
     {
         // --print replaces legacy --get-url and lets us capture format metadata (height/vcodec) on the side.
         // Two sentinel-prefixed lines are emitted so the parser can distinguish URL from meta line.
@@ -313,7 +313,7 @@ public partial class ResolutionEngine
         }
 
         args.Add(url);
-        var (result, stderr) = await RunYtDlp("yt-dlp.exe", args, ctx);
+        var (result, stderr) = await RunYtDlp("yt-dlp.exe", args, ctx, ct: ct);
         _lastTier1Stderr = stderr;
         return result;
     }
@@ -321,11 +321,11 @@ public partial class ResolutionEngine
     // Extract a stable cache key from a YouTube URL.
 
     // --- moved from ResolutionEngine.cs (lines 1919-1972) ---
-    private async Task<YtDlpResult?> ResolveTier2(string url, string player, RequestContext ctx)
+    private async Task<YtDlpResult?> ResolveTier2(string url, string player, RequestContext ctx, CancellationToken ct = default)
     {
         _logger.Debug("[" + ctx.CorrelationId + "] [Tier 2] Calling WhyKnot.dev via WebSocket...");
         int maxHeight = ParsePreferredHeight();
-        string? resolved = await _tier2Client.ResolveUrlAsync(url, player, maxHeight, ctx.CorrelationId);
+        string? resolved = await _tier2Client.ResolveUrlAsync(url, player, maxHeight, ctx.CorrelationId, ct);
         // Tier 2 server currently returns only the stream URL. Height stays null until whyknot.dev
         // adds format metadata to the resolve_result message (see follow-up in plan).
         return resolved == null ? null : new YtDlpResult(resolved, null, null, null, null, null);

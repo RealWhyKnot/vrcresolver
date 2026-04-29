@@ -149,14 +149,14 @@ public partial class ResolutionEngine
                         injectPot: true, injectImpersonate: false,
                         userAgent: null, referer: null,
                         videoId: videoId, variantLabel: "yt-combo",
-                        playerClient: comboExtractorArgs)));
+                        playerClient: comboExtractorArgs, ct: sctx.Cancellation)));
             }
 
             // Default variant: auto PO-token + auto impersonate. Primary for non-YouTube hosts;
             // YouTube URLs use tier1:yt-combo above instead, but this stays in the catalog as a
             // last-resort tier-1 fallback.
             list.Add(new ResolveStrategy("tier1:default", "tier1", 10, true,
-                sctx => ResolveTier1(sctx.Url, sctx.Player, sctx.RequestContext)));
+                sctx => ResolveTier1(sctx.Url, sctx.Player, sctx.RequestContext, sctx.Cancellation)));
 
             // IPv6-forced variant. If YouTube (or any origin) is rate-limiting your IPv4 address
             // but the flag doesn't apply to IPv6 â€” common, since CGNAT / residential bot flags
@@ -169,7 +169,7 @@ public partial class ResolutionEngine
                     userAgent: null, referer: null,
                     videoId: videoId, variantLabel: "ipv6",
                     playerClient: isYouTubeHost ? string.Join(",", _settings.Config.YouTubeComboClientOrder ?? new List<string>(StrategyDefaults.YouTubeComboClientOrderDefault)) + ";player_js_variant=main" : null,
-                    forceIpv6: true)));
+                    forceIpv6: true, ct: sctx.Cancellation)));
 
             // VRChat UA: for movie-world hosts that allowlist UnityPlayer. Tier 1 sees a successful
             // generic-extractor probe instead of the 403 it gets with the default UA.
@@ -177,21 +177,21 @@ public partial class ResolutionEngine
                 sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
                     injectPot: false, injectImpersonate: false,
                     userAgent: VrchatAvProUserAgent, referer: VrchatReferer,
-                    videoId: videoId, variantLabel: "vrchat-ua")));
+                    videoId: videoId, variantLabel: "vrchat-ua", ct: sctx.Cancellation)));
 
             // curl-impersonate without PO token: for sites where the PO-token request itself flags us.
             list.Add(new ResolveStrategy("tier1:impersonate-only", "tier1", 30, true,
                 sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
                     injectPot: false, injectImpersonate: true,
                     userAgent: null, referer: null,
-                    videoId: videoId, variantLabel: "impersonate-only")));
+                    videoId: videoId, variantLabel: "impersonate-only", ct: sctx.Cancellation)));
 
             // Plain yt-dlp: last-resort bypass for hosts that work without any extras.
             list.Add(new ResolveStrategy("tier1:plain", "tier1", 40, true,
                 sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
                     injectPot: false, injectImpersonate: false,
                     userAgent: null, referer: null,
-                    videoId: videoId, variantLabel: "plain")));
+                    videoId: videoId, variantLabel: "plain", ct: sctx.Cancellation)));
 
             // NOTE: Per-player_client YouTube strategies (po-only, ios-music, tv-embedded,
             // android-vr, web-safari, mweb) were REMOVED in v2 defaults. They're now rolled into
@@ -205,7 +205,7 @@ public partial class ResolutionEngine
         if (!disabled.Contains("tier2"))
         {
             list.Add(new ResolveStrategy("tier2:cloud-whyknot", "tier2", 10, false,
-                sctx => AttemptTier2(sctx.Url, sctx.Player, sctx.RequestContext)));
+                sctx => AttemptTier2(sctx.Url, sctx.Player, sctx.RequestContext, sctx.Cancellation)));
         }
 
         // WARP variants: same yt-dlp recipes but egress via Cloudflare WARP (SOCKS5 loopback).
@@ -228,13 +228,13 @@ public partial class ResolutionEngine
                 sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
                     injectPot: false, injectImpersonate: _curlClient?.IsAvailable == true,
                     userAgent: null, referer: null,
-                    videoId: videoId, variantLabel: "warp+default", playerClient: null, useWarp: true)));
+                    videoId: videoId, variantLabel: "warp+default", playerClient: null, useWarp: true, ct: sctx.Cancellation)));
 
             list.Add(new ResolveStrategy("tier1:warp+vrchat-ua", "tier1", 95, true,
                 sctx => RunTier1Attempt(sctx.Url, sctx.Player, sctx.RequestContext,
                     injectPot: false, injectImpersonate: false,
                     userAgent: VrchatAvProUserAgent, referer: VrchatReferer,
-                    videoId: videoId, variantLabel: "warp+vrchat-ua", playerClient: null, useWarp: true)));
+                    videoId: videoId, variantLabel: "warp+vrchat-ua", playerClient: null, useWarp: true, ct: sctx.Cancellation)));
         }
 
         // Browser-extract: last-resort bypass. A real headless browser visits the page, captures

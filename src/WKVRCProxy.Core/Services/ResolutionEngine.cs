@@ -191,6 +191,21 @@ public partial class ResolutionEngine
     private async Task<bool> CheckUrlReachable(string url, RequestContext ctx)
     {
         string shortUrl = url.Length > 100 ? url.Substring(0, 100) + "..." : url;
+
+        // whyknot.dev's /api/proxy handler blocks on the upstream yt-dlp resolution before
+        // sending response headers, so a 5s probe structurally cannot succeed on cache miss.
+        // We trust URLs we generated against our own domain â€” no defensive value in probing them.
+        if (Uri.TryCreate(url, UriKind.Absolute, out var probeUri))
+        {
+            string host = probeUri.Host;
+            if (host.Equals("whyknot.dev", StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith(".whyknot.dev", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.Debug("[" + ctx.CorrelationId + "] Reachability check skipped (own-domain): " + shortUrl);
+                return true;
+            }
+        }
+
         bool isHls = url.Contains(".m3u8") || url.Contains("m3u8");
         var headers = isHls ? BuildHlsProbeHeaders() : BuildBinaryProbeHeaders();
         string probeMode = isHls ? "HLS manifest GET" : "initial-segment GET (Range 0-4095)";
@@ -764,10 +779,13 @@ public partial class ResolutionEngine
                             _logger.Info("[" + ctx.CorrelationId + "] [Race] " + budgetSkipped + " tier-1 strategy(ies) skipped due to per-host budget.");
                         }
 
-                        // Skip past the groups we covered in the race; Tier 3 is the remaining sequential fallback.
+                        // Skip past Tier 1 (every Tier 1 strategy fired in the race and exhausted its budget).
+                        // Tier 2 still gets a sequential retry â€” the race may have orphan-cancelled an in-flight
+                        // cloud request mid-flight, and a single fast WebSocket call is cheap to attempt before
+                        // falling through to Tier 3's slow yt-dlp-og fallback.
                         if (winnerResult == null)
                         {
-                            cascadeStart = Math.Max(cascadeStart, tier2Idx + 1);
+                            cascadeStart = Math.Max(cascadeStart, tier1Idx + 1);
                             _logger.Debug("[" + ctx.CorrelationId + "] [Race] No winner â€” continuing cascade at index " + cascadeStart + ".");
                         }
                     }

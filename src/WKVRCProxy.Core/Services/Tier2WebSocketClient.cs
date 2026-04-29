@@ -225,7 +225,7 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
         catch (Exception ex) { _logger?.Error("[Tier 2] Binary send error: " + ex.Message); }
     }
 
-    public async Task<string?> ResolveUrlAsync(string url, string player, int maxHeight, string? correlationId = null)
+    public async Task<string?> ResolveUrlAsync(string url, string player, int maxHeight, string? correlationId = null, CancellationToken ct = default)
     {
         string shortUrl = url.Length > 100 ? url.Substring(0, 100) + "..." : url;
         string prefix = correlationId != null ? "[" + correlationId + "] [Tier 2] " : "[Tier 2] ";
@@ -262,15 +262,29 @@ public class Tier2WebSocketClient : IProxyModule, IDisposable
             await _webSocket!.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
 
             int timeoutSeconds = Math.Max(5, _settings?.Config.Tier2TimeoutSeconds ?? 60);
-            var timeoutTask = Task.Delay(timeoutSeconds * 1000);
+            // Linked CTS so the caller can cancel us (race winner found, shutdown) without
+            // waiting out the full timeout. The Task.Delay is cancelled either by the caller
+            // or by our own cleanup path below when tcs.Task completes first.
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var timeoutTask = Task.Delay(timeoutSeconds * 1000, timeoutCts.Token);
             var completed = await Task.WhenAny(tcs.Task, timeoutTask);
 
             if (completed == timeoutTask)
             {
-                _logger?.Warning(prefix + "Resolution timed out after " + timeoutSeconds + "s via " + _activeNodeId?.ToUpper() + " for: " + shortUrl);
                 _pendingRequests.TryRemove(requestId, out _);
+                if (ct.IsCancellationRequested)
+                {
+                    _logger?.Debug(prefix + "Resolution cancelled by caller for: " + shortUrl);
+                }
+                else
+                {
+                    _logger?.Warning(prefix + "Resolution timed out after " + timeoutSeconds + "s via " + _activeNodeId?.ToUpper() + " for: " + shortUrl);
+                }
                 return null;
             }
+
+            // tcs.Task won — free the timer thread immediately.
+            try { timeoutCts.Cancel(); } catch { }
 
             string? resolved = await tcs.Task;
             if (resolved != null)

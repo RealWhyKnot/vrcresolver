@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using WKVRCProxy.Core.Diagnostics;
 using WKVRCProxy.Core.IPC;
@@ -115,7 +116,7 @@ public partial class ResolutionEngine
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", binary);
     }
 
-    private async Task<(YtDlpResult? Result, string Stderr)> RunYtDlp(string binary, List<string> args, RequestContext ctx, int timeoutMs = 15000)
+    private async Task<(YtDlpResult? Result, string Stderr)> RunYtDlp(string binary, List<string> args, RequestContext ctx, int timeoutMs = 15000, CancellationToken ct = default)
     {
         string path = GetBinaryPath(binary);
         if (!File.Exists(path))
@@ -163,6 +164,13 @@ public partial class ResolutionEngine
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
+            // External cancel kills the child immediately (race winner found, shutdown). Without this,
+            // a losing race participant runs to its full timeoutMs even after the winner is committed,
+            // burning CPU and the per-host budget for the next request.
+            using var killReg = ct.Register(() => {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* race with natural exit */ }
+            });
+
             var exitTcs = new TaskCompletionSource<bool>();
             _ = Task.Run(() => {
                 try { process.WaitForExit(); }
@@ -191,6 +199,15 @@ public partial class ResolutionEngine
                     IsRecoverable = true
                 }, ctx.CorrelationId);
                 try { process.Kill(); } catch { /* Process may have already exited */ }
+                return (null, stderrOutput);
+            }
+
+            // Race-cancellation path: killReg already terminated the process and exitTcs completed,
+            // so we don't have a useful URL/exit code to report. Return silently â€” no warning, no
+            // ERROR event â€” because the winning strategy is what the user actually wants.
+            if (ct.IsCancellationRequested)
+            {
+                _logger.Debug("[" + ctx.CorrelationId + "] " + binary + " cancelled by caller (race winner found).");
                 return (null, stderrOutput);
             }
 
