@@ -69,24 +69,30 @@ public class RelayServer : IProxyModule, IDisposable
         new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All }
     ) { Timeout = Timeout.InfiniteTimeSpan };
 
-    // Suppress repeated "Relaying:" INFO lines for the same target URL within a sliding window.
-    // Without this, a single playing video floods the log with 20+ identical lines per second
-    // as AVPro re-polls the manifest and fetches segments through the same proxy URL.
-    private readonly ConcurrentDictionary<string, DateTime> _recentlyLoggedTargets = new();
+    // Suppress repeated "Relaying:" INFO lines per upstream host within a sliding window.
+    // Keyed on the host (not the full URL) because every HLS segment has a unique URL â€” a
+    // per-URL dedupe never collapses anything for streaming playback. One-per-host is the
+    // right cadence: still catches new origins promptly, but a 1-hour video produces ~1 log
+    // line per 30s instead of one per segment.
+    private readonly ConcurrentDictionary<string, DateTime> _recentlyLoggedHosts = new();
     private static readonly TimeSpan LogDedupeWindow = TimeSpan.FromSeconds(30);
 
     private bool ShouldLogRelay(string targetUrl)
     {
+        string key;
+        try { key = new Uri(targetUrl).Host; }
+        catch { key = targetUrl; } // malformed â€” fall back to full URL so we still log it once
+
         var now = DateTime.UtcNow;
-        if (_recentlyLoggedTargets.TryGetValue(targetUrl, out var lastLogged) && now - lastLogged < LogDedupeWindow)
+        if (_recentlyLoggedHosts.TryGetValue(key, out var lastLogged) && now - lastLogged < LogDedupeWindow)
             return false;
-        _recentlyLoggedTargets[targetUrl] = now;
-        // Opportunistic cleanup — keep dict from growing unboundedly over long sessions.
-        if (_recentlyLoggedTargets.Count > 256)
+        _recentlyLoggedHosts[key] = now;
+        // Opportunistic cleanup â€” keep dict from growing unboundedly over long sessions.
+        if (_recentlyLoggedHosts.Count > 256)
         {
             var cutoff = now - LogDedupeWindow;
-            foreach (var kv in _recentlyLoggedTargets)
-                if (kv.Value < cutoff) _recentlyLoggedTargets.TryRemove(kv.Key, out _);
+            foreach (var kv in _recentlyLoggedHosts)
+                if (kv.Value < cutoff) _recentlyLoggedHosts.TryRemove(kv.Key, out _);
         }
         return true;
     }
@@ -688,21 +694,21 @@ public class RelayServer : IProxyModule, IDisposable
         return (headers, new PrependStream(prefix, src));
     }
 
-    // Emit a one-line smoothness report for a completed segment relay. Quiet on healthy segments
-    // (DEBUG-level pass-through), louder when TTFB or throughput cross the slow/stall thresholds.
-    // TTFB now spans the upstream send through the first body byte; throughput is body-copy only.
+    // Emit a one-line smoothness report ONLY when a segment relay crosses the slow/stall threshold.
+    // Healthy segments are silent â€” a single 1-hour HLS playback fires ~500 segments and one log
+    // line per segment buries everything else. TTFB now spans the upstream send through the first
+    // body byte; throughput is body-copy only (so a paused-by-client transfer no longer registers
+    // as a slow upstream â€” see the comment in CopyWithThroughputTracking).
     private void LogSmoothness(string correlationId, string shortUrl, long? ttfbMs, long totalMs, long bytes, bool clientAborted)
     {
         if (_logger == null) return;
-        // Skip aborts and zero-byte transfers — they are reported via OnClientAbortedEarly already
+        // Skip aborts and zero-byte transfers â€” they are reported via OnClientAbortedEarly already
         // and a "0 KB in 5ms" line just adds noise.
         if (clientAborted || bytes == 0) return;
 
         long durationMs = Math.Max(1, totalMs);
         long bps = (long)(bytes * 1000.0 / durationMs);
-        long kbps = bps / 1024;
         long ttfb = ttfbMs ?? 0;
-        long kb = bytes / 1024;
 
         bool stalled = ttfb >= SmoothnessStallTtfbMs
                     || (bytes >= SmoothnessMinBytesForThroughputCheck && bps < SmoothnessStallThroughputBytesPerSec);
@@ -710,10 +716,13 @@ public class RelayServer : IProxyModule, IDisposable
                        ttfb >= SmoothnessSlowTtfbMs
                     || (bytes >= SmoothnessMinBytesForThroughputCheck && bps < SmoothnessThroughputBytesPerSec));
 
-        string line = "[" + correlationId + "] [Playback] segment ttfb=" + ttfb + "ms throughput=" + kbps + " KB/s size=" + kb + " KB dur=" + totalMs + "ms — " + shortUrl;
+        if (!stalled && !slow) return;
+
+        long kbps = bps / 1024;
+        long kb = bytes / 1024;
+        string line = "[" + correlationId + "] [Playback] segment ttfb=" + ttfb + "ms throughput=" + kbps + " KB/s size=" + kb + " KB dur=" + totalMs + "ms â€” " + shortUrl;
         if (stalled) _logger.Warning(line + "  (STALLED)");
-        else if (slow) _logger.Info(line + "  (slow)");
-        else _logger.Debug(line);
+        else _logger.Info(line + "  (slow)");
     }
 
     public ModuleHealthReport GetHealthReport()

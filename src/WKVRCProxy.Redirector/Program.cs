@@ -22,7 +22,7 @@ class Program
 
         try
         {
-            AppendLog(logPath, "Invoked with args: " + string.Join(" | ", args));
+            AppendLog(logPath, "Invoked with args: " + SummarizeArgs(args));
 
             // Look for port file: first in our own directory (VRChat Tools), then in AppData
             string portFile = Path.Combine(exeDir, "ipc_port.dat");
@@ -119,7 +119,29 @@ class Program
         {
             File.AppendAllText(path, "[" + DateTime.Now.ToString("s") + "] " + message + "\n");
         }
-        catch { /* Can't log — don't crash */ }
+        catch { /* Can't log â€” don't crash */ }
+    }
+
+    // VRChat passes static allow-lists (--exp-allow / --wild-allow) that run to thousands of
+    // characters and never change between calls. Replace those values with a count summary so
+    // the log line stays scannable while still showing the salient args (--get-url, -f, etc.).
+    private static string SummarizeArgs(string[] args)
+    {
+        var parts = new System.Collections.Generic.List<string>(args.Length);
+        for (int i = 0; i < args.Length; i++)
+        {
+            string a = args[i];
+            if ((a == "--exp-allow" || a == "--wild-allow") && i + 1 < args.Length)
+            {
+                int hostCount = args[i + 1].Split(',').Length;
+                parts.Add(a);
+                parts.Add("[" + hostCount + " hosts]");
+                i++;
+                continue;
+            }
+            parts.Add(a);
+        }
+        return string.Join(" | ", parts);
     }
 
     private static void WriteToStdout(string result)
