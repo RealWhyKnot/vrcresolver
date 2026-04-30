@@ -103,6 +103,17 @@ public partial class ResolutionEngine
     private const int ResolveCacheMaxHits = 3;
     public static string ResolveCacheKey(string url, string player) => player + "|" + url;
 
+    // Stuck-loop detector. Tracks per-URL resolve timestamps so we can flag the case where AVPro
+    // (or the world script driving it) keeps re-firing the same URL because playback silently
+    // failed â€” common for tier4 passthrough hosts (vr-m.net etc.) where the URL goes direct to
+    // AVPro and we have no relay-side abort signal. Threshold tuned to ignore VRChat's normal
+    // 2-3 yt-dlp spawns per play event (thumbnail/duration/play): repeats beyond that are real.
+    private readonly Dictionary<string, List<DateTime>> _recentResolveStarts = new();
+    private readonly object _recentResolveLock = new();
+    private static readonly TimeSpan StuckLoopWindow = TimeSpan.FromSeconds(90);
+    private const int StuckLoopThreshold = 4;        // 4+ in 90s = stuck (3 is normal VRChat triple-fire)
+    private const int StuckLoopMaxTracked = 64;      // dict cap so unbounded distinct URLs don't leak
+
     // Per-host rolling-window budget for tier-1 (yt-dlp) spawns. Prevents the cold race from
     // machine-gunning a single host (e.g. YouTube) when the user plays videos in quick succession
     // or iterates on builds. When budget is exhausted for a host, tier-1 strategies are skipped
@@ -186,6 +197,39 @@ public partial class ResolutionEngine
     // - Binary streams (MP4, DASH, proxy URLs): Range: bytes=0-4095 â€” same as a real initial
     //   segment fetch, not the tell-tale bytes=0-0 pattern scanners use.
     // - HLS manifests: plain GET with manifest Accept header.
+    // Fire-and-forget probe for tier4 passthrough URLs. We can't gate the resolution on this
+    // (would add 5s of latency before AVPro starts and we'd still pass the URL through anyway â€"
+    // user explicitly asked for "no manipulation" on these hosts). Instead, run the probe in the
+    // background with the SAME headers AVPro will use (UnityPlayer UA via BuildBinaryProbeHeaders /
+    // BuildHlsProbeHeaders) and surface a clear WARN if upstream rejects. Pure observability â€" the
+    // resolved URL is unchanged. Without this, tier4 is a black hole: no probe, no relay traffic,
+    // no signal of any kind when something is wrong upstream (the vr-m.net stuck-loop case).
+    private void FireBackgroundProbeForTier4(string url, string activeTier, RequestContext ctx)
+    {
+        if (!activeTier.StartsWith("tier4")) return;
+        if (string.IsNullOrEmpty(url) || url == "FAILED") return;
+        string host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : "<unparseable>";
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                bool reachable = await CheckUrlReachable(url, ctx);
+                if (!reachable)
+                {
+                    _logger.Warning("[" + ctx.CorrelationId + "] tier4 passthrough probe REJECTED " + host
+                        + " -- AVPro will likely fail to play this URL. The probe used AVPro's headers, so this is "
+                        + "what AVPro itself sees. Common causes: upstream is down, your IP is rate-limited, the URL has expired, "
+                        + "or the host changed something. Tier4 is hands-off (we never modify these URLs), so the issue is between "
+                        + host + " and AVPro -- not something we can fix on our side.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("[" + ctx.CorrelationId + "] tier4 background probe threw: " + ex.Message);
+            }
+        });
+    }
+
     // Prefers curl-impersonate (Chrome TLS fingerprint). Falls back to HttpClient with matching
     // headers when curl-impersonate isn't available.
     private async Task<bool> CheckUrlReachable(string url, RequestContext ctx)
@@ -386,6 +430,44 @@ public partial class ResolutionEngine
         _logger.Info("[" + ctx.CorrelationId + "] Starting resolution for: " + targetUrl + " [" + player + "]" + (skipRelayWrap ? " [share]" : ""));
         UpdateStatus("Intercepted " + player + " request...", ctx);
 
+        // Stuck-loop detection: if the same URL keeps coming back through resolve, AVPro is failing
+        // silently and the world script (TVManager / ProTV) keeps re-firing the load. Without this
+        // warning the user just stares at a loading screen with no signal that anything is wrong.
+        // Counts EVERY resolve including cache hits â€" the world's retry pattern hits cache, and the
+        // hits themselves are the smoking gun that playback never started.
+        int stuckHits;
+        lock (_recentResolveLock)
+        {
+            if (!_recentResolveStarts.TryGetValue(targetUrl, out var hits))
+            {
+                hits = new List<DateTime>();
+                _recentResolveStarts[targetUrl] = hits;
+            }
+            var nowUtc = DateTime.UtcNow;
+            var cutoff = nowUtc - StuckLoopWindow;
+            hits.RemoveAll(t => t < cutoff);
+            hits.Add(nowUtc);
+            stuckHits = hits.Count;
+
+            // Drop entries whose most-recent hit aged out, capped to keep dict from leaking.
+            if (_recentResolveStarts.Count > StuckLoopMaxTracked)
+            {
+                var stale = _recentResolveStarts
+                    .Where(kv => kv.Value.Count == 0 || kv.Value[kv.Value.Count - 1] < cutoff)
+                    .Select(kv => kv.Key)
+                    .ToList();
+                foreach (var k in stale) _recentResolveStarts.Remove(k);
+            }
+        }
+        if (stuckHits >= StuckLoopThreshold)
+        {
+            string shortStuck = targetUrl.Length > 100 ? targetUrl.Substring(0, 100) + "..." : targetUrl;
+            _logger.Warning("[" + ctx.CorrelationId + "] STUCK-LOOP: same URL re-resolved " + stuckHits
+                + " times in the last " + StuckLoopWindow.TotalSeconds + "s. AVPro is almost certainly failing to play this URL "
+                + "(no [AVProVideo] Error fired, but the world keeps re-firing the load). "
+                + "Likely causes: upstream session expired, host IP-rate-limited you, or the format is unsupported. URL: " + shortStuck);
+        }
+
         // Positive resolve cache: collapse redundant calls from VRChat (which spawns yt-dlp 2-3x per
         // play event for thumbnail/duration/actual-play). A cache hit bypasses the full cascade and
         // returns the already-resolved URL, just re-applying the relay wrap (port may have changed).
@@ -402,6 +484,7 @@ public partial class ResolutionEngine
                 UpdateStatus("Cached resolution via " + cached.Tier.ToUpper(), ctx);
                 string shortCached = cachedFinal.Length > 100 ? cachedFinal.Substring(0, 100) + "..." : cachedFinal;
                 _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + cached.Tier + "] [cache-hit " + (cached.Hits + 1) + "/" + ResolveCacheMaxHits + "] in " + resolutionSw.ElapsedMilliseconds + "ms: " + shortCached);
+                FireBackgroundProbeForTier4(cached.Result.Url, cached.Tier, ctx);
                 return cachedFinal;
             }
             _resolveCache.TryRemove(cacheKey, out _);
@@ -1004,6 +1087,7 @@ public partial class ResolutionEngine
             resolutionLabel = " [" + w + "x" + winnerResult.Height + v + "]";
         }
         _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + activeTier + "] [" + streamType + "]" + resolutionLabel + " in " + resolutionSw.ElapsedMilliseconds + "ms: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
+        FireBackgroundProbeForTier4(winnerResult?.Url ?? "", activeTier, ctx);
         return result;
     }
 
