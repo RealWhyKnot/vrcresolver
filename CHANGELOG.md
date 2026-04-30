@@ -11,7 +11,8 @@ The most recent release is at the top.
 
 ## Unreleased
 
-_No notable changes since the last release._
+### Added
+- **observability:** Tier4 background probe + stuck-loop detector (a229c82)
 
 ---
 
