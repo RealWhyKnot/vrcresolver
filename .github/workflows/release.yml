@@ -92,6 +92,23 @@ jobs:
           $body           >> $env:GITHUB_OUTPUT
           $delim          >> $env:GITHUB_OUTPUT
 
+      - name: Generate auto-changelog
+        id: changelog
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          # Auto-generated commit list appended below the curated CHANGELOG.md
+          # excerpt. See .github/scripts/Generate-ReleaseNotes.ps1 for filtering
+          # rules ([skip changelog], merge commits, version-stamp noise).
+          $auto = & ./.github/scripts/Generate-ReleaseNotes.ps1
+          if (-not $auto) { $auto = '' }
+          $delim = "EOF_" + [Guid]::NewGuid().ToString('N')
+          "body<<$delim" >> $env:GITHUB_OUTPUT
+          $auto          >> $env:GITHUB_OUTPUT
+          $delim         >> $env:GITHUB_OUTPUT
+
       - name: Build distribution
         shell: pwsh
         env:
@@ -127,6 +144,9 @@ jobs:
           $body   = @'
           ${{ steps.notes.outputs.body }}
           '@
+          $auto   = @'
+          ${{ steps.changelog.outputs.body }}
+          '@
           $notes  = @"
           ## WKVRCProxy $tag
 
@@ -137,6 +157,10 @@ jobs:
           ---
 
           $body
+
+          ---
+
+          $auto
           "@
           # gh release create accepts the asset paths as positional arguments after the tag.
           gh release create $tag $zip --title $tag --notes $notes
