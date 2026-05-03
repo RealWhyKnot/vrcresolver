@@ -20,6 +20,7 @@ The most recent release is at the top.
 - **client:** Mesh WS client (apex-302 + reconnect + heartbeat) (9d16c22)
 - **client:** Lift PatchManager + HostsManager + path/hash utils (eeb8c81)
 - **shared:** V2 protocol — DTO + constant extensions (f1c2e8a)
+- **mesh:** V2 protocol — lossless forward, welcome handshake, fallback logging (a2179f1)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
