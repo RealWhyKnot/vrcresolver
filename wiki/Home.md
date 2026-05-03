@@ -1,40 +1,27 @@
 # WKVRCProxy Wiki
 
-WKVRCProxy is a Windows desktop app that runs alongside VRChat and rebuilds the video-resolution pipeline so URLs that fail with `[AVProVideo] Error: Loading failed.` actually play. The main pain it solves is YouTube's escalating bot-detection: PO tokens, browser TLS fingerprints, and `visitor_data` binding — the vanilla yt-dlp shipped with VRChat can't keep up. WKVRCProxy runs several resolution methods in parallel, learns what worked per-host, and self-heals when a resolved URL fails to play.
+WKVRCProxy is a tiny Windows console daemon that swaps VRChat's bundled `yt-dlp.exe` for a patched build that asks our resolver server (whyknot.dev) for help, and falls back to the vanilla yt-dlp if anything is unreachable.
 
-The [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) is the pitch; this wiki is everything else.
+The [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) is the pitch; this wiki covers the operational details.
 
-## How it works (90 seconds)
+## How it works (60 seconds)
 
-VRChat's in-game video players resolve URLs with a bundled `yt-dlp.exe` and play them through AVPro Video. Two things break that:
+1. The watchdog (`WKVRCProxy.exe`) backs up VRChat's `yt-dlp.exe` to `yt-dlp-og.exe` and replaces it with a patched build.
+2. The patched `yt-dlp.exe` connects to the watchdog over a local named pipe (`\\.\pipe\WKVRCProxy.resolve`) and asks for resolution.
+3. The watchdog forwards the request through a persistent WebSocket to whyknot.dev, returns the resolved URL, and the patched binary hands it to AVPro.
+4. **Fallback path**: if the server can't resolve, the watchdog isn't running, or the pipe isn't there, the patched `yt-dlp.exe` execs `yt-dlp-og.exe` and you get vanilla yt-dlp behaviour. The watchdog absent does not break VRChat.
 
-1. **The resolver loses to anti-bot.** YouTube increasingly requires PO tokens, valid `visitor_data` binding, and a browser TLS fingerprint. The vanilla yt-dlp can't supply any of that, and resolution silently fails. This is the dominant pain — it bites every user, in every instance type.
-2. **AVPro's trusted-URL list (when in force).** AVPro will only play URLs from a small allowlist (`*.youtube.com`, `*.vrcdn.live`, etc.) when the user hasn't enabled "Allow Untrusted URLs" in VRChat's comfort settings. Mostly relevant in public-world play; private and friends-only instances where the toggle is on don't see it.
-
-WKVRCProxy sits in front of VRChat's resolver pipeline and fixes both. [[Architecture]] walks the request flow end-to-end; [[Resolution Cascade]] explains how strategies are picked, raced, and learned per-host; [[Relay Server]] explains the `localhost.youtube.com` trick that bypasses the trust list when needed.
+The watchdog also pins `127.0.0.1 localhost.youtube.com` in your hosts file (load-bearing for public-instance support; idle when this tool isn't running) and periodically restores the patched `yt-dlp.exe` if VRChat overwrites it during launch.
 
 ## For users
 
 - **[[Quick Start]]** — install, first launch, and what to do when something fails
-- **[[Settings Reference]]** — every knob in `app_config.json`
-- **[[Troubleshooting]]** — common failure modes and how to read the Logs view
-- **[[Update and Uninstall]]** — what the updater and uninstaller touch
+- **[[Update and Uninstall]]** — how the bundled updater and uninstaller behave
+- **[[Troubleshooting]]** — common failure modes
 
 ## For maintainers
 
-- **[[Architecture]]** — request flow and how the projects fit together
-- **[[Resolution Cascade]]** — tiers, strategies, the parallel race, the demotion loop
-- **[[Relay Server]]** — trust-bypass, hosts file, the AVPro UA deny-list, and why we wrap by default
+- **[[Build Pipeline]]** — `build.ps1` phase by phase, version stamping, the bundled-fallback fetch
+- **[[Development]]** — build from source, contribute
 - **[[Engineering Standards]]** — coding rules contributors MUST follow
-- **[[Development]]** — build from source, run tests, dev workflow
-- **[[Build Pipeline]]** — `build.ps1` phase by phase, vendored binaries, version stamping
-- **[[IPC and Redirector]]** — VRChat → patched yt-dlp → Redirector → IPC → Core
-- **[[Runtime State]]** — every file the app writes, where, and what wipes it
-
-## Background
-
-- **[[AVPro vs Unity]]** — VRChat's two video players, what each supports, what fails where, encoding recipes
-
-## For new maintainers
-
-If you're new to this repo, read [[Architecture]] then [[Resolution Cascade]] then [[Engineering Standards]]. [[Development]] has the dev workflow you'll need.
+- **[[Changelog]]** — release history
