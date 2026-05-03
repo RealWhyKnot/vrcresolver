@@ -69,9 +69,8 @@ if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 
-# Both files are kept in lock-step. The root copy is embedded into the exe
-# (see WKVRCProxy.UI.csproj <EmbeddedResource>). The wiki/ copy is mirrored
-# to the GitHub Wiki by .github/workflows/wiki-sync.yml.
+# Both files are kept in lock-step. The root copy is the canonical CHANGELOG;
+# the wiki/ copy is mirrored to the GitHub Wiki by .github/workflows/wiki-sync.yml.
 $RootChangelog = Join-Path $RepoRoot 'CHANGELOG.md'
 $WikiChangelog = Join-Path $RepoRoot 'wiki/Changelog.md'
 
