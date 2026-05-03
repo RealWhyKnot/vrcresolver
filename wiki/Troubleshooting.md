@@ -1,76 +1,57 @@
 # Troubleshooting
 
-## Reading the Logs view
+## Reading the watchdog console
 
-Every resolution gets a correlation ID like `[a1b2c3d4]`. Filter the Logs tab by that ID to see one URL's full lifecycle, from `Starting resolution for: …` through tier decisions, relay-wrap, pre-flight probe, and either a successful return or the demote path.
-
-Useful patterns to grep:
+The watchdog prints to its console window. Useful lines:
 
 | Substring | Meaning |
-|---|---|
-| `Starting resolution for: …` | Engine accepted a URL from the Redirector |
-| `Final Resolution [tierN] [vod\|live] in Xms` | Successful resolve |
-| `URL relay-wrapped on port …` | Wrap applied as expected |
-| `Relay wrap skipped for <host>` | Either trusted host or `NativeAvProUaHosts` |
-| `[WARNING] [Playback] AVPro rejected resolved URL from 'X'` | Demotion fired; correlation ID identifies which request |
-| `Strategy demoted: <name>` | StrategyMemory recorded a failure |
-| `Egress IP via WARP: …` | WarpService verified WARP came up |
+| --- | --- |
+| `Patch applied. Watching for VRChat overwrites — Ctrl+C to quit.` | Watchdog up, patched yt-dlp in place |
+| `[mesh] connected` | Persistent WS to whyknot.dev established |
+| `[mesh] disconnected — <reason>` | WS dropped; resolves are falling back to vanilla yt-dlp until the next reconnect |
+| `[mesh] reconnect attempt N in M s` | Backoff window before next reconnect |
+| `[patch] yt-dlp.exe was overwritten — re-applied.` | VRChat replaced the patched file (typical at launch); watchdog restored within 3 s |
+| `yt-dlp-og.exe was missing — restored from bundled fallback (vNNN).` | Backup went missing; the bundled vanilla yt-dlp was dropped in to keep the patched build's fallback path functional |
+| `Cannot apply patch — VRChat hasn't shipped its own yt-dlp.exe yet…` | Launch VRChat once and re-run the watchdog |
 
 ## Common failures
 
-### "Loading failed" but the URL works in a browser
+### "Loading failed" in VRChat
 
-Almost always either:
-- The host isn't in VRChat's trusted-host list **and** the relay wrap is being skipped (check for `Relay wrap skipped`). If unexpected, look at `NativeAvProUaHosts` in `app_config.json`.
-- The hosts-file entry is missing — check `C:\Windows\System32\drivers\etc\hosts` for `127.0.0.1 localhost.youtube.com`. If absent, restart WKVRCProxy and accept the UAC prompt.
-- The pre-flight probe failed silently (network blip; the engine returned the URL anyway and AVPro hit the same issue). Look for `Pre-flight probe failed` near the correlation ID.
+When the watchdog isn't running or can't reach the server, the patched `yt-dlp.exe` falls back to vanilla yt-dlp. So a `Loading failed` you'd see *with* the watchdog is also a failure you'd see *without* it. Check:
 
-### YouTube videos play but Twitch doesn't
+- Is the watchdog window open and showing `[mesh] connected`?
+- Did UAC get declined when adding the hosts entry? Public-instance support depends on it. Re-run `WKVRCProxy.exe` and accept the prompt, or add the line manually with admin Notepad: `127.0.0.1 localhost.youtube.com`.
 
-Twitch live needs `tier0:streamlink`. Check that `dist/tools/streamlink/bin/streamlink.exe` exists. If `tier0` is in `disabledTiers`, it's been turned off by the user.
+### Watchdog refuses to apply the patch
 
-### A previously-working host suddenly fails after an app update
+Console says `Cannot apply patch — VRChat hasn't shipped its own yt-dlp.exe yet, and we have no original to preserve as fallback.` — VRChat hasn't created its `Tools/yt-dlp.exe` yet. Launch VRChat once (let it sit at the start screen) and re-run the watchdog.
 
-`strategy_memory.json` is wiped on version change to avoid stale rankings. The first request to each host re-cascades from cold; expect a few seconds longer than usual until memory rebuilds.
+### "Reinstall WKVRCProxy"
 
-### Video plays but audio is silent (or only some channels)
+Defensive halt: both the patched yt-dlp and the bundled fallback are missing from this install. Re-extract the release zip.
 
-Almost always a multi-channel source AVPro can't fully decode on Windows. WKVRCProxy doesn't touch audio — this is a property of the source file plus the user's Media Foundation install.
+### Watchdog can't reach the server
 
-- **AAC 7-channel** plays video with silent audio; **AAC 8-channel / 7.1** fails to load entirely. Media Foundation's AAC decoder caps at 6 channels.
-- **EAC3 5.1 / 7.1** is the only documented 7.1 path on PCVR. Requires the AC-3 / Dolby codec extension (most Win10/11 systems already have it).
-- **No auto-downmix**: if the world's `VRCAVProVideoSpeaker` setup doesn't map every channel and the user is on stereo output, center / rear / LFE go silent. This is a world-author concern, not something WKVRCProxy can fix.
+`[mesh] disconnected` followed by reconnect attempts. The watchdog re-resolves the apex node every 5 minutes of continuous failure. While disconnected, the patched `yt-dlp.exe` execs the vanilla `yt-dlp-og.exe` and you get vanilla yt-dlp behaviour — playback works, but without the server-assisted resolution.
 
-If you suspect this, run `ffprobe` on the resolved URL — if the audio stream reports `channels > 6`, that's the source. See [[AVPro vs Unity|AVPro-vs-Unity#audio-channels-pcvr-reality]] for the full table.
+If reconnects never succeed, check that `whyknot.dev` resolves and is reachable from your network.
 
-### Patcher won't apply (yt-dlp.exe in Tools is locked)
+### Hosts entry won't take
 
-VRChat is probably still running. The patcher is idempotent — the next monitor tick (every 3 s) will retry. If it persists, close VRChat fully and check Task Manager for stray `yt-dlp.exe` or `redirector.exe` processes.
+The `127.0.0.1 localhost.youtube.com` line goes into `C:\Windows\System32\drivers\etc\hosts`. If UAC was declined, the watchdog logs a hint and continues without it. To add by hand, open Notepad as administrator, edit the file, append the line, save.
 
-### Hosts file UAC declined
+### Uninstall didn't remove the install dir
 
-`bypassHostsSetupDeclined: true` is now in `app_config.json` — the prompt won't return. To re-prompt: set it back to `false`, restart WKVRCProxy. Or add the line manually with admin Notepad.
-
-### WARP strategies never fire / "WARP unavailable"
-
-`wgcf register` may have failed (Cloudflare temporarily rejecting registrations from your IP). Try again later; or delete `dist/tools/warp/wgcf-account.toml` and restart so registration retries. Verify `wgcf.exe` and `wireproxy.exe` exist in `dist/tools/`.
-
-### Browser-extract strategy never fires
-
-Either no browser is found (Edge / Chrome not installed; `downloadBundledChromium` is `false`) or `enableBrowserExtract` is `false`. The Logs view will say `BrowserExtractService disabled: no browser available` at startup.
-
-### Updater fails to swap
-
-Usually file locking — antivirus, indexing, or a stray `updater.exe` from a previous run. Check `updater.log` next to the install dir. The old install is renamed aside as `<install>-old-<timestamp>` and is recoverable: copy contents back if needed.
+The detached `cmd.exe /c rmdir` runs after the uninstaller exits. If the install dir is under `Program Files`, the rmdir runs unelevated and may silently fail. Move the install elsewhere (anywhere outside `Program Files`) and re-run, or remove the directory by hand.
 
 ## Where to look first
 
-1. **Logs view** in the UI — correlation-ID block of the failing request
-2. **`wkvrcproxy_<timestamp>.log`** next to the exe — same content, plus debug-level lines if `debugMode: true`
-3. **VRChat output log** — `%LOCALAPPDATA%Low\VRChat\VRChat\output_log_*.txt` for the AVPro side of the conversation
-4. **`yt-dlp-wrapper.log`** in VRChat's Tools dir — what the Redirector saw
-5. **`app_config.json`** — what was configured, especially `disabledTiers`, `nativeAvProUaHosts`, `enableRelayBypass`
+1. **Watchdog console** — most failures are visible there
+2. **`%LOCALAPPDATA%\WKVRCProxy\clean_exit.flag`** — present means the previous run shut down cleanly; absent means recovery on next launch
+3. **VRChat output log** — `%LOCALAPPDATA%Low\VRChat\VRChat\output_log_*.txt` for the AVPro side
+4. **`%LOCALAPPDATA%Low\VRChat\VRChat\Tools\`** — `yt-dlp.exe` should hash-equal the watchdog's `tools/yt-dlp-patched.exe`; `yt-dlp-og.exe` should be VRChat's vanilla copy
 
 ## Filing a bug
 
-Use the [bug report template](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml). Paste the correlation-ID block from the Logs view verbatim — that's the difference between "we'll figure it out" and "we can't help from here."
+Use the [bug report template](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml). Include the watchdog console output around the failure verbatim.

@@ -1,54 +1,47 @@
 # WKVRCProxy
 
-**Make VRChat's in-world video players actually work.**
+**Tiny tool that points VRChat at the patched yt-dlp.**
 
-A Windows desktop app that runs alongside VRChat and rebuilds the video-resolution pipeline so URLs that fail with `[AVProVideo] Error: Loading failed.` actually play.
+A Windows console daemon that swaps VRChat's bundled `yt-dlp.exe` for a patched build that asks our resolver server for help, and falls back to vanilla yt-dlp if anything is unreachable. Stays out of your way otherwise.
 
-> **Status: alpha.** It works, but expect rough edges. Run it alongside VRChat; close it if something misbehaves.
+> **Status: alpha.** Works, but expect rough edges. Run it alongside VRChat; close it when you're done.
 
 **[Latest release](https://github.com/RealWhyKnot/WKVRCProxy/releases/latest)** · **[Wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki)** · **[Report a bug](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml)**
 
 ---
 
-## The problem
+## What it does
 
-VRChat's in-world video players use a bundled `yt-dlp.exe` to resolve URLs and AVPro Video to play them. The resolver is where most failures live: YouTube progressively raises the bar — PO tokens, `visitor_data` binding, browser TLS fingerprints — and the vanilla yt-dlp shipped with VRChat can't keep up. The result is a spinner that never resolves, then `[AVProVideo] Error: Loading failed.` This bites every user, in every instance type, public or private.
+1. Backs up VRChat's `yt-dlp.exe` to `yt-dlp-og.exe` and replaces it with a patched build that talks to this watchdog over a local named pipe.
+2. Holds a persistent WebSocket to whyknot.dev's `/mesh` endpoint.
+3. When VRChat asks `yt-dlp.exe` to resolve a URL, the patched binary forwards the request through the pipe → WS → server, returns the resolved stream URL, and AVPro plays it.
+4. If the server is unreachable, the resolver server bails on a particular URL, or this watchdog isn't running at all, the patched `yt-dlp.exe` execs `yt-dlp-og.exe` (the vanilla copy we preserved) and you get vanilla yt-dlp behaviour.
 
-A separate failure mode appears when AVPro's trusted-URL list is in force — typically public-world play with **Allow Untrusted URLs** off in your VRChat comfort settings. Hosts off the small allowlist (`*.youtube.com`, `*.vrcdn.live`, and a handful of others) fail with the same `Loading failed` before they ever get to play. In private and friends-only instances where users have untrusted URLs allowed, the trust list isn't enforced and that second failure mode goes away on its own. WKVRCProxy works around both.
-
----
-
-## What it does for you
-
-- **More videos resolve.** WKVRCProxy runs several resolution methods in parallel for every URL — vanilla yt-dlp, a PO-token-equipped variant, browser-TLS-impersonating clients, a headless-browser fallback, mobile clients, a Cloudflare-WARP egress path, and a cloud resolver. The first one that succeeds wins. Videos that fail with the bundled yt-dlp typically work through one of these.
-- **Smarter every time.** WKVRCProxy remembers which method worked for which host. The next request from the same source skips the race and goes straight to the known-good method.
-- **Trust-list bypass when you hit it.** A local relay makes a non-allowlisted URL look like it's coming from a trusted YouTube host, so AVPro plays it. Mostly relevant in public worlds with untrusted URLs disabled — a no-op everywhere else.
-- **Heals from failures.** A log monitor watches VRChat for `Loading failed`. When that fires, WKVRCProxy demotes the strategy that returned the bad URL and the next request re-cascades. Failures push the system toward correctness instead of leaving it stuck on a strategy whose URLs don't actually play.
-- **Drop in, drop out.** Run WKVRCProxy before VRChat, close it when you're done. The patch on VRChat's `yt-dlp.exe` is reverted on shutdown. No registry, no service, nothing system-wide except a single hosts-file line that's idle when WKVRCProxy isn't running.
+The watchdog absent doesn't break VRChat. It just removes the server-side path; videos that worked with vanilla yt-dlp keep working.
 
 ---
 
 ## Get it running
 
-1. **Download** the latest `WKVRCProxy-*.zip` from [Releases](https://github.com/RealWhyKnot/WKVRCProxy/releases/latest).
-2. **Extract** it anywhere except `Program Files` (the in-app updater can't swap files there without elevation).
-3. **Run** `WKVRCProxy.exe`. First launch asks for UAC once to add `127.0.0.1 localhost.youtube.com` to your hosts file.
-4. **Start VRChat.** Play a video in-world. If something doesn't play, check the **Logs** tab.
+1. **Launch VRChat once first.** The patch needs VRChat's own `yt-dlp.exe` present in `Tools/` to preserve as the fallback.
+2. **Download** the latest `WKVRCProxy-*.zip` from [Releases](https://github.com/RealWhyKnot/WKVRCProxy/releases/latest).
+3. **Extract** anywhere except `Program Files` (the bundled updater can't swap files there without elevation).
+4. **Run** `WKVRCProxy.exe`. UAC prompts once to add `127.0.0.1 localhost.youtube.com` to your hosts file (load-bearing for public-instance support; idle when this tool isn't running).
+5. **Start VRChat.** Watch the watchdog window for the `[mesh] connected` line. Play a video in-world.
 
-Full walkthrough with troubleshooting: **[Quick Start](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Quick-Start)**.
+To uninstall: run `WKVRCProxy.Uninstaller.exe` from the same folder. It restores VRChat's vanilla `yt-dlp.exe`, removes the hosts entry, wipes `%LOCALAPPDATA%\WKVRCProxy\`, and deletes its own install directory. No prompt — running it IS consent.
 
 ---
 
 ## Going deeper
 
-- **[Architecture](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Architecture)** — request flow end-to-end
-- **[Resolution Cascade](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Resolution-Cascade)** — strategies, the parallel race, the demotion loop
-- **[Relay Server](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Relay-Server)** — why URLs get wrapped
-- **[Settings Reference](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Settings-Reference)** — every config knob
+- **[Quick Start](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Quick-Start)** — first-run walkthrough
+- **[Build Pipeline](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Build-Pipeline)** — how the release zip is produced
+- **[Update and Uninstall](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Update-and-Uninstall)** — how the bundled updater/uninstaller behave
 - **[Troubleshooting](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting)** — when something fails
-- **[Development](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Development)** — build from source, run tests, contribute
+- **[Development](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Development)** — build from source, contribute
 
-The full wiki is at <https://github.com/RealWhyKnot/WKVRCProxy/wiki>.
+The full wiki: <https://github.com/RealWhyKnot/WKVRCProxy/wiki>.
 
 ---
 
