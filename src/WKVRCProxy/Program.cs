@@ -64,24 +64,48 @@ internal static class Program
             }
         }
 
-        using var mutex = new System.Threading.Mutex(false, MutexName, out _);
-        bool acquired = false;
-        try { acquired = mutex.WaitOne(TimeSpan.Zero); }
-        catch (AbandonedMutexException) { acquired = true; }
-
-        if (!acquired)
-        {
-            Console.WriteLine("WKVRCProxy is already running.");
-            return 1;
-        }
-
+        // Mutex acquisition can throw on locked-down systems (RDP user
+        // sessions without SeCreateGlobalPrivilege, hardened security
+        // policies). Catch so we can fall back to a Local\ mutex which
+        // doesn't require the privilege — single-instance per user
+        // session is still useful even if global isn't allowed.
+        System.Threading.Mutex? mutex = null;
         try
         {
-            return RunWatchdog();
+            try { mutex = new System.Threading.Mutex(false, MutexName, out _); }
+            catch (UnauthorizedAccessException)
+            {
+                Console.WriteLine("[warn] could not create global mutex (locked-down session?) — using session-local mutex.");
+                mutex = new System.Threading.Mutex(false, "Local\\WKVRCProxy.Watchdog", out _);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Mutex creation failed: " + ex.GetType().Name + ": " + ex.Message);
+                return 3;
+            }
+
+            bool acquired = false;
+            try { acquired = mutex.WaitOne(TimeSpan.Zero); }
+            catch (AbandonedMutexException) { acquired = true; }
+
+            if (!acquired)
+            {
+                Console.WriteLine("WKVRCProxy is already running.");
+                return 1;
+            }
+
+            try
+            {
+                return RunWatchdog();
+            }
+            finally
+            {
+                try { mutex.ReleaseMutex(); } catch { /* ignore */ }
+            }
         }
         finally
         {
-            try { mutex.ReleaseMutex(); } catch { /* ignore */ }
+            mutex?.Dispose();
         }
     }
 
