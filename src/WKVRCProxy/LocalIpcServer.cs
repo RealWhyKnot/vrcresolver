@@ -2,6 +2,7 @@ using System.IO.Pipes;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
@@ -94,26 +95,47 @@ internal sealed class LocalIpcServer : IDisposable
         using var perReqCts = CancellationTokenSource.CreateLinkedTokenSource(outerCt);
         perReqCts.CancelAfter(PerRequestTimeout);
         string id = "";
+        string? cid = null;
         try
         {
             string? line = await ReadLineAsync(pipe, perReqCts.Token).ConfigureAwait(false);
             ResolveRequest? req = null;
+            string? parseError = null;
             if (!string.IsNullOrWhiteSpace(line))
             {
                 try { req = JsonSerializer.Deserialize<ResolveRequest>(line); }
-                catch { /* leave req null */ }
+                catch (Exception ex) { parseError = ex.GetType().Name + ": " + ex.Message; }
             }
 
             if (req == null || string.IsNullOrEmpty(req.Url))
             {
+                // Surface parse failures + missing-url cases so a misbehaving
+                // patched yt-dlp is diagnosable from the watchdog console.
+                // Pre-fix this path was completely silent.
+                if (parseError != null)
+                {
+                    Console.WriteLine("[ipc] request parse failed: "
+                        + LogUtil.SanitizeForConsole(parseError, 160)
+                        + " preview=" + LogUtil.SanitizeForConsole(line, 80));
+                }
+                else if (req != null)
+                {
+                    Console.WriteLine("[ipc] request missing url");
+                }
+                else
+                {
+                    Console.WriteLine("[ipc] empty request received");
+                }
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
                 return;
             }
 
             id = req.Id ?? "";
+            cid = req.CorrelationId;
 
             JsonDocument? respDoc = null;
             string? failReason = null;
+            string outcome = "?";
             try
             {
                 // Lossless forward: hand the whole DTO to MeshClient so v2 fields
@@ -124,6 +146,13 @@ internal sealed class LocalIpcServer : IDisposable
                 // know about.
                 respDoc = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
                 await WriteDocAsync(pipe, respDoc, perReqCts.Token).ConfigureAwait(false);
+
+                // Determine outcome from the response action for the success log.
+                if (respDoc.RootElement.TryGetProperty("action", out var actEl)
+                    && actEl.ValueKind == JsonValueKind.String)
+                {
+                    outcome = actEl.GetString() ?? "?";
+                }
             }
             catch (OperationCanceledException)
             {
@@ -131,7 +160,10 @@ internal sealed class LocalIpcServer : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[ipc] mesh.ResolveAsync threw: " + ex.Message);
+                Console.WriteLine(
+                    "[ipc] mesh.ResolveAsync threw id=" + id + CidSuffix(cid) +
+                    ": " + ex.GetType().Name + ": " +
+                    LogUtil.SanitizeForConsole(ex.Message, 160));
                 failReason = WireConstants.FallbackInternalError;
             }
             finally
@@ -140,11 +172,25 @@ internal sealed class LocalIpcServer : IDisposable
             }
 
             if (failReason != null)
+            {
+                outcome = WireConstants.ActionFallbackNative + "/" + failReason;
                 await WriteFallbackAsync(pipe, id, failReason, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            // Per-request success log. Captures id, optional correlation_id,
+            // player, and the outcome action so users have a baseline of
+            // resolves-served they can correlate against failures.
+            Console.WriteLine(
+                "[ipc] resolve id=" + id + CidSuffix(cid) +
+                " player=" + LogUtil.SanitizeForConsole(req.Player ?? WireConstants.PlayerUnknown, 16) +
+                " outcome=" + LogUtil.SanitizeForConsole(outcome, 48));
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[ipc] connection error: " + ex.Message);
+            Console.WriteLine(
+                "[ipc] connection error id=" + id + CidSuffix(cid) +
+                ": " + ex.GetType().Name + ": " +
+                LogUtil.SanitizeForConsole(ex.Message, 160));
         }
         finally
         {
@@ -152,6 +198,10 @@ internal sealed class LocalIpcServer : IDisposable
             pipe.Dispose();
         }
     }
+
+    // " cid=<id>" suffix only when correlation_id is populated.
+    private static string CidSuffix(string? correlationId) =>
+        string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
 
     private static async Task<string?> ReadLineAsync(Stream s, CancellationToken ct)
     {
@@ -177,6 +227,16 @@ internal sealed class LocalIpcServer : IDisposable
         await s.FlushAsync(ct).ConfigureAwait(false);
     }
 
+    // Skip null fields when serializing the synthetic fallback frame so the
+    // wire shape stays v1-identical for v1 patched-yt-dlp consumers. Without
+    // this, the v2 ResolveResponse fields (container, video_codec, etc.)
+    // would each emit "field":null, forcing every fallback recipient to
+    // tolerate keys it doesn't know.
+    private static readonly JsonSerializerOptions FallbackSerializerOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
     private static async Task WriteFallbackAsync(Stream s, string id, string reason, CancellationToken ct)
     {
         var frame = new ResolveResponse
@@ -185,7 +245,7 @@ internal sealed class LocalIpcServer : IDisposable
             Id = id,
             Reason = reason,
         };
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(frame);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(frame, FallbackSerializerOptions);
         try
         {
             await s.WriteAsync(payload, ct).ConfigureAwait(false);
