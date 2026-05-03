@@ -270,9 +270,22 @@ internal sealed class MeshClient : IAsyncDisposable
                 using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
                 if ((int)resp.StatusCode >= 300 && (int)resp.StatusCode < 400 && resp.Headers.Location != null)
                 {
+                    // Resolve relative redirects against the apex base. A
+                    // bare path like "/foo" or "node3.whyknot.dev" was
+                    // previously fed straight into wss://"<path>"/mesh and
+                    // produced a malformed URI that threw on every
+                    // reconnect — a permanent storm. Now: convert to an
+                    // absolute Uri (combining apex + Location) and pull
+                    // the Host. Also reject Locations whose Host equals
+                    // the apex host (302 → apex loop).
                     var loc = resp.Headers.Location;
-                    string host = loc.IsAbsoluteUri ? loc.Host : loc.OriginalString;
-                    if (!string.IsNullOrEmpty(host)) return host;
+                    var abs = loc.IsAbsoluteUri ? loc : new Uri(ApexUrl, loc);
+                    string host = abs.Host;
+                    if (!string.IsNullOrEmpty(host)
+                        && !host.Equals(ApexUrl.Host, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return host;
+                    }
                 }
                 lastEx = new InvalidOperationException("apex returned " + (int)resp.StatusCode + " with no usable Location");
             }
