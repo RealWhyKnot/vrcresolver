@@ -181,6 +181,20 @@ internal sealed class MeshClient : IAsyncDisposable
             {
                 string node = await ResolveNodeHostAsync(ct).ConfigureAwait(false);
 
+                // Prepare per-connection welcome state BEFORE ConnectAsync. By the
+                // time _ws.State becomes Open (ConnectAsync returns), _welcomeTcs
+                // is guaranteed non-null — closing the race window where a
+                // ResolveAsync caller could observe an Open socket but a stale
+                // (or null) TCS and skip the welcome wait.
+                _serverProtocolVersion = 0;
+                _serverNode = null;
+                _serverFeatures = null;
+                _warpActive = null;
+                _serverVersion = null;
+                _ytDlpVersion = null;
+                var welcomeTcs = new TaskCompletionSource<WelcomeFrame?>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _welcomeTcs = welcomeTcs;
+
                 _ws = new ClientWebSocket();
                 _ws.Options.SetRequestHeader("User-Agent", _userAgent);
                 var wsUri = new Uri("wss://" + node + "/mesh");
@@ -191,20 +205,13 @@ internal sealed class MeshClient : IAsyncDisposable
                 _firstReconnectFailureUtc = DateTime.MinValue;
                 _lastPongUtc = DateTime.UtcNow;
 
-                // Reset per-connection welcome state. The dispatch handler
-                // will populate _serverProtocolVersion + capability fields
-                // when the welcome frame arrives; the 1s fallback closes
-                // the door for pre-v2 servers.
-                _serverProtocolVersion = 0;
-                _serverNode = null;
-                _serverFeatures = null;
-                _warpActive = null;
-                _serverVersion = null;
-                _ytDlpVersion = null;
-                var welcomeTcs = new TaskCompletionSource<WelcomeFrame?>(TaskCreationOptions.RunContinuationsAsynchronously);
-                _welcomeTcs = welcomeTcs;
+                // 1s welcome fallback. The continuation gates on
+                // `_welcomeTcs == welcomeTcs` so a stale timer from an earlier
+                // connection that fires after a fast reconnect can't clobber the
+                // new connection's _serverProtocolVersion.
                 _ = Task.Delay(WelcomeTimeout, ct).ContinueWith(_ =>
                 {
+                    if (_welcomeTcs != welcomeTcs) return; // a newer connection took over
                     if (welcomeTcs.TrySetResult(null))
                     {
                         Interlocked.CompareExchange(ref _serverProtocolVersion, 1, 0);
@@ -385,7 +392,17 @@ internal sealed class MeshClient : IAsyncDisposable
 
                 if (welcome != null)
                 {
-                    Interlocked.Exchange(ref _serverProtocolVersion, welcome.ProtocolVersion);
+                    // Clamp to [1, ClientProtocolVersion]:
+                    //   - 0 / missing field demoting us back to "pre-welcome"
+                    //     would re-arm the 1s-timer's CompareExchange branch
+                    //     and confuse routing decisions. Force at least 1.
+                    //   - We can't speak anything newer than ClientProtocolVersion;
+                    //     advertising support for v999 would be a lie.
+                    int negotiated = Math.Clamp(
+                        welcome.ProtocolVersion,
+                        1,
+                        WireConstants.ClientProtocolVersion);
+                    Interlocked.Exchange(ref _serverProtocolVersion, negotiated);
                     _serverNode = welcome.Node;
                     _serverFeatures = welcome.Features;
                     _warpActive = welcome.WarpActive;
@@ -395,7 +412,7 @@ internal sealed class MeshClient : IAsyncDisposable
                     int featureCount = welcome.Features?.Length ?? 0;
                     Console.WriteLine(
                         "[mesh] welcome node=" + (welcome.Node ?? "?") +
-                        " v=" + welcome.ProtocolVersion +
+                        " v=" + welcome.ProtocolVersion + " (negotiated=" + negotiated + ")" +
                         " server=" + (welcome.ServerVersion ?? "?") +
                         " yt-dlp=" + (welcome.YtDlpVersion ?? "?") +
                         " warp_active=" + (welcome.WarpActive?.ToString() ?? "?") +
