@@ -151,6 +151,12 @@ public partial class ResolutionEngine
         // fast-path. Playback failure â†’ PlaybackFailed â†’ one-strike demote (see StrategyMemory).
         _monitor.OnAvProLoadFailure += HandleAvProLoadFailure;
 
+        // Silent-stall path: AVPro logs "Opening" but neither "Loading failed" nor "Now Playing"
+        // follows within the watchdog window. Same demote+evict recovery as the loud path, only
+        // signal source differs. Closes the third terminal-state gap (silent-stuck) the existing
+        // OnAvProLoadFailure / OnClientAbortedEarly trio doesn't cover.
+        _monitor.OnAvProSilentStall += HandleAvProSilentStall;
+
         LogActiveTiers();
     }
 
@@ -197,35 +203,67 @@ public partial class ResolutionEngine
     // - Binary streams (MP4, DASH, proxy URLs): Range: bytes=0-4095 â€” same as a real initial
     //   segment fetch, not the tell-tale bytes=0-0 pattern scanners use.
     // - HLS manifests: plain GET with manifest Accept header.
-    // Fire-and-forget probe for tier4 passthrough URLs. We can't gate the resolution on this
-    // (would add 5s of latency before AVPro starts and we'd still pass the URL through anyway â€"
-    // user explicitly asked for "no manipulation" on these hosts). Instead, run the probe in the
-    // background with the SAME headers AVPro will use (UnityPlayer UA via BuildBinaryProbeHeaders /
-    // BuildHlsProbeHeaders) and surface a clear WARN if upstream rejects. Pure observability â€" the
-    // resolved URL is unchanged. Without this, tier4 is a black hole: no probe, no relay traffic,
-    // no signal of any kind when something is wrong upstream (the vr-m.net stuck-loop case).
-    private void FireBackgroundProbeForTier4(string url, string activeTier, RequestContext ctx)
+    // Fire-and-forget background probe. Originally tier4-only (we can't gate resolution on a 5s
+    // latency add for passthrough URLs; user asked for "no manipulation" on those hosts). Now runs
+    // for ALL tiers because cache hits don't go through the synchronous pre-flight probe â€" a
+    // signed CDN URL that worked at fresh-resolve time can expire mid-cache and the next cache-hit
+    // serves it un-validated. The probe uses AVPro's headers so it's a faithful preview of what
+    // AVPro will see; the call to CheckUrlReachable already short-circuits whyknot.dev URLs (no
+    // self-probing of our own cloud relay).
+    //
+    // Recovery: tier4 has no strategy to demote (passthrough), so the WARN is observability only.
+    // Non-tier4 results that the probe rejects get the producing strategy demoted and any cache
+    // entry evicted â€" same path as the loud Loading-failed signal, just driven by the probe.
+    private void FireBackgroundProbe(string url, string activeTier, RequestContext ctx)
     {
-        if (!activeTier.StartsWith("tier4")) return;
         if (string.IsNullOrEmpty(url) || url == "FAILED") return;
+        bool isTier4 = activeTier.StartsWith("tier4");
         string host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : "<unparseable>";
         _ = Task.Run(async () =>
         {
             try
             {
                 bool reachable = await CheckUrlReachable(url, ctx);
-                if (!reachable)
+                if (reachable) return;
+
+                if (isTier4)
                 {
                     _logger.Warning("[" + ctx.CorrelationId + "] tier4 passthrough probe REJECTED " + host
                         + " -- AVPro will likely fail to play this URL. The probe used AVPro's headers, so this is "
                         + "what AVPro itself sees. Common causes: upstream is down, your IP is rate-limited, the URL has expired, "
                         + "or the host changed something. Tier4 is hands-off (we never modify these URLs), so the issue is between "
                         + host + " and AVPro -- not something we can fix on our side.");
+                    return;
+                }
+
+                // Non-tier4 path: demote the producing strategy + evict any cache entry serving
+                // this URL. Look up the recent-resolutions ring (keyed on the upstream URL we
+                // were handed) to find which strategy produced it.
+                if (_recentByUrl.TryGetValue(url, out var probedRecent))
+                {
+                    _logger.Warning("[" + ctx.CorrelationId + "] [" + activeTier + "] background probe REJECTED " + host
+                        + " (URL produced by '" + probedRecent.StrategyName + "'). Demoting strategy and evicting resolve cache "
+                        + "-- next request will re-cascade and pick a different strategy.");
+                    RecordStrategyFailure(probedRecent.MemKey, probedRecent.StrategyName, StrategyFailureKind.PlaybackFailed);
+                    _eventBus?.PublishStrategyDemoted(probedRecent.StrategyName, probedRecent.MemKey, "background probe rejected URL", ctx.CorrelationId);
+                    foreach (var cacheKey in _resolveCache.Keys.ToList())
+                    {
+                        if (_resolveCache.TryGetValue(cacheKey, out var entry)
+                            && (entry.Result.Url == probedRecent.ResolvedUrl || cacheKey.EndsWith("|" + probedRecent.OriginalUrl)))
+                        {
+                            _resolveCache.TryRemove(cacheKey, out _);
+                        }
+                    }
+                }
+                else
+                {
+                    _logger.Warning("[" + ctx.CorrelationId + "] [" + activeTier + "] background probe REJECTED " + host
+                        + " but URL not in recent-resolutions ring (probably aged out) -- cannot demote, but cache will refresh on next resolve.");
                 }
             }
             catch (Exception ex)
             {
-                _logger.Debug("[" + ctx.CorrelationId + "] tier4 background probe threw: " + ex.Message);
+                _logger.Warning("[" + ctx.CorrelationId + "] [" + activeTier + "] background probe threw for " + host + ": " + ex.Message);
             }
         });
     }
@@ -462,32 +500,72 @@ public partial class ResolutionEngine
         if (stuckHits >= StuckLoopThreshold)
         {
             string shortStuck = targetUrl.Length > 100 ? targetUrl.Substring(0, 100) + "..." : targetUrl;
+
+            // Recovery: evict the resolve-cache entry (so the next call runs a fresh cascade
+            // instead of replaying the same dead URL) and demote whichever strategy produced it
+            // (so the cascade reaches for a different one). Without this the warning was a dead
+            // letter â€” subsequent resolves hit cache, served the same broken URL, and the user
+            // sat on a loading screen indefinitely.
+            string stuckCacheKey = ResolveCacheKey(targetUrl, player);
+            bool evicted = _resolveCache.TryRemove(stuckCacheKey, out _);
+            string demoteDetail = "";
+            if (_recentByUrl.TryGetValue(targetUrl, out var stuckRecent))
+            {
+                RecordStrategyFailure(stuckRecent.MemKey, stuckRecent.StrategyName, StrategyFailureKind.PlaybackFailed);
+                _eventBus?.PublishStrategyDemoted(stuckRecent.StrategyName, stuckRecent.MemKey, "stuck-loop threshold reached", ctx.CorrelationId);
+                demoteDetail = " strategy '" + stuckRecent.StrategyName + "' demoted;";
+            }
+
             _logger.Warning("[" + ctx.CorrelationId + "] STUCK-LOOP: same URL re-resolved " + stuckHits
                 + " times in the last " + StuckLoopWindow.TotalSeconds + "s. AVPro is almost certainly failing to play this URL "
                 + "(no [AVProVideo] Error fired, but the world keeps re-firing the load). "
+                + "Recovery:" + (evicted ? " resolve cache evicted;" : " no cache entry to evict;") + demoteDetail
+                + " next request will re-cascade. "
                 + "Likely causes: upstream session expired, host IP-rate-limited you, or the format is unsupported. URL: " + shortStuck);
+
+            // Reset the per-URL hit count so a single stuck-loop incident triggers recovery
+            // exactly once per threshold burst. Without this, every resolve past the threshold
+            // would re-fire the WARN + re-demote, churning strategy memory until the world stops
+            // retrying. The fresh count gives the recovery action a clean window to take effect.
+            lock (_recentResolveLock)
+            {
+                if (_recentResolveStarts.TryGetValue(targetUrl, out var hits))
+                {
+                    hits.Clear();
+                    hits.Add(DateTime.UtcNow);
+                }
+            }
         }
 
         // Positive resolve cache: collapse redundant calls from VRChat (which spawns yt-dlp 2-3x per
         // play event for thumbnail/duration/actual-play). A cache hit bypasses the full cascade and
         // returns the already-resolved URL, just re-applying the relay wrap (port may have changed).
         // History/stat writes are skipped on hit so the UI doesn't show duplicate rows.
+        //
+        // Hits-counter increment uses TryUpdate (compare-and-swap) instead of an indexer write so
+        // concurrent cache hits from VRChat's parallel yt-dlp spawns can't both read Hits=N and both
+        // write Hits=N+1 (which would skip a counter tick and let the cache serve more than
+        // ResolveCacheMaxHits replays before self-invalidating). The CAS loser falls through to
+        // re-read; if the entry is now over MaxHits or expired, it takes the eviction branch and
+        // runs a fresh resolve.
         string cacheKey = ResolveCacheKey(targetUrl, player);
-        if (_resolveCache.TryGetValue(cacheKey, out var cached))
+        while (_resolveCache.TryGetValue(cacheKey, out var cached))
         {
-            if (DateTime.UtcNow < cached.Expires && cached.Hits < ResolveCacheMaxHits)
+            if (DateTime.UtcNow >= cached.Expires || cached.Hits >= ResolveCacheMaxHits)
             {
-                _resolveCache[cacheKey] = cached with { Hits = cached.Hits + 1 };
-                string cachedFinal = ApplyRelayWrap(cached.Result.Url, skipRelayWrap, ctx.CorrelationId);
-                resolutionSw.Stop();
-                Interlocked.Decrement(ref _activeResolutions);
-                UpdateStatus("Cached resolution via " + cached.Tier.ToUpper(), ctx);
-                string shortCached = cachedFinal.Length > 100 ? cachedFinal.Substring(0, 100) + "..." : cachedFinal;
-                _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + cached.Tier + "] [cache-hit " + (cached.Hits + 1) + "/" + ResolveCacheMaxHits + "] in " + resolutionSw.ElapsedMilliseconds + "ms: " + shortCached);
-                FireBackgroundProbeForTier4(cached.Result.Url, cached.Tier, ctx);
-                return cachedFinal;
+                _resolveCache.TryRemove(cacheKey, out _);
+                break;
             }
-            _resolveCache.TryRemove(cacheKey, out _);
+            var updated = cached with { Hits = cached.Hits + 1 };
+            if (!_resolveCache.TryUpdate(cacheKey, updated, cached)) continue; // CAS lost â€” re-read
+            string cachedFinal = ApplyRelayWrap(cached.Result.Url, skipRelayWrap, ctx.CorrelationId);
+            resolutionSw.Stop();
+            Interlocked.Decrement(ref _activeResolutions);
+            UpdateStatus("Cached resolution via " + cached.Tier.ToUpper(), ctx);
+            string shortCached = cachedFinal.Length > 100 ? cachedFinal.Substring(0, 100) + "..." : cachedFinal;
+            _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + cached.Tier + "] [cache-hit " + updated.Hits + "/" + ResolveCacheMaxHits + "] in " + resolutionSw.ElapsedMilliseconds + "ms: " + shortCached);
+            FireBackgroundProbe(cached.Result.Url, cached.Tier, ctx);
+            return cachedFinal;
         }
 
         YtDlpResult? winnerResult = null;
@@ -641,7 +719,15 @@ public partial class ResolutionEngine
                             var fastSw = Stopwatch.StartNew();
                             YtDlpResult? fastRes = null;
                             try { fastRes = await specific.Executor(fastSctx); }
-                            catch (Exception ex) { _logger.Debug("[" + ctx.CorrelationId + "] Fast-path '" + specific.Name + "' threw: " + ex.Message); }
+                            catch (Exception ex)
+                            {
+                                // WARN, not DEBUG: a remembered "winner" subprocess crashing is the
+                                // user-visible "this used to work" failure mode and should be loud.
+                                // The "no result" branch below records the demote; we just need to
+                                // make sure the cause is in the log.
+                                _logger.Warning("[" + ctx.CorrelationId + "] Fast-path '" + specific.Name + "' threw "
+                                    + ex.GetType().Name + ": " + ex.Message);
+                            }
                             fastSw.Stop();
                             // Pre-handoff probe: even a "remembered winner" can return a now-dead
                             // URL (host rotated, token expired, CDN rejected). Verify before
@@ -1087,7 +1173,7 @@ public partial class ResolutionEngine
             resolutionLabel = " [" + w + "x" + winnerResult.Height + v + "]";
         }
         _logger.Success("[" + ctx.CorrelationId + "] Final Resolution [" + activeTier + "] [" + streamType + "]" + resolutionLabel + " in " + resolutionSw.ElapsedMilliseconds + "ms: " + (result != null && result.Length > 100 ? result.Substring(0, 100) + "..." : result));
-        FireBackgroundProbeForTier4(winnerResult?.Url ?? "", activeTier, ctx);
+        FireBackgroundProbe(winnerResult?.Url ?? "", activeTier, ctx);
         return result;
     }
 

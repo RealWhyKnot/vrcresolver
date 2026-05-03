@@ -52,6 +52,20 @@ public partial class ResolutionEngine
     {
         if (relayServer == null) return;
         relayServer.OnClientAbortedEarly += HandleRelayClientAbort;
+        // Single-strike demote when the relay sees upstream return non-media content (HTML/JSON
+        // disguised as 2xx). Distinct from the rolling-window OnClientAbortedEarly because every
+        // occurrence is definitive — no benefit to waiting for a threshold.
+        relayServer.OnUpstreamNonMedia += HandleUpstreamNonMedia;
+    }
+
+    private void HandleUpstreamNonMedia(string targetUrl, string contentType)
+    {
+        if (string.IsNullOrEmpty(targetUrl)) return;
+        _logger.Warning("[Playback] [Relay] Upstream returned non-media Content-Type '" + contentType + "' for "
+            + (targetUrl.Length > 80 ? targetUrl.Substring(0, 80) + "..." : targetUrl)
+            + " — single-strike demote (treating as PlaybackFailed).");
+        // Reuse the loud-failure path so demote/cache-evict/history-flip all happen consistently.
+        HandleAvProLoadFailure(targetUrl, DateTime.UtcNow);
     }
 
     // Rolling-window tracker of "player aborted mid-stream before playback could have started"
@@ -117,8 +131,43 @@ public partial class ResolutionEngine
             return;
         }
         _logger.Warning("[Playback] [" + recent.CorrelationId + "] AVPro rejected resolved URL from '" + recent.StrategyName + "' on " + recent.MemKey + ". Demoting (PlaybackFailed) â€” next request will re-cascade.");
+        RecoverFromPlaybackFailure(failedUrl, recent, "AVPro rejected URL");
+    }
+
+    // Silent-stall handler: AVPro logged "Opening <url>" but produced no follow-up (no
+    // Loading failed, no Now Playing) within VrcLogMonitor.SilentStallWindow. Same recovery as
+    // the loud-failure path â€” the only difference is the WARN message names the silent-stall
+    // source so logs make the failure mode obvious.
+    private void HandleAvProSilentStall(string openedUrl, DateTime observedAt)
+    {
+        if (string.IsNullOrWhiteSpace(openedUrl)) return;
+        PruneRecentResolutions();
+        if (!_recentByUrl.TryGetValue(openedUrl, out var recent))
+        {
+            _logger.Debug("[Playback] [SilentStall] AVPro opened URL not in recent-resolutions ring (" +
+                (openedUrl.Length > 80 ? openedUrl.Substring(0, 80) + "..." : openedUrl) + "). Ignoring â€” likely a URL WKVRCProxy did not resolve.");
+            return;
+        }
+        if (observedAt - recent.CreatedAt > RecentResolutionTtl)
+        {
+            _logger.Debug("[Playback] [SilentStall] Opened URL older than recent-resolutions TTL â€” not demoting.");
+            return;
+        }
+        _logger.Warning("[Playback] [SilentStall] [" + recent.CorrelationId + "] AVPro opened a URL from '"
+            + recent.StrategyName + "' on " + recent.MemKey + " but neither 'Now Playing' nor 'Loading failed' "
+            + "was observed within the watchdog window â€” strongest available signal that playback never started. "
+            + "Demoting (PlaybackFailed) and evicting cache so the next request re-cascades.");
+        RecoverFromPlaybackFailure(openedUrl, recent, "AVPro silent stall");
+    }
+
+    // Shared recovery path used by both the loud Loading-failed signal and the silent-stall
+    // watchdog. Demote the producing strategy, flip the history row's PlaybackVerified flag,
+    // evict the resolve cache so the next request runs a fresh cascade, and clear the
+    // recent-resolutions ring entries so a duplicate signal for the same URL doesn't double-demote.
+    private void RecoverFromPlaybackFailure(string failedUrl, RecentResolution recent, string failureReason)
+    {
         RecordStrategyFailure(recent.MemKey, recent.StrategyName, StrategyFailureKind.PlaybackFailed);
-        _eventBus?.PublishStrategyDemoted(recent.StrategyName, recent.MemKey, "AVPro rejected URL", recent.CorrelationId);
+        _eventBus?.PublishStrategyDemoted(recent.StrategyName, recent.MemKey, failureReason, recent.CorrelationId);
 
         // Flag the matching history row so the UI's Success column reflects actual playback, not
         // just "resolution returned a URL". If the scheduled verifier hasn't run yet, this wins
@@ -127,7 +176,7 @@ public partial class ResolutionEngine
         {
             recent.HistoryEntryRef.PlaybackVerified = false;
             try { _settings.Save(); }
-            catch (Exception ex) { _logger.Debug("[Playback] Failed to persist playback-failed flag: " + ex.Message); }
+            catch (Exception ex) { _logger.Warning("[Playback] Failed to persist playback-failed flag: " + ex.Message); }
         }
 
         // Evict any resolve-cache entry that would replay this dead URL on the duration/thumbnail
@@ -141,8 +190,8 @@ public partial class ResolutionEngine
                 _resolveCache.TryRemove(cacheKey, out _);
             }
         }
-        // And clear the recent-resolutions entry so a second "Loading failed" for the same URL
-        // doesn't double-demote.
+        // And clear the recent-resolutions entry so a follow-up signal for the same URL doesn't
+        // double-demote on the same incident.
         _recentByUrl.TryRemove(failedUrl, out _);
         if (recent.ResolvedUrl != failedUrl) _recentByUrl.TryRemove(recent.ResolvedUrl, out _);
         if (recent.OriginalUrl != failedUrl) _recentByUrl.TryRemove(recent.OriginalUrl, out _);
@@ -179,7 +228,8 @@ public partial class ResolutionEngine
                 if (historyEntry.PlaybackVerified == null)
                 {
                     historyEntry.PlaybackVerified = true;
-                    try { _settings.Save(); } catch { /* best-effort persistence */ }
+                    try { _settings.Save(); }
+                    catch (Exception ex) { _logger.Warning("[Playback] Failed to persist PlaybackVerified flag after success: " + ex.Message); }
                 }
             });
         }
