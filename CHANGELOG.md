@@ -43,6 +43,7 @@ The most recent release is at the top.
 - **mesh:** Welcome handshake hardening (H1 + H2 + H3) (4af6ac5)
 - **mesh:** Apex 302 relative redirects resolve correctly (21727bb)
 - **mesh:** Null-safety + TOCTOU + protocol_version stamp gating (H4+H5+BC1) (a0c9d05)
+- **ipc:** Validate Player + Action at the pipe boundary (H11+H12) (977be5a)
 
 ---
 
