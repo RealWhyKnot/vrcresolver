@@ -38,6 +38,7 @@ The most recent release is at the top.
 - **lifecycle:** UnhandledException triggers cleanup directly (8b2bde2)
 - **console:** Force UTF-8 output so em-dashes don't render as ? (3670dc3)
 - **updater:** Atomic rollback registers backup before move attempt (92250fc)
+- **mesh:** Welcome handshake hardening (H1 + H2 + H3) (4af6ac5)
 
 ---
 
