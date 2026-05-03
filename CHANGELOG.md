@@ -21,6 +21,7 @@ The most recent release is at the top.
 - **client:** Lift PatchManager + HostsManager + path/hash utils (eeb8c81)
 - **shared:** V2 protocol — DTO + constant extensions (f1c2e8a)
 - **mesh:** V2 protocol — lossless forward, welcome handshake, fallback logging (a2179f1)
+- **mesh:** Logging hardening (C3 + C4 + H7 + H8 + H9 + H10) (b8bd27c)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
