@@ -27,7 +27,7 @@ internal static class Program
     private const string WatchdogExeName = "WKVRCProxy.exe";
     private const int PromptTimeoutSec = 15;
 
-    private static readonly Regex Sha256Line =
+    internal static readonly Regex Sha256Line =
         new(@"SHA256:\s*([0-9A-Fa-f]{64})", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static async Task<int> Main(string[] args)
@@ -147,7 +147,7 @@ internal static class Program
     // against ReadCurrentVersion's FileVersion (which never carries the
     // suffix because AssemblyVersion is pure numeric).
     private static readonly Regex DevSuffix = new(@"-[A-Fa-f0-9]{4}$", RegexOptions.Compiled);
-    private static Version ParseTagVersion(string tag)
+    internal static Version ParseTagVersion(string tag)
     {
         string vNum = tag.StartsWith('v') ? tag[1..] : tag;
         vNum = DevSuffix.Replace(vNum, "");
@@ -307,7 +307,7 @@ internal static class Program
         await src.CopyToAsync(dst);
     }
 
-    private static string ComputeSha256(string path)
+    internal static string ComputeSha256(string path)
     {
         using var sha = SHA256.Create();
         using var s = File.OpenRead(path);
@@ -319,7 +319,7 @@ internal static class Program
     // File.Move(overwrite:true). On rename failure, all already-renamed
     // files are restored from the .old-<short> sidecar so a failed update
     // doesn't leave a half-old / half-new install.
-    private static void AtomicCopyOver(string from, string to)
+    internal static void AtomicCopyOver(string from, string to)
     {
         var stagedFiles = new List<(string TempNew, string FinalDst)>();
         try
