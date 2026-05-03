@@ -259,21 +259,50 @@ internal sealed class PatchManager : IDisposable
             {
                 AtomicCopy(_patchedYtDlpPath, targetPath);
                 _lastPatchTime = DateTime.UtcNow;
+                _consecutiveLockFailures = 0;
             }
-            catch (IOException) { /* will retry next tick */ }
+            catch (IOException ex) { ReportLockFailure("initial-stage", ex); }
             return;
         }
 
-        if (FilesEqualByHash(targetPath, _patchedYtDlpPath)) return;
+        if (FilesEqualByHash(targetPath, _patchedYtDlpPath))
+        {
+            _consecutiveLockFailures = 0;
+            return;
+        }
         if ((DateTime.UtcNow - _lastPatchTime).TotalSeconds < MinReapplyGapSec) return;
 
         try
         {
             AtomicCopy(_patchedYtDlpPath, targetPath);
             _lastPatchTime = DateTime.UtcNow;
+            _consecutiveLockFailures = 0;
             Console.WriteLine("[patch] yt-dlp.exe was overwritten — re-applied.");
         }
-        catch (IOException) { /* file in use — retry next tick */ }
+        catch (IOException ex) { ReportLockFailure("re-apply", ex); }
+    }
+
+    // Track consecutive IOException ticks so a sustained AV-lock or
+    // permission-flip is visible in the console (pre-fix it was completely
+    // silent — the watchdog appeared to be running but wasn't actually
+    // applying anything).
+    private int _consecutiveLockFailures;
+    private void ReportLockFailure(string stage, IOException ex)
+    {
+        _consecutiveLockFailures++;
+        // First failure: silent (transient is normal). Third failure: warn.
+        // Then every 20th (~1 minute at 3s ticks) so an indefinite stall
+        // is visible without filling the scrollback.
+        if (_consecutiveLockFailures == 3)
+        {
+            Console.WriteLine("[patch][warn] " + stage + " has failed 3 times in a row — possible antivirus interference or permissions issue. Last error: "
+                + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 120));
+        }
+        else if (_consecutiveLockFailures > 3 && _consecutiveLockFailures % 20 == 0)
+        {
+            Console.WriteLine("[patch][warn] " + stage + " still failing after " + _consecutiveLockFailures + " ticks ("
+                + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 120) + ")");
+        }
     }
 
     // Halt the watchdog loop. ALWAYS attempts to leave VRChat with a working

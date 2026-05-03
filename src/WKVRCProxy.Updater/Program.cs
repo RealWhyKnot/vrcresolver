@@ -70,7 +70,11 @@ internal static class Program
             string actualSha = ComputeSha256(tempZip);
             if (!actualSha.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine($"Refusing to install: SHA256 mismatch. expected={expectedSha256} actual={actualSha}");
+                Console.Error.WriteLine(
+                    $"Refusing to install: SHA256 mismatch.\n" +
+                    $"  url={zipUrl}\n" +
+                    $"  expected={expectedSha256}\n" +
+                    $"  actual={actualSha}");
                 try { File.Delete(tempZip); } catch { /* best-effort */ }
                 return 13;
             }
@@ -108,7 +112,12 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine("Updater failed: " + ex.Message);
+            // Preserve exception type + (truncated) stack trace alongside the
+            // message so a user pasting the failure into a bug report has
+            // enough context for diagnosis.
+            Console.Error.WriteLine("Updater failed: " + ex.GetType().FullName + ": " + ex.Message);
+            if (ex.StackTrace != null)
+                Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
     }
