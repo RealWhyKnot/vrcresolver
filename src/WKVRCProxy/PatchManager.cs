@@ -143,12 +143,17 @@ internal sealed class PatchManager : IDisposable
         {
             if (File.Exists(targetPath) && !FilesEqualByHash(targetPath, _patchedYtDlpPath))
             {
-                File.Move(targetPath, backupPath);
+                try { File.Move(targetPath, backupPath); }
+                catch (IOException) { return; } // target locked — retry next tick
             }
             else if (File.Exists(_bundledFallbackPath))
             {
-                File.Copy(_bundledFallbackPath, backupPath, true);
-                Console.WriteLine("yt-dlp-og.exe was missing — restored from bundled fallback (" + ReadBundledFallbackVersion() + "). Server-side fallback path is now functional again.");
+                try
+                {
+                    AtomicCopy(_bundledFallbackPath, backupPath);
+                    Console.WriteLine("yt-dlp-og.exe was missing — restored from bundled fallback (" + ReadBundledFallbackVersion() + "). Server-side fallback path is now functional again.");
+                }
+                catch (IOException) { return; } // disk-full / locked — retry next tick
             }
             else
             {
@@ -169,8 +174,12 @@ internal sealed class PatchManager : IDisposable
 
         if (!File.Exists(targetPath))
         {
-            File.Copy(_patchedYtDlpPath, targetPath, true);
-            _lastPatchTime = DateTime.UtcNow;
+            try
+            {
+                AtomicCopy(_patchedYtDlpPath, targetPath);
+                _lastPatchTime = DateTime.UtcNow;
+            }
+            catch (IOException) { /* will retry next tick */ }
             return;
         }
 
@@ -179,11 +188,30 @@ internal sealed class PatchManager : IDisposable
 
         try
         {
-            File.Copy(_patchedYtDlpPath, targetPath, true);
+            AtomicCopy(_patchedYtDlpPath, targetPath);
             _lastPatchTime = DateTime.UtcNow;
             Console.WriteLine("[patch] yt-dlp.exe was overwritten — re-applied.");
         }
         catch (IOException) { /* file in use — retry next tick */ }
+    }
+
+    // Copies src over dst with no partial-file window: stage to a sibling
+    // tmp on dst's volume, then atomic same-volume rename. A kill mid-copy
+    // leaves dst untouched (still vanilla or still patched, but never
+    // truncated). The tmp file is cleaned up on any failure path.
+    private static void AtomicCopy(string src, string dst)
+    {
+        string tmp = dst + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        try
+        {
+            File.Copy(src, tmp, overwrite: true);
+            File.Move(tmp, dst, overwrite: true);
+        }
+        catch
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
+            throw;
+        }
     }
 
     public static bool RestoreYtDlpInTools(string toolsDir)
@@ -195,15 +223,22 @@ internal sealed class PatchManager : IDisposable
 
         try
         {
+            // Fast path: atomic same-volume rename. No window where target is missing.
+            try
+            {
+                File.Move(backupPath, targetPath, overwrite: true);
+                return true;
+            }
+            catch (IOException)
+            {
+                // Target is locked (VRChat / AV holding it open). Move it aside, then retry.
+            }
+
             if (File.Exists(targetPath))
             {
-                try { File.Delete(targetPath); }
-                catch (IOException)
-                {
-                    string stale = targetPath + ".stale-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-                    File.Move(targetPath, stale);
-                    Console.WriteLine("[patch] yt-dlp.exe was locked; moved aside to " + Path.GetFileName(stale) + ".");
-                }
+                string stale = targetPath + ".stale-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
+                File.Move(targetPath, stale);
+                Console.WriteLine("[patch] yt-dlp.exe was locked; moved aside to " + Path.GetFileName(stale) + ".");
             }
             File.Move(backupPath, targetPath);
             return true;
