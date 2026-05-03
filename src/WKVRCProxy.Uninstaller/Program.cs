@@ -24,25 +24,32 @@ internal static class Program
         string watchdogExe = Path.Combine(installDir, "WKVRCProxy.exe");
 
         try { CloseRunningWatchdog(); }
-        catch (Exception ex) { Console.Error.WriteLine("close-watchdog: " + ex.Message); errors++; }
+        catch (Exception ex) { LogStepError("close-watchdog", ex); errors++; }
 
         try { RestoreYtDlp(installDir); }
-        catch (Exception ex) { Console.Error.WriteLine("restore-yt-dlp: " + ex.Message); errors++; }
+        catch (Exception ex) { LogStepError("restore-yt-dlp", ex); errors++; }
 
         try { RemoveHostsEntry(watchdogExe); }
-        catch (Exception ex) { Console.Error.WriteLine("remove-hosts: " + ex.Message); errors++; }
+        catch (Exception ex) { LogStepError("remove-hosts", ex); errors++; }
 
         try { WipeLocalAppData(); }
-        catch (Exception ex) { Console.Error.WriteLine("wipe-localappdata: " + ex.Message); errors++; }
+        catch (Exception ex) { LogStepError("wipe-localappdata", ex); errors++; }
 
         try { ScheduleInstallDirDelete(installDir); }
-        catch (Exception ex) { Console.Error.WriteLine("schedule-self-delete: " + ex.Message); errors++; }
+        catch (Exception ex) { LogStepError("schedule-self-delete", ex); errors++; }
 
         Console.WriteLine(errors == 0
             ? "WKVRCProxy uninstalled. The install folder will disappear in a moment."
             : $"Uninstall finished with {errors} non-fatal error(s) — see messages above.");
         return errors == 0 ? 0 : 2;
     }
+
+    // Step-error log helper: preserves exception type alongside the message
+    // so a bug report shows whether a "restore-yt-dlp" failure was an
+    // UnauthorizedAccessException (permissions), IOException (file locked),
+    // FileNotFoundException (target gone), etc.
+    private static void LogStepError(string step, Exception ex) =>
+        Console.Error.WriteLine(step + ": " + ex.GetType().Name + ": " + ex.Message);
 
     private static void CloseRunningWatchdog()
     {
