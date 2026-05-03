@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy.Updater;
 
@@ -30,6 +31,7 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        CrashHandler.Install("updater");
         try
         {
             string installDir = AppContext.BaseDirectory;

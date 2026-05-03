@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy.Uninstaller;
 
@@ -16,6 +17,7 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
+        CrashHandler.Install("uninstaller");
         int errors = 0;
         string installDir = AppContext.BaseDirectory.TrimEnd('\\', '/');
         string watchdogExe = Path.Combine(installDir, "WKVRCProxy.exe");
