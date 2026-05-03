@@ -102,6 +102,17 @@ internal static class Program
             try { RunShutdown().Wait(TimeSpan.FromMilliseconds(2000)); }
             catch { /* best-effort */ }
         };
+        AppDomain.CurrentDomain.UnhandledException += (_, _) =>
+        {
+            // Belt-and-suspenders: most unhandled exceptions also fire ProcessExit
+            // afterward, but some fatal-fatal kinds (StackOverflow, AccessViolation,
+            // ExecutionEngineException) skip ProcessExit and tear the process down
+            // directly. Run cleanup here too. RunShutdown is idempotent — if
+            // ProcessExit fires later, the second call is a no-op.
+            s_fastShutdown = true;
+            try { RunShutdown().Wait(TimeSpan.FromSeconds(3)); }
+            catch { /* best-effort */ }
+        };
         SetConsoleCtrlHandler(s_ctrlHandler, true);
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
