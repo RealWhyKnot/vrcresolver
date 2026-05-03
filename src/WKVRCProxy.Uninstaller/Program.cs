@@ -55,12 +55,15 @@ internal static class Program
     {
         foreach (var p in Process.GetProcessesByName("WKVRCProxy"))
         {
-            try
+            using (p)
             {
-                if (!p.CloseMainWindow()) p.Kill();
-                p.WaitForExit(5000);
+                try
+                {
+                    if (!p.CloseMainWindow()) p.Kill();
+                    p.WaitForExit(5000);
+                }
+                catch { /* best-effort */ }
             }
-            catch { /* best-effort */ }
         }
         Thread.Sleep(500);
     }
@@ -151,7 +154,7 @@ internal static class Program
                 Verb = "runas",
                 WindowStyle = ProcessWindowStyle.Hidden
             };
-            var proc = Process.Start(psi);
+            using var proc = Process.Start(psi);
             proc?.WaitForExit(10000);
         }
         catch (System.ComponentModel.Win32Exception)

@@ -106,8 +106,14 @@ internal static class HostsManager
                 Verb = "runas",
                 WindowStyle = ProcessWindowStyle.Hidden
             };
-            var proc = Process.Start(psi);
-            proc?.WaitForExit();
+            using var proc = Process.Start(psi);
+            // 60s timeout so a UAC dialog left open (user away from keyboard)
+            // doesn't block startup forever (Tier D backlog item).
+            proc?.WaitForExit(60000);
+            if (proc != null && !proc.HasExited)
+            {
+                Console.WriteLine("[hosts] elevation child still running after 60s — continuing without hosts entry.");
+            }
             return true;
         }
         catch (Win32Exception)

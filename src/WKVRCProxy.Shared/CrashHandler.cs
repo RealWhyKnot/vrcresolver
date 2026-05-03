@@ -69,7 +69,11 @@ public static class CrashHandler
         {
             string ts = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff");
             string path = Path.Combine(_logDir, $"crash-{_component}-{ts}.log");
-            lock (_writeLock)
+            // TryEnter (not lock) so if another thread is wedged inside the
+            // crash handler we don't block process teardown waiting for it.
+            // 1s budget is plenty for a single small log write.
+            if (!Monitor.TryEnter(_writeLock, TimeSpan.FromSeconds(1))) return;
+            try
             {
                 using var w = new StreamWriter(path, append: false);
                 w.WriteLine("=== WKVRCProxy crash log ===");
@@ -96,6 +100,10 @@ public static class CrashHandler
 
                 w.WriteLine();
                 w.WriteLine(ex?.ToString() ?? "(no exception object)");
+            }
+            finally
+            {
+                Monitor.Exit(_writeLock);
             }
         }
         catch

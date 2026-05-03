@@ -638,12 +638,31 @@ internal sealed class MeshClient : IAsyncDisposable
             if (_pending.TryRemove(kvp.Key, out var tcs))
             {
                 failedIds.Add(kvp.Key);
+                JsonDocument? doc = null;
                 try
                 {
-                    var doc = MakeFallbackDoc(kvp.Key, reason);
-                    if (!tcs.TrySetResult(doc)) doc.Dispose();
+                    doc = MakeFallbackDoc(kvp.Key, reason);
+                    if (!tcs.TrySetResult(doc))
+                    {
+                        // Caller already cancelled — own the disposal so we
+                        // don't leak the JsonDocument's pooled buffers.
+                        doc.Dispose();
+                        doc = null;
+                    }
+                    else
+                    {
+                        // TCS owns it now; clear local so finally doesn't double-dispose.
+                        doc = null;
+                    }
                 }
-                catch { tcs.TrySetCanceled(); }
+                catch
+                {
+                    // TrySetResult itself shouldn't throw, but defensive: any
+                    // unexpected throw above means the doc isn't owned by the
+                    // TCS — dispose locally and cancel the awaiter.
+                    try { doc?.Dispose(); } catch { /* best-effort */ }
+                    try { tcs.TrySetCanceled(); } catch { /* best-effort */ }
+                }
             }
         }
 
@@ -674,6 +693,12 @@ internal sealed class MeshClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync().ConfigureAwait(false);
+        // StopAsync's CloseAsync attempt may have left _ws in a closed-but-
+        // not-disposed state if the timeout fired or the close threw. The run
+        // loop's finally also disposes _ws on normal exit, but DisposeAsync
+        // is the catch-all for "make sure no socket is still pinning a handle."
+        try { _ws?.Dispose(); } catch { /* best-effort */ }
+        _ws = null;
         _httpClient.Dispose();
         _runCts?.Dispose();
     }
