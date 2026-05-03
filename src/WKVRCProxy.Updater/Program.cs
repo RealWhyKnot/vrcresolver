@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -112,14 +113,38 @@ internal static class Program
         }
     }
 
+    // H19: explicit error if the watchdog exe isn't sitting next to us.
+    // Pre-fix the code silently fell through to the Updater's own version,
+    // reporting an incorrect "current version" (the Updater's, not the
+    // watchdog's) and offering spurious updates.
     private static Version ReadCurrentVersion(string watchdogPath)
     {
-        if (File.Exists(watchdogPath))
+        if (!File.Exists(watchdogPath))
         {
-            var fvi = FileVersionInfo.GetVersionInfo(watchdogPath);
-            if (Version.TryParse(fvi.FileVersion ?? fvi.ProductVersion ?? "0.0.0.0", out var v)) return v;
+            throw new InvalidOperationException(
+                "WKVRCProxy.exe was not found next to the updater (expected at "
+                + watchdogPath + "). The install dir may be corrupt or the "
+                + "updater was launched from outside the install folder.");
         }
-        return Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0, 0);
+        var fvi = FileVersionInfo.GetVersionInfo(watchdogPath);
+        if (Version.TryParse(fvi.FileVersion ?? fvi.ProductVersion ?? "0.0.0.0", out var v))
+            return v;
+        return new Version(0, 0, 0, 0);
+    }
+
+    // H18: tags can carry a trailing -XXXX dev-build suffix (4 hex chars per
+    // build.ps1's regex). System.Version.TryParse rejects those outright.
+    // Strip the suffix before parsing — the numeric part is what we compare
+    // against ReadCurrentVersion's FileVersion (which never carries the
+    // suffix because AssemblyVersion is pure numeric).
+    private static readonly Regex DevSuffix = new(@"-[A-Fa-f0-9]{4}$", RegexOptions.Compiled);
+    private static Version ParseTagVersion(string tag)
+    {
+        string vNum = tag.StartsWith('v') ? tag[1..] : tag;
+        vNum = DevSuffix.Replace(vNum, "");
+        if (!Version.TryParse(vNum, out var v))
+            throw new InvalidOperationException("Could not parse latest tag: " + tag);
+        return v;
     }
 
     private static async Task<(Version Latest, string ZipUrl, string TagName, string? Sha256)> FetchLatestAsync()
@@ -131,9 +156,7 @@ internal static class Program
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         string tag = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
-        string vNum = tag.StartsWith('v') ? tag[1..] : tag;
-        if (!Version.TryParse(vNum, out var v))
-            throw new InvalidOperationException("Could not parse latest tag: " + tag);
+        Version v = ParseTagVersion(tag);
 
         string zipUrl = "";
         foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
@@ -175,16 +198,71 @@ internal static class Program
         return false;
     }
 
+    // Console-control P/Invoke surface for graceful watchdog shutdown.
+    // Without this, Process.CloseMainWindow returns false on a console
+    // app (no MainWindow) and we go straight to Kill, bypassing the
+    // watchdog's Ctrl+C handler — which is what writes clean_exit.flag
+    // and runs the atomic restore.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(uint dwProcessId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(IntPtr handlerRoutine, bool add);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GenerateConsoleCtrlEvent(uint dwCtrlEvent, uint dwProcessGroupId);
+    private const uint CTRL_C_EVENT = 0;
+    private const uint ATTACH_PARENT_PROCESS = 0xFFFFFFFF;
+
+    // H17: prefer a graceful Ctrl+C event so the watchdog runs its real
+    // shutdown (atomic restore + clean_exit.flag). Fall back to Kill only
+    // if the process is still alive after the grace window.
     private static void StopRunningWatchdog()
     {
         foreach (var p in Process.GetProcessesByName("WKVRCProxy"))
         {
-            try
+            using (p)
             {
-                if (!p.CloseMainWindow()) p.Kill();
-                p.WaitForExit(5000);
+                bool sentCtrlC = false;
+                try
+                {
+                    // Detach from our own console first; the AttachConsole
+                    // call below would otherwise fail with ALREADY_ATTACHED.
+                    FreeConsole();
+                    if (AttachConsole((uint)p.Id))
+                    {
+                        // Ignore the Ctrl+C in OUR process (otherwise we'd kill
+                        // the updater along with the watchdog), then send to
+                        // the attached console's process group.
+                        SetConsoleCtrlHandler(IntPtr.Zero, true);
+                        sentCtrlC = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+                        FreeConsole();
+                        SetConsoleCtrlHandler(IntPtr.Zero, false);
+                    }
+                }
+                catch { /* fall back to Kill below */ }
+
+                try
+                {
+                    if (sentCtrlC)
+                    {
+                        // Watchdog gets up to 5s to run its 12s shutdown
+                        // budget. The restore is atomic (fast) so it's
+                        // overwhelmingly likely to fit.
+                        if (!p.WaitForExit(5000))
+                        {
+                            p.Kill();
+                            p.WaitForExit(2000);
+                        }
+                    }
+                    else if (!p.HasExited)
+                    {
+                        p.Kill();
+                        p.WaitForExit(2000);
+                    }
+                }
+                catch { /* best-effort */ }
             }
-            catch { /* best-effort */ }
         }
         Thread.Sleep(500);
     }
