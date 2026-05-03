@@ -28,6 +28,7 @@ The most recent release is at the top.
 - **uninstaller:** Atomic yt-dlp.exe restore (no missing-file window) (4b01682)
 - **patch:** Write clean_exit.flag only when shutdown actually was clean (db56e4c)
 - **patch:** Halt path restores yt-dlp.exe before exiting the loop (1a37bb9)
+- **lifecycle:** Signal handlers register first + cover console-close events (5aef233)
 
 ---
 
