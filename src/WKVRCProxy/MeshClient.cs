@@ -237,13 +237,18 @@ internal sealed class MeshClient : IAsyncDisposable
                 Console.WriteLine("[mesh] connected node=" + node);
 
                 await PumpAsync(ct).ConfigureAwait(false);
-                Console.WriteLine("[mesh] disconnected — clean close");
+                Console.WriteLine("[mesh] disconnected (clean close)");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                if (_wasConnected) Console.WriteLine("[mesh] disconnected — " + ex.Message);
-                else if (_reconnectAttempt == 0) Console.WriteLine("[mesh] disconnected — " + ex.Message);
+                // Distinguish abnormal disconnects from clean ones with a
+                // [warn] prefix so a user grepping the log can see at a
+                // glance that something failed.
+                if (_wasConnected) Console.WriteLine("[mesh][warn] disconnected (error): "
+                    + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                else if (_reconnectAttempt == 0) Console.WriteLine("[mesh][warn] disconnected (error): "
+                    + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
                 _wasConnected = false;
                 FailAllPending(WireConstants.FallbackServerUnreachable);
                 if (_firstReconnectFailureUtc == DateTime.MinValue)
@@ -265,7 +270,12 @@ internal sealed class MeshClient : IAsyncDisposable
             _reconnectAttempt++;
             int capSec = ReconnectCapsSec[Math.Min(_reconnectAttempt - 1, ReconnectCapsSec.Length - 1)];
             int waitMs = _rng.Next(0, capSec * 1000 + 1);
-            Console.WriteLine($"[mesh] reconnect attempt {_reconnectAttempt} in {waitMs / 1000} s");
+            // Dedupe: log every attempt for the first 5, then every 10th, so a
+            // sustained outage doesn't fill the scrollback with retry chatter.
+            if (_reconnectAttempt <= 5 || _reconnectAttempt % 10 == 0)
+            {
+                Console.WriteLine($"[mesh] reconnect attempt {_reconnectAttempt} in {waitMs / 1000} s");
+            }
             try { await Task.Delay(waitMs, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
@@ -457,14 +467,24 @@ internal sealed class MeshClient : IAsyncDisposable
                     _serverVersion = welcome.ServerVersion;
                     _ytDlpVersion = welcome.YtDlpVersion;
 
-                    int featureCount = welcome.Features?.Length ?? 0;
+                    // Spec marks engines + features required on welcome.
+                    // Surface a warning if either is null so a server-side
+                    // regression that drops the field is diagnosable.
+                    if (welcome.Engines == null)
+                        Console.WriteLine("[mesh][warn] welcome missing required field: engines");
+                    if (welcome.Features == null)
+                        Console.WriteLine("[mesh][warn] welcome missing required field: features");
+
+                    string features = welcome.Features != null && welcome.Features.Length > 0
+                        ? "[" + string.Join(",", welcome.Features) + "]"
+                        : "[]";
                     Console.WriteLine(
                         "[mesh] welcome node=" + (welcome.Node ?? "?") +
                         " v=" + welcome.ProtocolVersion + " (negotiated=" + negotiated + ")" +
                         " server=" + (welcome.ServerVersion ?? "?") +
                         " yt-dlp=" + (welcome.YtDlpVersion ?? "?") +
                         " warp_active=" + (welcome.WarpActive?.ToString() ?? "?") +
-                        " features=" + featureCount);
+                        " features=" + LogUtil.SanitizeForConsole(features, 240));
                 }
                 _welcomeTcs?.TrySetResult(welcome);
                 doc.Dispose();
