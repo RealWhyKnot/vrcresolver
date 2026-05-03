@@ -106,6 +106,11 @@ internal sealed class MeshClient : IAsyncDisposable
     // unchanged via [JsonExtensionData] on the DTO.
     public async Task<JsonDocument> ResolveAsync(ResolveRequest req, CancellationToken ct)
     {
+        // H5: defensive against null DTO from a misbehaving caller. Synthesize
+        // a fallback rather than NRE before we have an id to key on.
+        if (req == null)
+            return MakeFallbackDoc("", WireConstants.FallbackInternalError);
+
         // Generate per-attempt id if patched yt-dlp didn't supply one. Needed
         // for the pending-TCS key regardless.
         if (string.IsNullOrEmpty(req.Id))
@@ -127,9 +132,14 @@ internal sealed class MeshClient : IAsyncDisposable
             catch (OperationCanceledException) { throw; }
         }
 
-        // Stamp protocol_version=2 if server is v2-capable AND the patched
-        // yt-dlp didn't already populate it. Lossless: never overwrite.
-        if (_serverProtocolVersion >= 2 && !req.ProtocolVersion.HasValue)
+        // Stamp protocol_version=2 ONLY when the server is v2-capable AND the
+        // patched yt-dlp has signalled awareness of v2 (either by setting
+        // protocol_version itself, or populating any optional v2 request
+        // field). Pre-fix this auto-stamped on any v1-shape request — pushing
+        // v2 response fields onto a strict-shape v1 patched yt-dlp that never
+        // opted in. Now: lossless v1 in → v1 out for callers that haven't
+        // declared v2 awareness.
+        if (_serverProtocolVersion >= 2 && !req.ProtocolVersion.HasValue && CallerOptedIntoV2(req))
             req.ProtocolVersion = WireConstants.ClientProtocolVersion;
 
         var tcs = new TaskCompletionSource<JsonDocument>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -343,12 +353,16 @@ internal sealed class MeshClient : IAsyncDisposable
             try { await Task.Delay(HeartbeatInterval, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
 
-            if (_ws?.State != WebSocketState.Open) return;
+            // Snapshot _ws to a local so a concurrent run-loop teardown that
+            // sets _ws = null can't NRE us between the State check and the
+            // SendAsync call.
+            var ws = _ws;
+            if (ws is not { State: WebSocketState.Open }) return;
             DateTime sentAt = DateTime.UtcNow;
             try
             {
                 var ping = JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPing });
-                await _ws.SendAsync(ping, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                await ws.SendAsync(ping, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
             }
             catch { return; }
 
@@ -357,7 +371,7 @@ internal sealed class MeshClient : IAsyncDisposable
 
             if (_lastPongUtc < sentAt)
             {
-                try { _ws?.Abort(); } catch { /* ignore */ }
+                try { ws.Abort(); } catch { /* ignore */ }
                 return;
             }
         }
@@ -468,8 +482,14 @@ internal sealed class MeshClient : IAsyncDisposable
                 doc.Dispose();
                 try
                 {
-                    var pong = JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPong });
-                    await _ws!.SendAsync(pong, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                    // Snapshot _ws before send — same TOCTOU concern as the
+                    // heartbeat loop's snapshot.
+                    var pongWs = _ws;
+                    if (pongWs is { State: WebSocketState.Open })
+                    {
+                        var pong = JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPong });
+                        await pongWs.SendAsync(pong, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                    }
                 }
                 catch { /* heartbeat will catch dead socket */ }
                 return;
@@ -546,6 +566,19 @@ internal sealed class MeshClient : IAsyncDisposable
     // is populated. Keeps log-line construction terse at call sites.
     private static string CidSuffix(string? correlationId) =>
         string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
+
+    // Detect whether the patched yt-dlp populated any v2 request field. Used
+    // to decide whether the watchdog should auto-stamp protocol_version=2 —
+    // the audit's BC1 finding flagged that a strict-shape v1 patched yt-dlp
+    // shouldn't suddenly start receiving v2 response fields it never opted
+    // into.
+    private static bool CallerOptedIntoV2(ResolveRequest req) =>
+        req.ProtocolVersion.HasValue ||
+        !string.IsNullOrEmpty(req.CorrelationId) ||
+        req.AcceptProtocols != null ||
+        req.AcceptCodecs != null ||
+        req.MaxAudioChannels.HasValue ||
+        !string.IsNullOrEmpty(req.VrchatFormatArg);
 
     // Surface fallback_native reasons on the watchdog console so a user with
     // a console window open can correlate "video failed" with "server bailed
