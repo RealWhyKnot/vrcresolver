@@ -23,6 +23,7 @@ internal sealed class PatchManager : IDisposable
     private readonly string _bundledFallbackPath;
     private readonly string _bundledFallbackVerPath;
     private readonly string _cleanExitFlagPath;
+    private readonly string _haltFlagPath;
     private readonly CancellationTokenSource _cts = new();
     private readonly string? _vrcToolsDir;
     private Task? _loop;
@@ -44,6 +45,7 @@ internal sealed class PatchManager : IDisposable
             "WKVRCProxy");
         Directory.CreateDirectory(stateDir);
         _cleanExitFlagPath = Path.Combine(stateDir, "clean_exit.flag");
+        _haltFlagPath = Path.Combine(stateDir, "halt.flag");
 
         _vrcToolsDir = VrcPathLocator.Find();
     }
@@ -103,6 +105,11 @@ internal sealed class PatchManager : IDisposable
             Console.WriteLine("Cannot apply patch — VRChat hasn't shipped its own yt-dlp.exe yet, and we have no original to preserve as fallback. Launch VRChat once first, then re-run.");
             return false;
         }
+
+        // We've confirmed both the patched binary and a Tools-side state we can
+        // engage with — clear any leftover halt.flag from a prior corrupted run.
+        try { if (File.Exists(_haltFlagPath)) File.Delete(_haltFlagPath); }
+        catch { /* best-effort */ }
 
         _started = true;
         _loop = Task.Run(WatchdogLoop);
@@ -181,18 +188,23 @@ internal sealed class PatchManager : IDisposable
             }
             else
             {
-                _halted = true;
-                Console.WriteLine("Reinstall WKVRCProxy");
-                _cts.Cancel();
+                // No backup AND no bundled fallback AND target == patched. We have
+                // nothing to roll back to — VRChat will be stuck with the patched
+                // binary even after we shut down. The patched yt-dlp's own
+                // "exec yt-dlp-og.exe" fallback can't fire because og.exe is gone.
+                // RestoreYtDlpInTools will return false (no backup); the halt
+                // banner stays visible regardless.
+                Halt("install_corrupted_no_backup_no_fallback");
                 return;
             }
         }
 
         if (!File.Exists(_patchedYtDlpPath))
         {
-            _halted = true;
-            Console.WriteLine("Reinstall WKVRCProxy");
-            _cts.Cancel();
+            // Our own patched build is missing from the install. og.exe should
+            // still be present (otherwise the previous branch would have halted
+            // first). Restore from og so VRChat is left with vanilla yt-dlp.
+            Halt("patched_binary_missing");
             return;
         }
 
@@ -217,6 +229,28 @@ internal sealed class PatchManager : IDisposable
             Console.WriteLine("[patch] yt-dlp.exe was overwritten — re-applied.");
         }
         catch (IOException) { /* file in use — retry next tick */ }
+    }
+
+    // Halt the watchdog loop. ALWAYS attempts to leave VRChat with a working
+    // yt-dlp.exe before stopping ticks — restoring from yt-dlp-og.exe if it
+    // still exists. On a successful restore VRChat falls back to vanilla
+    // yt-dlp behaviour the next time it launches a video. Persists a halt.flag
+    // (with reason + timestamp) so a future maintenance pass can detect that
+    // the daemon is alive but no longer functional.
+    private void Halt(string reason)
+    {
+        _halted = true;
+        bool restored = false;
+        if (!string.IsNullOrEmpty(_vrcToolsDir))
+        {
+            try { restored = RestoreYtDlpInTools(_vrcToolsDir); }
+            catch (Exception ex) { Console.WriteLine("[halt] restore threw: " + ex.Message); }
+        }
+        Console.WriteLine("Reinstall WKVRCProxy");
+        Console.WriteLine("[halt] reason=" + reason + " restored=" + restored);
+        try { File.WriteAllText(_haltFlagPath, DateTime.UtcNow.ToString("o") + " " + reason); }
+        catch { /* best-effort */ }
+        _cts.Cancel();
     }
 
     // Copies src over dst with no partial-file window: stage to a sibling
