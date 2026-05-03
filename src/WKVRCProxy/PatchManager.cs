@@ -82,12 +82,30 @@ internal sealed class PatchManager : IDisposable
 
         if (File.Exists(targetPath) && File.Exists(_patchedYtDlpPath) && FilesEqualByHash(targetPath, _patchedYtDlpPath))
         {
+            // Orphan: yt-dlp.exe is our patched binary AND there's no og to
+            // restore from. Don't just delete — we'd leave VRChat with no
+            // yt-dlp.exe at all and Start()'s refuse-to-apply guard would
+            // then trip on the missing target+backup pair. Replace with the
+            // bundled vanilla so VRChat sees a working yt-dlp at all times.
             try
             {
-                File.Delete(targetPath);
-                Console.WriteLine("Recovery: orphan patched yt-dlp.exe deleted; vanilla copy will be re-staged.");
+                if (File.Exists(_bundledFallbackPath))
+                {
+                    AtomicCopy(_bundledFallbackPath, targetPath);
+                    Console.WriteLine("Recovery: orphan patched yt-dlp.exe replaced with bundled vanilla (" + ReadBundledFallbackVersion() + ").");
+                }
+                else
+                {
+                    // Last resort: delete and let Start() halt. There's no
+                    // viable yt-dlp anywhere we can reach.
+                    File.Delete(targetPath);
+                    Console.WriteLine("Recovery: orphan patched yt-dlp.exe deleted (no bundled fallback available).");
+                }
             }
-            catch { /* next tick will retry */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Recovery: orphan replacement failed: " + ex.Message);
+            }
         }
     }
 
