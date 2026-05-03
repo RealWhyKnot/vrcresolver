@@ -28,6 +28,7 @@ internal sealed class PatchManager : IDisposable
     private Task? _loop;
     private DateTime _lastPatchTime = DateTime.MinValue;
     private bool _halted;
+    private bool _started;
 
     public string? VrcToolsDir => _vrcToolsDir;
     public bool Halted => _halted;
@@ -103,6 +104,7 @@ internal sealed class PatchManager : IDisposable
             return false;
         }
 
+        _started = true;
         _loop = Task.Run(WatchdogLoop);
         return true;
     }
@@ -114,10 +116,32 @@ internal sealed class PatchManager : IDisposable
         {
             try { await _loop.ConfigureAwait(false); } catch { /* ignore */ }
         }
-        if (!string.IsNullOrEmpty(_vrcToolsDir))
-            RestoreYtDlpInTools(_vrcToolsDir);
 
-        try { File.WriteAllText(_cleanExitFlagPath, DateTime.UtcNow.ToString("o")); } catch { /* best-effort */ }
+        // Only write clean_exit.flag when the post-shutdown state is genuinely
+        // clean. If we ever engaged the watchdog, the restore must have actually
+        // succeeded for the flag to be honest. If it didn't (og missing, target
+        // locked through every retry, etc.) we leave the flag absent so the
+        // next launch's RecoverFromUncleanShutdown gets a chance to fix it.
+        bool cleanShutdown;
+        if (!_started)
+        {
+            // Watchdog never engaged — Tools dir was untouched by us this run.
+            cleanShutdown = true;
+        }
+        else if (string.IsNullOrEmpty(_vrcToolsDir))
+        {
+            cleanShutdown = true;
+        }
+        else
+        {
+            cleanShutdown = RestoreYtDlpInTools(_vrcToolsDir);
+        }
+
+        if (cleanShutdown)
+        {
+            try { File.WriteAllText(_cleanExitFlagPath, DateTime.UtcNow.ToString("o")); }
+            catch { /* best-effort */ }
+        }
     }
 
     private async Task WatchdogLoop()
