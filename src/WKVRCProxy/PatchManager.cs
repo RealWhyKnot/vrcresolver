@@ -76,7 +76,7 @@ internal sealed class PatchManager : IDisposable
 
         if (File.Exists(backupPath))
         {
-            Console.WriteLine("Recovery: previous run exited uncleanly — restoring vanilla yt-dlp from yt-dlp-og.exe.");
+            Console.WriteLine("[warn] Recovery: previous run exited uncleanly — restoring vanilla yt-dlp from yt-dlp-og.exe.");
             RestoreYtDlpInTools(_vrcToolsDir);
             return;
         }
@@ -292,10 +292,21 @@ internal sealed class PatchManager : IDisposable
             catch (Exception ex) { Console.WriteLine("[halt] restore threw: " + ex.Message); }
             ToolsDirSweeper.Sweep(_vrcToolsDir);
         }
-        Console.WriteLine("Reinstall WKVRCProxy");
-        Console.WriteLine("[halt] reason=" + reason + " restored=" + restored);
+
+        // Halt banner: bracket the message with a divider so it stands out
+        // in the scrollback and update the console window title so a user
+        // glancing at the taskbar sees the daemon is no longer functional
+        // even after the message has scrolled off.
+        Console.WriteLine("");
+        Console.WriteLine("============================================================");
+        Console.WriteLine("[FATAL] WKVRCProxy halted — Reinstall WKVRCProxy");
+        Console.WriteLine("[halt]  reason=" + reason + " restored=" + restored);
+        Console.WriteLine("============================================================");
+        Console.WriteLine("");
+        try { Console.Title = "WKVRCProxy — HALTED (" + reason + ")"; } catch { /* best-effort */ }
+
         try { File.WriteAllText(_haltFlagPath, DateTime.UtcNow.ToString("o") + " " + reason); }
-        catch { /* best-effort */ }
+        catch (Exception ex) { Console.WriteLine("[halt] could not write halt.flag: " + ex.Message); }
         _cts.Cancel();
     }
 
