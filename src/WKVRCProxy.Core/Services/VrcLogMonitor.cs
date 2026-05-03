@@ -28,6 +28,14 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     // the failure line was observed (UTC).
     public event Action<string, DateTime>? OnAvProLoadFailure;
 
+    // Fires when an "[AVProVideo] Opening <url>" line is NOT followed by either a "Loading failed"
+    // line or a success indicator ("Now Playing:" / "Load Url:") within SilentStallWindow. This is
+    // the missing fourth observability signal — the case where AVPro silently does nothing after
+    // accepting a URL (no error, no playback, world script may or may not retry). Subscribers
+    // treat this the same as a Loading-failed event: demote the strategy that produced the URL,
+    // evict any resolve-cache entry, force a fresh cascade on the next request.
+    public event Action<string, DateTime>? OnAvProSilentStall;
+
     // Correlation state for the Opening → Error pattern. We only keep the most recent Opening URL
     // and its observation time; a "Loading failed" within CorrelationWindow demotes. Older Openings
     // are cleared on state transitions.
@@ -37,6 +45,16 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     private static readonly Regex _avProOpeningRegex = new(
         @"\[AVProVideo\] Opening\s+(\S+)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Silent-stall watchdog. SilentStallWindow > AvProOpenFailCorrelationWindow so a slow
+    // Loading-failed line still wins the race and routes through OnAvProLoadFailure (avoids
+    // double-firing both signals for the same incident). 12 s gives AVPro plenty of headroom for
+    // first-frame on a slow upstream while still feeling responsive — the user has been staring
+    // at a loading screen for 12 s by the time we conclude something is wrong.
+    private static readonly TimeSpan SilentStallWindow = TimeSpan.FromSeconds(12);
+    private CancellationTokenSource? _silentStallCts;
+    private string? _silentStallUrl;
+    private readonly object _silentStallLock = new();
 
     public Task InitializeAsync(IModuleContext context)
     {
@@ -51,6 +69,9 @@ public class VrcLogMonitor : IProxyModule, IDisposable
     public void Shutdown()
     {
         _cts.Cancel();
+        // Cancel any pending silent-stall watchdog so it doesn't fire post-shutdown with a stale
+        // event subscriber list. Cheap to call and idempotent if no watchdog is active.
+        CancelSilentStallWatchdog();
     }
     
     private async Task MonitorLoop()
@@ -226,6 +247,7 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                            || line.Contains("Now Playing:")
                            || line.Contains("[AVProVideo] Error:")
                            || line.Contains("[AVProVideo] Opening ")
+                           || line.Contains("[AVProVideo] Using playback path:")
                            || line.Contains("[VRC.SDK3.Video]")
                            || line.Contains("[VRC.SDK2.Video]");
 
@@ -244,8 +266,12 @@ public class VrcLogMonitor : IProxyModule, IDisposable
             var openingMatch = _avProOpeningRegex.Match(line);
             if (openingMatch.Success)
             {
-                _lastAvProOpeningUrl = openingMatch.Groups[1].Value;
+                string openedUrl = openingMatch.Groups[1].Value;
+                _lastAvProOpeningUrl = openedUrl;
                 _lastAvProOpeningAt = DateTime.UtcNow;
+                string shortOpened = openedUrl.Length > 100 ? openedUrl.Substring(0, 100) + "..." : openedUrl;
+                _logger?.Info("[Playback] AVPro Opening received → starting watchdog (" + (int)SilentStallWindow.TotalSeconds + "s) for " + shortOpened);
+                StartSilentStallWatchdog(openedUrl);
             }
             else if (line.Contains("[AVProVideo] Error: Loading failed"))
             {
@@ -254,11 +280,86 @@ public class VrcLogMonitor : IProxyModule, IDisposable
                 {
                     string failedUrl = _lastAvProOpeningUrl;
                     _lastAvProOpeningUrl = null; // consume to avoid double-firing on retry errors
+                    string shortFailed = failedUrl.Length > 100 ? failedUrl.Substring(0, 100) + "..." : failedUrl;
+                    _logger?.Info("[Playback] AVPro Loading failed (correlated to recent Opening) for " + shortFailed);
                     try { OnAvProLoadFailure?.Invoke(failedUrl, DateTime.UtcNow); }
                     catch (Exception ex) { _logger?.Warning("[VrcLogMonitor] OnAvProLoadFailure handler threw: " + ex.Message); }
                 }
+                // Loading failed always cancels any pending silent-stall watchdog — the loud-failure
+                // path has already fired (or is below the correlation threshold), and we don't want
+                // the same incident raising a second signal under a different name.
+                CancelSilentStallWatchdog();
+            }
+            else if (line.Contains("[AVProVideo] Using playback path:"))
+            {
+                // Universal AVPro success marker — fires after Opening when AVPro picked a backend
+                // decoder (MF-MediaEngine-Hardware etc.) and started loading. Cancels the watchdog
+                // regardless of which world script wraps AVPro. Without this, worlds that don't use
+                // ProTV / VideoTXL (e.g. Five Nights at Freddy's) silent-stall a working playback.
+                _logger?.Info("[Playback] AVPro success marker — Using playback path → cancelling silent-stall watchdog (playback started)");
+                CancelSilentStallWatchdog();
+            }
+            else if (line.Contains("Now Playing:") || line.Contains("Load Url:"))
+            {
+                // World-script success indicators (ProTV / TVManager / VideoTXL). Belt-and-suspenders
+                // alongside the AVPro marker — confirms the world's view of playback start. Don't
+                // URL-match: the world's URL log names the original user URL, the watchdog is keyed
+                // on the wrapped/relayed URL AVPro opened.
+                _logger?.Debug("[Playback] World-script success marker (Now Playing / Load Url) → cancelling silent-stall watchdog");
+                CancelSilentStallWatchdog();
             }
         }
+    }
+
+    // Per-Opening watchdog. A new Opening supersedes any pending watchdog (cancels the old CTS,
+    // installs a fresh one) so rapid retries / world script re-fires don't accumulate timers.
+    private void StartSilentStallWatchdog(string url)
+    {
+        var newCts = new CancellationTokenSource();
+        CancellationTokenSource? oldCts;
+        lock (_silentStallLock)
+        {
+            oldCts = _silentStallCts;
+            _silentStallCts = newCts;
+            _silentStallUrl = url;
+        }
+        try { oldCts?.Cancel(); oldCts?.Dispose(); } catch { /* superseded — fine */ }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(SilentStallWindow, newCts.Token);
+            }
+            catch (OperationCanceledException) { return; }
+
+            string? activeUrl = null;
+            lock (_silentStallLock)
+            {
+                if (ReferenceEquals(_silentStallCts, newCts))
+                {
+                    activeUrl = _silentStallUrl;
+                    _silentStallCts = null;
+                    _silentStallUrl = null;
+                }
+            }
+            try { newCts.Dispose(); } catch { }
+            if (activeUrl == null) return;
+            try { OnAvProSilentStall?.Invoke(activeUrl, DateTime.UtcNow); }
+            catch (Exception ex) { _logger?.Warning("[VrcLogMonitor] OnAvProSilentStall handler threw: " + ex.Message); }
+        });
+    }
+
+    private void CancelSilentStallWatchdog()
+    {
+        CancellationTokenSource? cts;
+        lock (_silentStallLock)
+        {
+            cts = _silentStallCts;
+            _silentStallCts = null;
+            _silentStallUrl = null;
+        }
+        try { cts?.Cancel(); cts?.Dispose(); } catch { /* fine */ }
     }
 
     private string? DetectToolsFromExe(string exePath)

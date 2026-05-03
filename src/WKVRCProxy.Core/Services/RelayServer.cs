@@ -37,6 +37,30 @@ public class RelayServer : IProxyModule, IDisposable
     public event Action<string /*targetUrl*/, long /*bytesAtAbort*/>? OnClientAbortedEarly;
     private const long AbortBytesThreshold = 256 * 1024; // 256 KB — below this = format rejection
 
+    // Fires when upstream returned a 2xx response whose Content-Type is definitively non-media
+    // (text/html, application/json, etc). This is the smoking gun for "the strategy returned a
+    // working URL, but the URL points at an error page or login wall, not a video." Unlike
+    // OnClientAbortedEarly, this is a SINGLE-STRIKE signal — no rolling-window threshold, because
+    // every occurrence is a definitive failure. Subscribers treat this as immediate PlaybackFailed.
+    public event Action<string /*targetUrl*/, string /*contentType*/>? OnUpstreamNonMedia;
+
+    // Content-Type allowlist by exclusion: anything not on this list of "definitely not media"
+    // gets the benefit of the doubt (many CDNs omit Content-Type or use application/octet-stream).
+    private static bool IsLikelyMediaContentType(string? ct)
+    {
+        if (string.IsNullOrEmpty(ct)) return true;
+        ct = ct.ToLowerInvariant();
+        // Strip parameters: "text/html; charset=utf-8" -> "text/html"
+        int semi = ct.IndexOf(';');
+        if (semi > 0) ct = ct.Substring(0, semi).Trim();
+        if (ct.StartsWith("text/html")) return false;
+        if (ct.StartsWith("text/plain")) return false;
+        if (ct.StartsWith("application/json")) return false;
+        if (ct.StartsWith("application/xml")) return false;
+        if (ct.StartsWith("text/xml")) return false;
+        return true;
+    }
+
     // Smoothness diagnostics thresholds. A "slow" segment is anything an AVPro reader could feel:
     //   - TTFB > 750ms   — the upstream took noticeable wall-clock time before the first byte
     //   - throughput < 384 KB/s on a transfer >= 256 KB — sustained slow delivery, will starve buffer
@@ -47,11 +71,16 @@ public class RelayServer : IProxyModule, IDisposable
     private const long SmoothnessStallThroughputBytesPerSec = 192 * 1024;
     private const long SmoothnessMinBytesForThroughputCheck = 256 * 1024;
 
-    // Upstream-side deadline. If the underlying HTTP fetch (headers + first body byte + body
-    // copy) does not complete within this window, the per-request CTS fires and the handler
-    // emits a WARN line + 504 instead of pinning a thread on a hung upstream forever. Conservative
-    // ceiling — worst real segment in observed logs was ~800 ms; well below "indefinitely stuck".
+    // Header-phase deadline. Bounds the SendAsync call (request → response headers received)
+    // so a hung upstream that never sends headers can't pin the handler forever. Generous
+    // ceiling — worst real header-arrival in observed logs was ~800 ms.
     private const int UpstreamDeadlineMs = 30_000;
+    // Body-phase IDLE deadline. Once we've received headers and started streaming, the deadline
+    // resets each time bytes arrive. 30s without ANY bytes = abort. This is the right model for
+    // long binary streams (a 90-min movie shouldn't be cut off by a wall-clock timer the way the
+    // pre-2026-05-03 code did with a single 30s total deadline that killed playback mid-stream
+    // once the upstream had transferred enough bytes to trip the timer).
+    private const int BodyIdleTimeoutMs = 30_000;
     // Watchdog: if a handler runs longer than this without already having tripped the deadline,
     // emit a one-line breakdown so the user can see *where* the time went (upstream vs body vs client).
     private const long HandlerWatchdogMs = UpstreamDeadlineMs / 2;
@@ -65,9 +94,14 @@ public class RelayServer : IProxyModule, IDisposable
     private CurlImpersonateClient? _curlClient;
     private BrowserSessionCache? _browserSessionCache;
     private SystemEventBus? _eventBus;
+    // Belt-and-suspenders timeout: the per-request CTS (UpstreamDeadlineMs, 30s) is the primary
+    // upstream deadline and fires regardless of code path. HttpClient.Timeout is a safety net at
+    // 35s so even if the linked CTS isn't propagated through some future code path, a hung upstream
+    // connection still gets unwound. Keep this strictly > UpstreamDeadlineMs so the per-request
+    // CTS normally fires first and we get the cleaner 504 + WARN error path.
     private readonly HttpClient _httpClient = new HttpClient(
         new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All }
-    ) { Timeout = Timeout.InfiniteTimeSpan };
+    ) { Timeout = TimeSpan.FromSeconds(35) };
 
     // Suppress repeated "Relaying:" INFO lines per upstream host within a sliding window.
     // Keyed on the host (not the full URL) because every HLS segment has a unique URL â€” a
@@ -392,6 +426,7 @@ public class RelayServer : IProxyModule, IDisposable
 
                 bool curlContentTypeIsHls = false;
                 bool curlContentTypeObserved = false;
+                string? curlContentTypeValue = null;
                 long? curlContentLength = null;
 
                 foreach (var headerLine in headerLines)
@@ -407,6 +442,7 @@ public class RelayServer : IProxyModule, IDisposable
                         if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
                         {
                             curlContentTypeObserved = true;
+                            curlContentTypeValue = value;
                             curlContentTypeIsHls = value.Contains("mpegurl") || value.Contains("m3u8");
                             if (curlContentTypeIsHls) isHls = true;
                         }
@@ -419,6 +455,23 @@ public class RelayServer : IProxyModule, IDisposable
 
                         try { context.Response.Headers.Add(key, value); } catch { }
                     }
+                }
+
+                // Non-media-Content-Type guard: upstream returned 2xx but the body is HTML/JSON
+                // (error page, login wall, JSON error blob disguised as success). Forwarding it to
+                // AVPro produces the silent-stuck failure mode — AVPro accepts the response, can't
+                // parse video frames, and just sits there with no error. Bail with 502 and fire
+                // the immediate-demote signal so the strategy that returned this URL gets blamed.
+                int curlStatus = context.Response.StatusCode == 0 ? 200 : context.Response.StatusCode;
+                if (curlStatus >= 200 && curlStatus < 300 && !IsLikelyMediaContentType(curlContentTypeValue))
+                {
+                    _logger?.Warning("[" + ctx.CorrelationId + "] [Relay] upstream 2xx with non-media Content-Type '"
+                        + curlContentTypeValue + "' for " + shortUrl + " — AVPro will silently fail. Treating as PlaybackFailed.");
+                    try { OnUpstreamNonMedia?.Invoke(targetUrl, curlContentTypeValue ?? ""); } catch { }
+                    try { context.Response.StatusCode = 502; } catch { }
+                    relayEvent.StatusCode = 502;
+                    OnRelayEvent?.Invoke(relayEvent);
+                    return;
                 }
 
                 // If Content-Type was present and explicitly says non-HLS, override the URL heuristic.
@@ -489,6 +542,7 @@ public class RelayServer : IProxyModule, IDisposable
 
                 bool httpContentTypeIsHls = false;
                 bool httpContentTypeObserved = false;
+                string? httpContentTypeValue = null;
                 long? httpContentLength = null;
 
                 foreach (var header in response.Headers.Concat(response.Content.Headers))
@@ -501,6 +555,7 @@ public class RelayServer : IProxyModule, IDisposable
                     if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
                     {
                         httpContentTypeObserved = true;
+                        httpContentTypeValue = value;
                         httpContentTypeIsHls = value.Contains("mpegurl") || value.Contains("m3u8");
                         if (httpContentTypeIsHls) isHls = true;
                     }
@@ -512,6 +567,21 @@ public class RelayServer : IProxyModule, IDisposable
                     }
 
                     try { context.Response.Headers.Add(key, value); } catch { }
+                }
+
+                // Non-media-Content-Type guard (HttpClient path). Same logic as the curl branch:
+                // upstream 2xx with HTML/JSON body → forward and AVPro silently fails. Bail with 502
+                // and fire the immediate-demote signal. upstreamStatus already filtered out >=400
+                // earlier in this branch, so we're guaranteed 2xx here.
+                if (!IsLikelyMediaContentType(httpContentTypeValue))
+                {
+                    _logger?.Warning("[" + ctx.CorrelationId + "] [Relay] upstream 2xx with non-media Content-Type '"
+                        + httpContentTypeValue + "' for " + shortUrl + " — AVPro will silently fail. Treating as PlaybackFailed.");
+                    try { OnUpstreamNonMedia?.Invoke(targetUrl, httpContentTypeValue ?? ""); } catch { }
+                    try { context.Response.StatusCode = 502; } catch { }
+                    relayEvent.StatusCode = 502;
+                    OnRelayEvent?.Invoke(relayEvent);
+                    return;
                 }
 
                 // If Content-Type was present and explicitly says non-HLS, override the URL heuristic.
@@ -555,21 +625,43 @@ public class RelayServer : IProxyModule, IDisposable
             // rejections abort within the first few KB as the player reads enough to decide
             // "I can't play this." We fire OnClientAbortedEarly only below AbortBytesThreshold.
             //
+            // Per-read idle timeout (fixed 2026-05-03): each ReadAsync gets its own CTS that
+            // resets after every successful read. Without this, a video streaming for >30s would
+            // be killed mid-playback when the original reqCts deadline (header-phase only) tripped
+            // — the user reported "videos failing constantly" which traced to this exact path.
+            // _cts still propagates shutdown so the handler unwinds cleanly on app exit.
+            //
             // Smoothness probe: ttfbMs is the wall-clock from upstream-send to first body byte
             // (captured against the outer stopwatch; the previous wiring measured only the
             // post-buffer interval and always read 0 ms). Throughput is body-copy only.
+            bool bodyIdleTimeoutTripped = false;
             try
             {
                 byte[] buffer = new byte[81920];
                 int bytesRead;
-                while ((bytesRead = await sourceStream!.ReadAsync(buffer, 0, buffer.Length, reqCts.Token)) > 0)
+                while (true)
                 {
+                    using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+                    idleCts.CancelAfter(BodyIdleTimeoutMs);
+                    try
+                    {
+                        bytesRead = await sourceStream!.ReadAsync(buffer, 0, buffer.Length, idleCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!_cts.IsCancellationRequested && idleCts.IsCancellationRequested)
+                    {
+                        bodyIdleTimeoutTripped = true;
+                        bodyDoneAtMs = sw.ElapsedMilliseconds;
+                        _logger?.Warning("[" + ctx.CorrelationId + "] [Relay] body idle timeout after " + (BodyIdleTimeoutMs / 1000) + "s with no bytes flowing for " + shortUrl + " (bytes=" + relayEvent.BytesTransferred + ")");
+                        try { context.Response.StatusCode = 504; } catch { }
+                        break;
+                    }
+                    if (bytesRead == 0) break;
                     if (firstByteAtMs == null) firstByteAtMs = sw.ElapsedMilliseconds;
                     await context.Response.OutputStream.WriteAsync(buffer, 0, bytesRead, _cts.Token);
                     relayEvent.BytesTransferred += bytesRead;
                     bytesTransferred = relayEvent.BytesTransferred;
                 }
-                bodyDoneAtMs = sw.ElapsedMilliseconds;
+                if (!bodyIdleTimeoutTripped) bodyDoneAtMs = sw.ElapsedMilliseconds;
             }
             catch (HttpListenerException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; bodyDoneAtMs = sw.ElapsedMilliseconds; }
             catch (IOException) { clientAbortedShort = relayEvent.BytesTransferred < AbortBytesThreshold; bodyDoneAtMs = sw.ElapsedMilliseconds; }
@@ -580,13 +672,15 @@ public class RelayServer : IProxyModule, IDisposable
             }
             catch (OperationCanceledException) when (reqCts.IsCancellationRequested)
             {
-                // Per-request upstream deadline — the freeze just became visible in the log
-                // instead of a thread silently parked on a hung socket.
+                // Header-phase deadline tripped before we ever entered the read loop (e.g. SendAsync
+                // returned but ReadAsStreamAsync took too long). Distinct fingerprint from the
+                // idle-timeout path above so the log makes the failure mode unambiguous.
                 upstreamDeadlineTripped = true;
                 bodyDoneAtMs = sw.ElapsedMilliseconds;
-                _logger?.Warning("[" + ctx.CorrelationId + "] [Relay] upstream timed out after " + (UpstreamDeadlineMs / 1000) + "s for " + shortUrl + " (bytes=" + relayEvent.BytesTransferred + ")");
+                _logger?.Warning("[" + ctx.CorrelationId + "] [Relay] header-phase deadline (no body bytes received within " + (UpstreamDeadlineMs / 1000) + "s) for " + shortUrl);
                 try { context.Response.StatusCode = 504; } catch { }
             }
+            if (bodyIdleTimeoutTripped) upstreamDeadlineTripped = true; // existing watchdog uses this flag to suppress its own line
 
             if (clientAbortedShort)
             {
