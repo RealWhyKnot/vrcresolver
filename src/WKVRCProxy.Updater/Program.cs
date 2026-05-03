@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace WKVRCProxy.Updater;
 
@@ -10,15 +12,21 @@ namespace WKVRCProxy.Updater;
 //   1. Read current version from the WKVRCProxy.exe sitting next to us.
 //   2. Hit GitHub's releases-latest API for RealWhyKnot/WKVRCProxy.
 //   3. If newer, prompt with a 15s timeout (default No on timeout).
-//   4. On Yes: stop the running watchdog, download asset zip, extract over the
-//      install dir, relaunch the watchdog, exit.
+//   4. On Yes: download zip, verify SHA256 from release body, extract,
+//      stop the running watchdog, swap files atomically, relaunch, exit.
+//
+// Failure-mode invariant: the watchdog is only stopped once the new
+// payload has been downloaded AND SHA-verified AND extracted. Any
+// failure before that step leaves the running watchdog untouched.
 internal static class Program
 {
     private const string Repo = "RealWhyKnot/WKVRCProxy";
     private const string ApiUrl = "https://api.github.com/repos/" + Repo + "/releases/latest";
     private const string WatchdogExeName = "WKVRCProxy.exe";
-    private const string MutexName = "Global\\WKVRCProxy.Watchdog";
     private const int PromptTimeoutSec = 15;
+
+    private static readonly Regex Sha256Line =
+        new(@"SHA256:\s*([0-9A-Fa-f]{64})", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static async Task<int> Main(string[] args)
     {
@@ -29,13 +37,18 @@ internal static class Program
             Version current = ReadCurrentVersion(watchdogPath);
             Console.WriteLine($"Current version: {current}");
 
-            (Version latest, string zipUrl, string tagName) = await FetchLatestAsync();
+            (Version latest, string zipUrl, string tagName, string? expectedSha256) = await FetchLatestAsync();
             if (latest <= current)
             {
                 Console.WriteLine("You're on the latest version.");
                 return 0;
             }
             Console.WriteLine($"Update available: {tagName}");
+            if (string.IsNullOrEmpty(expectedSha256))
+            {
+                Console.Error.WriteLine("Refusing to update: release body did not contain a SHA256: line.");
+                return 12;
+            }
 
             if (!PromptUpdate())
             {
@@ -43,14 +56,40 @@ internal static class Program
                 return 0;
             }
 
-            StopRunningWatchdog();
+            // Download → SHA verify → extract → kill-watchdog → atomic swap → relaunch.
+            // The watchdog is only stopped AFTER the new payload is verified and
+            // staged in temp, so a failed download leaves the user's running
+            // watchdog untouched.
             string tempZip = Path.Combine(Path.GetTempPath(), $"WKVRCProxy-{tagName}.zip");
             await DownloadAsync(zipUrl, tempZip);
+
+            string actualSha = ComputeSha256(tempZip);
+            if (!actualSha.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine($"Refusing to install: SHA256 mismatch. expected={expectedSha256} actual={actualSha}");
+                try { File.Delete(tempZip); } catch { /* best-effort */ }
+                return 13;
+            }
 
             string tempExtract = Path.Combine(Path.GetTempPath(), $"WKVRCProxy-extract-{Guid.NewGuid():N}");
             ZipFile.ExtractToDirectory(tempZip, tempExtract);
 
-            CopyOver(tempExtract, installDir);
+            // From here on we WILL stop the watchdog; pre-stop failures above
+            // returned without touching the running install.
+            StopRunningWatchdog();
+
+            try
+            {
+                AtomicCopyOver(tempExtract, installDir);
+            }
+            catch
+            {
+                // CopyOver rolls back on rename failure; rethrow so the user
+                // sees the error and can re-run the updater. The old install
+                // is intact (atomic step never made it past the rename pass).
+                throw;
+            }
+
             try { File.Delete(tempZip); } catch { /* best-effort */ }
             try { Directory.Delete(tempExtract, true); } catch { /* best-effort */ }
 
@@ -80,7 +119,7 @@ internal static class Program
         return Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0, 0);
     }
 
-    private static async Task<(Version, string, string)> FetchLatestAsync()
+    private static async Task<(Version Latest, string ZipUrl, string TagName, string? Sha256)> FetchLatestAsync()
     {
         using var http = new HttpClient();
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WKVRCProxy-Updater", "1.0"));
@@ -105,7 +144,14 @@ internal static class Program
         }
         if (string.IsNullOrEmpty(zipUrl))
             throw new InvalidOperationException("No .zip asset on latest release.");
-        return (v, zipUrl, tag);
+
+        // Pull the SHA256: <hex> line out of the release body. release.yml
+        // always emits one; releases published by other paths won't.
+        string body = doc.RootElement.TryGetProperty("body", out var b) ? (b.GetString() ?? "") : "";
+        var match = Sha256Line.Match(body);
+        string? sha = match.Success ? match.Groups[1].Value : null;
+
+        return (v, zipUrl, tag, sha);
     }
 
     private static bool PromptUpdate()
@@ -128,8 +174,6 @@ internal static class Program
 
     private static void StopRunningWatchdog()
     {
-        // Try a clean close first (CloseMainWindow against the console window owner),
-        // then fall back to Kill if it's still alive after the grace window.
         foreach (var p in Process.GetProcessesByName("WKVRCProxy"))
         {
             try
@@ -139,7 +183,6 @@ internal static class Program
             }
             catch { /* best-effort */ }
         }
-        // Drain the mutex hold-time — give the OS a beat to release locks on the exe.
         Thread.Sleep(500);
     }
 
@@ -155,16 +198,86 @@ internal static class Program
         await src.CopyToAsync(dst);
     }
 
-    private static void CopyOver(string from, string to)
+    private static string ComputeSha256(string path)
     {
-        foreach (string file in Directory.GetFiles(from, "*", SearchOption.AllDirectories))
+        using var sha = SHA256.Create();
+        using var s = File.OpenRead(path);
+        return Convert.ToHexString(sha.ComputeHash(s));
+    }
+
+    // Atomic two-pass copy: stage every file from the new payload as
+    // "<dst>.new-<short>", then rename pass replaces originals via
+    // File.Move(overwrite:true). On rename failure, all already-renamed
+    // files are restored from the .old-<short> sidecar so a failed update
+    // doesn't leave a half-old / half-new install.
+    private static void AtomicCopyOver(string from, string to)
+    {
+        var stagedFiles = new List<(string TempNew, string FinalDst)>();
+        try
         {
-            string rel = Path.GetRelativePath(from, file);
-            string target = Path.Combine(to, rel);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            // Skip the updater itself — we cannot overwrite our own running exe.
-            if (Path.GetFileName(target).Equals("WKVRCProxy.Updater.exe", StringComparison.OrdinalIgnoreCase)) continue;
-            File.Copy(file, target, true);
+            foreach (string file in Directory.GetFiles(from, "*", SearchOption.AllDirectories))
+            {
+                string rel = Path.GetRelativePath(from, file);
+                string target = Path.Combine(to, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                if (Path.GetFileName(target).Equals("WKVRCProxy.Updater.exe", StringComparison.OrdinalIgnoreCase))
+                    continue; // can't overwrite our own running exe
+                string tempNew = target + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                File.Copy(file, tempNew, overwrite: true);
+                stagedFiles.Add((tempNew, target));
+            }
+        }
+        catch
+        {
+            // Pre-rename failure: clean up staged tmps and rethrow. Original
+            // install is intact.
+            foreach (var (tmp, _) in stagedFiles)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
+            }
+            throw;
+        }
+
+        var renamed = new List<(string Backup, string FinalDst)>();
+        try
+        {
+            foreach (var (tmp, dst) in stagedFiles)
+            {
+                string? backup = null;
+                if (File.Exists(dst))
+                {
+                    backup = dst + ".old-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                    File.Move(dst, backup);
+                }
+                File.Move(tmp, dst);
+                if (backup != null) renamed.Add((backup, dst));
+            }
+        }
+        catch
+        {
+            // Rename pass failed midway. Restore previously-renamed files
+            // from their .old- sidecars.
+            foreach (var (backup, dst) in renamed)
+            {
+                try
+                {
+                    if (File.Exists(dst)) File.Delete(dst);
+                    File.Move(backup, dst);
+                }
+                catch { /* nothing useful left to do */ }
+            }
+            // Clean up any unstaged tmps that were never renamed.
+            foreach (var (tmp, _) in stagedFiles)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
+            }
+            throw;
+        }
+
+        // Success — drop the .old-* backups.
+        foreach (var (backup, _) in renamed)
+        {
+            try { File.Delete(backup); } catch { /* best-effort */ }
         }
     }
 }
