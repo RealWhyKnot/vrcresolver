@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
@@ -55,6 +56,11 @@ internal sealed class PatchManager : IDisposable
     // engage from a known baseline.
     public void RecoverFromUncleanShutdown()
     {
+        // Always sweep our sidecars first, regardless of clean/unclean flag.
+        // .new-<short> tmps from a kill-mid-AtomicCopy and .stale-<utc>
+        // rename-asides accumulate across runs otherwise.
+        ToolsDirSweeper.Sweep(_vrcToolsDir);
+
         bool cleanLastTime = File.Exists(_cleanExitFlagPath);
         if (cleanLastTime)
         {
@@ -142,6 +148,11 @@ internal sealed class PatchManager : IDisposable
         else
         {
             cleanShutdown = RestoreYtDlpInTools(_vrcToolsDir);
+            // Sweep our own sidecars whether the restore succeeded or not.
+            // The .stale-<utc> file produced by the locked-target branch of
+            // RestoreYtDlpInTools is exactly the kind of leftover this is
+            // here to clean up.
+            ToolsDirSweeper.Sweep(_vrcToolsDir);
         }
 
         if (cleanShutdown)
@@ -245,6 +256,7 @@ internal sealed class PatchManager : IDisposable
         {
             try { restored = RestoreYtDlpInTools(_vrcToolsDir); }
             catch (Exception ex) { Console.WriteLine("[halt] restore threw: " + ex.Message); }
+            ToolsDirSweeper.Sweep(_vrcToolsDir);
         }
         Console.WriteLine("Reinstall WKVRCProxy");
         Console.WriteLine("[halt] reason=" + reason + " restored=" + restored);

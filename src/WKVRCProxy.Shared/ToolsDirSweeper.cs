@@ -1,0 +1,36 @@
+using System.Text.RegularExpressions;
+
+namespace WKVRCProxy.Shared;
+
+// Sweeps watchdog-authored sidecar files out of VRChat's Tools directory.
+// Only matches files we know we created: ".new-<short>" (atomic-copy temps)
+// and ".stale-<utc>" (locked-target rename-asides). Everything else is
+// untouched — VRChat or the patched yt-dlp may have its own files there
+// and we don't second-guess them.
+//
+// Called at every transition that ought to leave Tools/ pristine: startup
+// recovery, clean shutdown, halt, and uninstall. The user-visible invariant
+// is "after WKVRCProxy stops, Tools/ contains only vanilla yt-dlp.exe."
+public static class ToolsDirSweeper
+{
+    private static readonly Regex SidecarPattern = new(
+        @"^yt-dlp(-og)?\.exe\.(new|stale)-",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public static void Sweep(string? toolsDir)
+    {
+        if (string.IsNullOrEmpty(toolsDir)) return;
+        if (!Directory.Exists(toolsDir)) return;
+        try
+        {
+            foreach (string path in Directory.EnumerateFiles(toolsDir))
+            {
+                string name = Path.GetFileName(path);
+                if (!SidecarPattern.IsMatch(name)) continue;
+                try { File.Delete(path); }
+                catch { /* best-effort — file may still be locked; next sweep retries */ }
+            }
+        }
+        catch { /* enumerate failed (permissions, dir vanished mid-sweep) — best-effort */ }
+    }
+}

@@ -62,57 +62,71 @@ internal static class Program
         string? toolsDir = TryFindVrcTools();
         if (string.IsNullOrEmpty(toolsDir)) return;
 
+        // Sweep before AND after: clears any sidecars from prior unclean runs
+        // up front, and clears the .stale-<utc> we may produce ourselves below.
+        try { ToolsDirSweeper.Sweep(toolsDir); } catch { /* best-effort */ }
+
         string target = Path.Combine(toolsDir, "yt-dlp.exe");
         string backup = Path.Combine(toolsDir, "yt-dlp-og.exe");
         string bundled = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.exe");
 
-        if (File.Exists(backup))
+        try
         {
-            // Atomic same-volume rename — no window where yt-dlp.exe is missing
-            // while the move is in flight. Falls back to the move-aside-then-
-            // move pattern if the target is locked (VRChat / AV holding it).
-            try
+            if (File.Exists(backup))
             {
-                File.Move(backup, target, overwrite: true);
+                // Atomic same-volume rename — no window where yt-dlp.exe is missing
+                // while the move is in flight. Falls back to the move-aside-then-
+                // move pattern if the target is locked (VRChat / AV holding it).
+                try
+                {
+                    File.Move(backup, target, overwrite: true);
+                    return;
+                }
+                catch (IOException)
+                {
+                    /* target locked — try move-aside path below */
+                }
+
+                try
+                {
+                    if (File.Exists(target))
+                    {
+                        string stale = target + ".stale-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
+                        File.Move(target, stale);
+                    }
+                    File.Move(backup, target);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("yt-dlp.exe restore failed: " + ex.Message);
+                    throw;
+                }
                 return;
             }
-            catch (IOException)
+            // Belt-and-suspenders: og went missing — drop the bundled vanilla in so
+            // the user is left with a working yt-dlp.exe regardless. Atomic stage
+            // so we never replace a working binary with a half-written copy.
+            if (File.Exists(bundled))
             {
-                /* target locked — try move-aside path below */
-            }
-
-            try
-            {
-                if (File.Exists(target))
+                string tmp = target + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                try
                 {
-                    string stale = target + ".stale-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
-                    File.Move(target, stale);
+                    File.Copy(bundled, tmp, overwrite: true);
+                    File.Move(tmp, target, overwrite: true);
                 }
-                File.Move(backup, target);
+                catch
+                {
+                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
+                    throw;
+                }
             }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("yt-dlp.exe restore failed: " + ex.Message);
-                throw;
-            }
-            return;
         }
-        // Belt-and-suspenders: og went missing — drop the bundled vanilla in so
-        // the user is left with a working yt-dlp.exe regardless. Atomic stage
-        // so we never replace a working binary with a half-written copy.
-        if (File.Exists(bundled))
+        finally
         {
-            string tmp = target + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
-            try
-            {
-                File.Copy(bundled, tmp, overwrite: true);
-                File.Move(tmp, target, overwrite: true);
-            }
-            catch
-            {
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
-                throw;
-            }
+            // Final pass — picks up the .stale-<utc> from the locked-target
+            // branch (and any .new-<short> from a partial run), so Tools/
+            // is left containing only yt-dlp.exe.
+            try { ToolsDirSweeper.Sweep(toolsDir); } catch { /* best-effort */ }
         }
     }
 
