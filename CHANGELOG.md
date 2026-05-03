@@ -29,6 +29,7 @@ The most recent release is at the top.
 - **patch:** Write clean_exit.flag only when shutdown actually was clean (db56e4c)
 - **patch:** Halt path restores yt-dlp.exe before exiting the loop (1a37bb9)
 - **lifecycle:** Signal handlers register first + cover console-close events (5aef233)
+- **updater:** SHA256 verify + atomic CopyOver + download-then-stop reorder (ddb1752)
 
 ---
 
