@@ -31,6 +31,7 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* best-effort */ }
         CrashHandler.Install("updater");
         try
         {
