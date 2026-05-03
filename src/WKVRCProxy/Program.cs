@@ -121,6 +121,12 @@ internal static class Program
         };
         SetConsoleCtrlHandler(s_ctrlHandler, true);
 
+        // Hook a state snapshot into the crash logger so postmortems carry
+        // enough watchdog context (mesh state, patch state, pending request
+        // count) to diagnose without the live process. Best-effort — runs
+        // inside the crash handler's try/catch.
+        CrashHandler.SetStateSnapshot(SnapshotState);
+
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         Console.WriteLine($"WKVRCProxy {version}");
 
@@ -237,5 +243,39 @@ internal static class Program
             }
             catch (Exception ex) { Console.WriteLine("[shutdown] patcher: " + ex.Message); }
         }
+    }
+
+    // CrashHandler-invoked snapshot. Reads loosely — fields are non-null
+    // checked but not locked since this runs DURING a crash and any state
+    // we observe is best-effort. The snapshot is wrapped in try/catch by
+    // CrashHandler, so even a partial throw surfaces a useful postmortem.
+    private static string SnapshotState()
+    {
+        var sb = new System.Text.StringBuilder();
+        var mesh = s_mesh;
+        if (mesh != null)
+        {
+            sb.AppendLine("mesh:    connected=" + mesh.IsConnected
+                + " server_protocol_version=" + mesh.ServerProtocolVersion
+                + " node=" + (mesh.ServerNode ?? "?")
+                + " warp_active=" + (mesh.WarpActive?.ToString() ?? "?"));
+        }
+        else
+        {
+            sb.AppendLine("mesh:    <not constructed>");
+        }
+        var patcher = s_patcher;
+        if (patcher != null)
+        {
+            sb.AppendLine("patch:   halted=" + patcher.Halted
+                + " vrcToolsDir=" + (patcher.VrcToolsDir ?? "<null>"));
+        }
+        else
+        {
+            sb.AppendLine("patch:   <not constructed>");
+        }
+        sb.AppendLine("ipc:     " + (s_ipc != null ? "<running>" : "<not constructed>"));
+        sb.AppendLine("shutdown_started=" + s_shutdownStarted + " fast_shutdown=" + s_fastShutdown);
+        return sb.ToString();
     }
 }
