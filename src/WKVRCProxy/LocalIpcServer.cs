@@ -133,6 +133,34 @@ internal sealed class LocalIpcServer : IDisposable
             id = req.Id ?? "";
             cid = req.CorrelationId;
 
+            // H12: validate action vocabulary. The DTO accepts any string;
+            // a request with action="ping" or any non-resolve verb that
+            // happens to also carry a url would otherwise be silently
+            // forwarded to the mesh (which would reject — but with no
+            // diagnostic on the watchdog side).
+            if (!string.Equals(req.Action, WireConstants.ActionResolve, StringComparison.Ordinal))
+            {
+                Console.WriteLine("[ipc] rejecting request id=" + id +
+                    " action=" + LogUtil.SanitizeForConsole(req.Action, 32) +
+                    " — only \"resolve\" is accepted on this pipe");
+                await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
+                return;
+            }
+
+            // H11: validate player vocabulary. Server spec is case-sensitive
+            // "avpro" | "unity"; anything else (including null/empty,
+            // "AVPro", "AvPro") gets rejected here with a clear log line so
+            // patched-yt-dlp casing drift surfaces in a bug report instead
+            // of silently being routed to a server that will reject.
+            if (req.Player != WireConstants.PlayerAvPro && req.Player != WireConstants.PlayerUnity)
+            {
+                Console.WriteLine("[ipc] rejecting request id=" + id + CidSuffix(cid) +
+                    " player=" + LogUtil.SanitizeForConsole(req.Player ?? "<null>", 32) +
+                    " — must be \"avpro\" or \"unity\" (case-sensitive)");
+                await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
+                return;
+            }
+
             JsonDocument? respDoc = null;
             string? failReason = null;
             string outcome = "?";
