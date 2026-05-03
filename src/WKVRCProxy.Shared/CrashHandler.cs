@@ -15,6 +15,18 @@ public static class CrashHandler
     private static string? _logDir;
     private static string _component = "unknown";
     private static int _installed; // Interlocked guard — Install is idempotent.
+    private static Func<string>? _stateSnapshot;
+
+    // Optional state-snapshot delegate. Whatever the caller registers gets
+    // invoked at crash time and its output is written into the postmortem.
+    // The watchdog populates this with a one-paragraph status block (mesh
+    // state, patch state, pending request count) so a crash log carries
+    // enough context to diagnose without the live process. Best-effort:
+    // exceptions inside the snapshot are caught.
+    public static void SetStateSnapshot(Func<string>? snapshot)
+    {
+        _stateSnapshot = snapshot;
+    }
 
     public static void Install(string component)
     {
@@ -69,6 +81,19 @@ public static class CrashHandler
                 w.WriteLine($"version:      {Assembly.GetEntryAssembly()?.GetName().Version}");
                 w.WriteLine($"basedir:      {AppContext.BaseDirectory}");
                 w.WriteLine($"os:           {Environment.OSVersion}");
+
+                // Caller-provided state snapshot, e.g. mesh/patch/pending-
+                // request status. Wrapped in try/catch so a buggy snapshot
+                // delegate can't prevent the exception from being recorded.
+                var snapshot = _stateSnapshot;
+                if (snapshot != null)
+                {
+                    w.WriteLine();
+                    w.WriteLine("--- state snapshot ---");
+                    try { w.WriteLine(snapshot()); }
+                    catch (Exception sex) { w.WriteLine("(snapshot delegate threw: " + sex.GetType().Name + ": " + sex.Message + ")"); }
+                }
+
                 w.WriteLine();
                 w.WriteLine(ex?.ToString() ?? "(no exception object)");
             }
