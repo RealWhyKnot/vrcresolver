@@ -37,6 +37,7 @@ The most recent release is at the top.
 - **patch:** Recovery's orphan-patched path replaces with bundled vanilla (2161295)
 - **lifecycle:** UnhandledException triggers cleanup directly (8b2bde2)
 - **console:** Force UTF-8 output so em-dashes don't render as ? (3670dc3)
+- **updater:** Atomic rollback registers backup before move attempt (92250fc)
 
 ---
 
