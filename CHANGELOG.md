@@ -13,6 +13,15 @@ The most recent release is at the top.
 
 ### Added
 - **observability:** Tier4 background probe + stuck-loop detector (a229c82)
+- **uninstaller:** No-prompt teardown (kill, restore, hosts, wipe, self-delete) (d007447)
+- **updater:** GitHub Releases check + 15s prompt + replace + relaunch (f42dcc5)
+- **client:** Wire Program.cs lifecycle (mutex + startup/shutdown) (aa7bbfc)
+- **client:** Named-pipe server for the patched yt-dlp.exe (c0ed4d5)
+- **client:** Mesh WS client (apex-302 + reconnect + heartbeat) (9d16c22)
+- **client:** Lift PatchManager + HostsManager + path/hash utils (eeb8c81)
+
+### Changed
+- scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
 
 ---
 
