@@ -30,7 +30,8 @@ internal sealed class PatchManager : IDisposable
     private Task? _loop;
     private DateTime _lastPatchTime = DateTime.MinValue;
     private bool _halted;
-    private bool _started;
+    private int _started;  // Interlocked: 0 = not started, 1 = started
+    private int _stopping; // Interlocked: 0 = idle, 1 = stop in flight / done
 
     public string? VrcToolsDir => _vrcToolsDir;
     public bool Halted => _halted;
@@ -111,14 +112,23 @@ internal sealed class PatchManager : IDisposable
 
     public bool Start()
     {
+        // H15: Interlocked guard so a concurrent second caller (e.g. signal
+        // handler racing main flow) can't spawn a parallel WatchdogLoop. We
+        // return true on the redundant call so the caller doesn't interpret
+        // "already running" as "refuse-to-apply" and trigger a shutdown.
+        if (Interlocked.Exchange(ref _started, 1) != 0)
+            return true;
+
         if (string.IsNullOrEmpty(_vrcToolsDir))
         {
             Console.WriteLine("Cannot apply patch — VRChat Tools folder not found. Launch VRChat once first, then re-run.");
+            Interlocked.Exchange(ref _started, 0);
             return false;
         }
         if (!File.Exists(_patchedYtDlpPath))
         {
             Console.WriteLine("Cannot apply patch — patched yt-dlp.exe is missing from this install. Reinstall WKVRCProxy.");
+            Interlocked.Exchange(ref _started, 0);
             return false;
         }
 
@@ -127,6 +137,7 @@ internal sealed class PatchManager : IDisposable
         if (!File.Exists(targetPath) && !File.Exists(backupPath))
         {
             Console.WriteLine("Cannot apply patch — VRChat hasn't shipped its own yt-dlp.exe yet, and we have no original to preserve as fallback. Launch VRChat once first, then re-run.");
+            Interlocked.Exchange(ref _started, 0);
             return false;
         }
 
@@ -135,13 +146,18 @@ internal sealed class PatchManager : IDisposable
         try { if (File.Exists(_haltFlagPath)) File.Delete(_haltFlagPath); }
         catch { /* best-effort */ }
 
-        _started = true;
         _loop = Task.Run(WatchdogLoop);
         return true;
     }
 
     public async Task StopAsync()
     {
+        // H16: Interlocked guard so a concurrent second StopAsync (the existing
+        // outer Program.RunShutdown gate prevents this from inside the watchdog,
+        // but a different caller path — e.g. crash-handler invoking StopAsync
+        // directly — could otherwise race two parallel restores.
+        if (Interlocked.Exchange(ref _stopping, 1) != 0) return;
+
         _cts.Cancel();
         if (_loop != null)
         {
@@ -154,7 +170,7 @@ internal sealed class PatchManager : IDisposable
         // locked through every retry, etc.) we leave the flag absent so the
         // next launch's RecoverFromUncleanShutdown gets a chance to fix it.
         bool cleanShutdown;
-        if (!_started)
+        if (Volatile.Read(ref _started) == 0)
         {
             // Watchdog never engaged — Tools dir was untouched by us this run.
             cleanShutdown = true;
