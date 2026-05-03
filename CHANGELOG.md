@@ -23,6 +23,9 @@ The most recent release is at the top.
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
 
+### Fixed
+- **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
+
 ---
 
 ## [v2026.4.28.0](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.4.28.0) — 2026-04-28
