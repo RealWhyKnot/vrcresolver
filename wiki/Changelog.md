@@ -44,6 +44,7 @@ The most recent release is at the top.
 - **mesh:** Apex 302 relative redirects resolve correctly (21727bb)
 - **mesh:** Null-safety + TOCTOU + protocol_version stamp gating (H4+H5+BC1) (a0c9d05)
 - **ipc:** Validate Player + Action at the pipe boundary (H11+H12) (977be5a)
+- **patch:** Start + StopAsync are now idempotent (H15 + H16) (9aa3501)
 
 ---
 
