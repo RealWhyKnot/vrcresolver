@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
 namespace WKVRCProxy;
@@ -8,6 +9,35 @@ namespace WKVRCProxy;
 internal static class Program
 {
     private const string MutexName = "Global\\WKVRCProxy.Watchdog";
+
+    // Signal-handler-visible state. Components are written from RunWatchdog's
+    // construction sequence and read from the signal handlers, which can fire
+    // at ANY point — even before those components are constructed. Every read
+    // is null-tolerant.
+    private static LocalIpcServer? s_ipc;
+    private static MeshClient? s_mesh;
+    private static PatchManager? s_patcher;
+    private static readonly ManualResetEventSlim s_quitSignal = new(false);
+    private static volatile bool s_fastShutdown;
+
+    // SetConsoleCtrlHandler: catches CTRL_CLOSE_EVENT (X button), CTRL_LOGOFF_EVENT,
+    // and CTRL_SHUTDOWN_EVENT — none of which fire Console.CancelKeyPress. Without
+    // this, closing the console window terminated the process with the patch in
+    // place and no clean_exit.flag, leaving Tools/yt-dlp.exe pointing at the
+    // patched binary until the next launch's recovery ran.
+    [DllImport("Kernel32")]
+    private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate? handler, bool add);
+    private delegate bool ConsoleCtrlDelegate(uint ctrlType);
+    private const uint CTRL_C_EVENT = 0;
+    private const uint CTRL_BREAK_EVENT = 1;
+    private const uint CTRL_CLOSE_EVENT = 2;
+    private const uint CTRL_LOGOFF_EVENT = 5;
+    private const uint CTRL_SHUTDOWN_EVENT = 6;
+
+    // Must be a static field, not a local — Windows captures the delegate by
+    // function pointer and requires it to outlive the SetConsoleCtrlHandler
+    // call. A local would be eligible for GC.
+    private static readonly ConsoleCtrlDelegate s_ctrlHandler = OnConsoleCtrl;
 
     private static int Main(string[] args)
     {
@@ -45,6 +75,29 @@ internal static class Program
 
     private static int RunWatchdog()
     {
+        // Register signal handlers FIRST — before any setup work. A Ctrl+C
+        // (or a console-X-button close) during HostsManager's UAC prompt or
+        // during PatchManager construction would otherwise kill the process
+        // with no chance to write clean_exit.flag. The handlers are safe to
+        // fire while s_ipc / s_mesh / s_patcher are still null.
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            s_quitSignal.Set();
+        };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            // ProcessExit fires on graceful CLR shutdown. The CLR gives us about
+            // 2 seconds before tearing the process down — request a fast shutdown
+            // so the patcher's atomic restore gets priority over ipc/mesh.
+            s_fastShutdown = true;
+            s_quitSignal.Set();
+            // Block briefly so the runtime's grace window gets used for shutdown.
+            try { RunShutdown().Wait(TimeSpan.FromMilliseconds(2000)); }
+            catch { /* best-effort */ }
+        };
+        SetConsoleCtrlHandler(s_ctrlHandler, true);
+
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         Console.WriteLine($"WKVRCProxy {version}");
 
@@ -52,73 +105,114 @@ internal static class Program
 
         HostsManager.EnsureBypassEntryOrPrompt();
 
-        using var patcher = new PatchManager(installDir);
-        patcher.RecoverFromUncleanShutdown();
+        s_patcher = new PatchManager(installDir);
+        s_patcher.RecoverFromUncleanShutdown();
 
-        var mesh = new MeshClient();
-        var ipc = new LocalIpcServer(mesh);
-        ipc.Start();
-        _ = mesh.StartAsync();
+        s_mesh = new MeshClient();
+        s_ipc = new LocalIpcServer(s_mesh);
+        s_ipc.Start();
+        _ = s_mesh.StartAsync();
 
-        if (!patcher.Start())
+        if (!s_patcher.Start())
         {
-            ShutdownAsync(ipc, mesh, patcher).GetAwaiter().GetResult();
+            RunShutdown().GetAwaiter().GetResult();
             return 2;
         }
 
         Console.WriteLine("Patch applied. Watching for VRChat overwrites — Ctrl+C to quit.");
         Console.WriteLine("To uninstall, run WKVRCProxy.Uninstaller.exe (in the same folder).");
 
-        using var quitSignal = new ManualResetEventSlim(false);
-        Console.CancelKeyPress += (_, e) =>
-        {
-            e.Cancel = true;
-            quitSignal.Set();
-        };
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => quitSignal.Set();
-
-        quitSignal.Wait();
+        s_quitSignal.Wait();
         Console.WriteLine("Shutting down…");
 
-        ShutdownAsync(ipc, mesh, patcher).GetAwaiter().GetResult();
+        RunShutdown().GetAwaiter().GetResult();
         return 0;
+    }
+
+    private static bool OnConsoleCtrl(uint ctrlType)
+    {
+        switch (ctrlType)
+        {
+            case CTRL_C_EVENT:
+            case CTRL_BREAK_EVENT:
+                // CancelKeyPress already handles these; signal redundantly in case
+                // the registration ordering ever drifts.
+                s_quitSignal.Set();
+                return false; // let CancelKeyPress run
+
+            case CTRL_CLOSE_EVENT:
+            case CTRL_LOGOFF_EVENT:
+            case CTRL_SHUTDOWN_EVENT:
+                // Windows gives a console-X handler ~5s before SIGKILL. There's
+                // no time to politely close the WS or drain the pipe — what
+                // actually matters is restoring yt-dlp.exe. Skip ipc + mesh,
+                // run patcher.StopAsync (which is fast: cancel loop, atomic
+                // restore, write clean_exit.flag).
+                s_fastShutdown = true;
+                s_quitSignal.Set();
+                try { RunShutdown().Wait(TimeSpan.FromMilliseconds(4500)); }
+                catch { /* best-effort */ }
+                return true; // we handled it
+        }
+        return false;
     }
 
     // Shutdown order per the brief: stop pipe accepting → fail pending TCS to
     // server_unreachable (handled inside MeshClient.StopAsync) → close WS clean
     // → stop PatchManager loop → restore yt-dlp.exe → write clean-exit flag.
-    // Total budget 12s.
-    private static async Task ShutdownAsync(LocalIpcServer ipc, MeshClient mesh, PatchManager patcher)
+    // Total budget 12s normally, 4s on console-close fast path. Idempotent —
+    // safe to call from both the main path and a signal handler.
+    private static int s_shutdownStarted; // 0 = not started, 1 = running/done
+    private static async Task RunShutdown()
     {
-        var sw = Stopwatch.StartNew();
-        var budget = TimeSpan.FromSeconds(12);
+        if (Interlocked.Exchange(ref s_shutdownStarted, 1) != 0) return;
 
-        async Task WithTimeout(Task t, int ms)
+        var sw = Stopwatch.StartNew();
+        bool fast = s_fastShutdown;
+        var totalBudget = fast ? TimeSpan.FromSeconds(4) : TimeSpan.FromSeconds(12);
+
+        async Task WithTimeout(Task t, int ms, string step)
         {
             using var cts = new CancellationTokenSource(ms);
             var done = await Task.WhenAny(t, Task.Delay(Timeout.Infinite, cts.Token)).ConfigureAwait(false);
-            if (done != t) Console.WriteLine("[shutdown] step exceeded budget — moving on");
+            if (done != t) Console.WriteLine("[shutdown] " + step + " exceeded budget — moving on");
         }
 
-        try
+        // Skip ipc + mesh on the fast path so the patcher restore gets the
+        // entire 4s window. The OS will tear down sockets and pipes when the
+        // process exits — they don't need clean shutdown to stay correct.
+        if (!fast)
         {
-            int remain = (int)Math.Max(0, (budget - sw.Elapsed).TotalMilliseconds);
-            await WithTimeout(ipc.StopAsync(), Math.Min(remain, 3000)).ConfigureAwait(false);
-        }
-        catch (Exception ex) { Console.WriteLine("[shutdown] ipc: " + ex.Message); }
+            if (s_ipc != null)
+            {
+                try
+                {
+                    int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                    await WithTimeout(s_ipc.StopAsync(), Math.Min(remain, 3000), "ipc").ConfigureAwait(false);
+                }
+                catch (Exception ex) { Console.WriteLine("[shutdown] ipc: " + ex.Message); }
+            }
 
-        try
-        {
-            int remain = (int)Math.Max(0, (budget - sw.Elapsed).TotalMilliseconds);
-            await WithTimeout(mesh.StopAsync(), Math.Min(remain, 3000)).ConfigureAwait(false);
+            if (s_mesh != null)
+            {
+                try
+                {
+                    int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                    await WithTimeout(s_mesh.StopAsync(), Math.Min(remain, 3000), "mesh").ConfigureAwait(false);
+                }
+                catch (Exception ex) { Console.WriteLine("[shutdown] mesh: " + ex.Message); }
+            }
         }
-        catch (Exception ex) { Console.WriteLine("[shutdown] mesh: " + ex.Message); }
 
-        try
+        if (s_patcher != null)
         {
-            int remain = (int)Math.Max(0, (budget - sw.Elapsed).TotalMilliseconds);
-            await WithTimeout(patcher.StopAsync(), Math.Min(remain, 5000)).ConfigureAwait(false);
+            try
+            {
+                int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                int patcherBudget = fast ? Math.Max(remain, 3000) : Math.Min(remain, 5000);
+                await WithTimeout(s_patcher.StopAsync(), patcherBudget, "patcher").ConfigureAwait(false);
+            }
+            catch (Exception ex) { Console.WriteLine("[shutdown] patcher: " + ex.Message); }
         }
-        catch (Exception ex) { Console.WriteLine("[shutdown] patcher: " + ex.Message); }
     }
 }
