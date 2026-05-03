@@ -31,6 +31,7 @@ The most recent release is at the top.
 - **lifecycle:** Signal handlers register first + cover console-close events (5aef233)
 - **updater:** SHA256 verify + atomic CopyOver + download-then-stop reorder (ddb1752)
 - **observability:** Crash handlers in all three exes (07048f6)
+- **cleanup:** Sweep watchdog-authored sidecars from VRChat Tools dir (f2a1773)
 
 ---
 
