@@ -33,6 +33,7 @@ The most recent release is at the top.
 - **observability:** Crash handlers in all three exes (07048f6)
 - **cleanup:** Sweep watchdog-authored sidecars from VRChat Tools dir (f2a1773)
 - **patch:** Recovery's orphan-patched path replaces with bundled vanilla (2161295)
+- **lifecycle:** UnhandledException triggers cleanup directly (8b2bde2)
 
 ---
 
