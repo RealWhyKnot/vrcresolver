@@ -26,6 +26,7 @@ The most recent release is at the top.
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
 - **uninstaller:** Atomic yt-dlp.exe restore (no missing-file window) (4b01682)
+- **patch:** Write clean_exit.flag only when shutdown actually was clean (db56e4c)
 
 ---
 
