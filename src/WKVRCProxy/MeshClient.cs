@@ -12,8 +12,18 @@ namespace WKVRCProxy;
 // Location for the assigned nodeN.whyknot.dev hostname. Cached in memory only;
 // re-resolved if reconnect attempts keep failing for more than 5 min straight.
 //
-// Public surface is ResolveAsync — pipe-side handlers call this and convert
-// the returned JsonDocument into a wire frame for the patched yt-dlp.
+// v2 protocol: on each new WS connection the server emits a one-shot "welcome"
+// frame ~50ms after accept carrying its protocol_version, node, features,
+// warp_active, and version strings. Clients wait up to 1s for it before
+// sending the first resolve; absent welcome → assume v1 server. Once welcome
+// confirms v2, ResolveAsync stamps protocol_version=2 on outgoing requests
+// (unless the patched yt-dlp already set it) so the server emits v2 response
+// fields (container, video_codec, audio_codec, protocol, audio_channels,
+// bytes_estimate, expires_at).
+//
+// Public surface: ResolveAsync takes the WHOLE ResolveRequest DTO so unknown
+// fields (and v2 fields the patched yt-dlp populated) round-trip losslessly
+// to the server.
 internal sealed class MeshClient : IAsyncDisposable
 {
     private static readonly Uri ApexUrl = new("https://whyknot.dev/");
@@ -21,6 +31,7 @@ internal sealed class MeshClient : IAsyncDisposable
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan PongDeadline = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ApexReResolveAfter = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan WelcomeTimeout = TimeSpan.FromSeconds(1);
     private static readonly int[] ReconnectCapsSec = { 1, 2, 4, 8, 16, 30 };
 
     private readonly string _userAgent;
@@ -37,7 +48,23 @@ internal sealed class MeshClient : IAsyncDisposable
     private int _reconnectAttempt;
     private bool _wasConnected;
 
+    // Per-connection welcome state. _welcomeTcs is reset on every successful
+    // ConnectAsync; the 1s fallback completes it with null if the server is
+    // pre-v2 (silent) and the dispatch handler completes it with the parsed
+    // frame on welcome arrival. _serverProtocolVersion is 0 = pre-welcome,
+    // 1 = no welcome arrived (assume v1 server), 2 = v2 confirmed.
+    private TaskCompletionSource<WelcomeFrame?>? _welcomeTcs;
+    private int _serverProtocolVersion;
+    private string? _serverNode;
+    private string[]? _serverFeatures;
+    private bool? _warpActive;
+    private string? _serverVersion;
+    private string? _ytDlpVersion;
+
     public bool IsConnected => _ws?.State == WebSocketState.Open;
+    public int ServerProtocolVersion => _serverProtocolVersion;
+    public string? ServerNode => _serverNode;
+    public bool? WarpActive => _warpActive;
 
     public MeshClient()
     {
@@ -73,18 +100,52 @@ internal sealed class MeshClient : IAsyncDisposable
         }
     }
 
-    public async Task<JsonDocument> ResolveAsync(string url, string? player, int? maxHeight, CancellationToken ct)
+    // Lossless forward: caller supplies the full ResolveRequest DTO from the
+    // pipe. The watchdog adds protocol_version=2 if the server is v2-capable
+    // and the patched yt-dlp didn't already set it; everything else round-trips
+    // unchanged via [JsonExtensionData] on the DTO.
+    public async Task<JsonDocument> ResolveAsync(ResolveRequest req, CancellationToken ct)
     {
+        // Generate per-attempt id if patched yt-dlp didn't supply one. Needed
+        // for the pending-TCS key regardless.
+        if (string.IsNullOrEmpty(req.Id))
+            req.Id = Guid.NewGuid().ToString("N");
+
         var ws = _ws;
         if (ws is not { State: WebSocketState.Open })
-            return MakeFallbackDoc("", WireConstants.FallbackServerUnreachable);
+            return MakeFallbackDoc(req.Id, WireConstants.FallbackServerUnreachable);
 
-        string id = Guid.NewGuid().ToString("N");
+        // Per-connection welcome handshake — wait up to 1s so we know whether
+        // the server is v2-capable before deciding whether to opt into v2
+        // response fields. After the first wait completes (welcome or 1s
+        // fallback) the TCS stays completed for the connection's lifetime
+        // and subsequent resolves return instantly.
+        var welcomeTcs = _welcomeTcs;
+        if (welcomeTcs is { Task.IsCompleted: false })
+        {
+            try { await welcomeTcs.Task.WaitAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+        }
+
+        // Stamp protocol_version=2 if server is v2-capable AND the patched
+        // yt-dlp didn't already populate it. Lossless: never overwrite.
+        if (_serverProtocolVersion >= 2 && !req.ProtocolVersion.HasValue)
+            req.ProtocolVersion = WireConstants.ClientProtocolVersion;
+
         var tcs = new TaskCompletionSource<JsonDocument>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pending[id] = tcs;
+        _pending[req.Id] = tcs;
 
-        var req = new ResolveRequest { Id = id, Url = url, Player = player, MaxHeight = maxHeight };
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(req);
+        byte[] payload;
+        try
+        {
+            payload = JsonSerializer.SerializeToUtf8Bytes(req);
+        }
+        catch (Exception ex)
+        {
+            _pending.TryRemove(req.Id, out _);
+            Console.WriteLine($"[mesh] request serialization failed id={req.Id}: {ex.Message}");
+            return MakeFallbackDoc(req.Id, WireConstants.FallbackInternalError);
+        }
 
         try
         {
@@ -92,10 +153,11 @@ internal sealed class MeshClient : IAsyncDisposable
         }
         catch
         {
-            _pending.TryRemove(id, out _);
-            return MakeFallbackDoc(id, WireConstants.FallbackServerUnreachable);
+            _pending.TryRemove(req.Id, out _);
+            return MakeFallbackDoc(req.Id, WireConstants.FallbackServerUnreachable);
         }
 
+        string id = req.Id;
         await using var reg = ct.Register(() =>
         {
             if (_pending.TryRemove(id, out var t)) t.TrySetCanceled();
@@ -118,17 +180,39 @@ internal sealed class MeshClient : IAsyncDisposable
             try
             {
                 string node = await ResolveNodeHostAsync(ct).ConfigureAwait(false);
-                _cachedNodeHost = node;
 
                 _ws = new ClientWebSocket();
                 _ws.Options.SetRequestHeader("User-Agent", _userAgent);
                 var wsUri = new Uri("wss://" + node + "/mesh");
                 await _ws.ConnectAsync(wsUri, ct).ConfigureAwait(false);
 
+                _cachedNodeHost = node;
                 _wasConnected = true;
                 _firstReconnectFailureUtc = DateTime.MinValue;
                 _lastPongUtc = DateTime.UtcNow;
-                Console.WriteLine("[mesh] connected");
+
+                // Reset per-connection welcome state. The dispatch handler
+                // will populate _serverProtocolVersion + capability fields
+                // when the welcome frame arrives; the 1s fallback closes
+                // the door for pre-v2 servers.
+                _serverProtocolVersion = 0;
+                _serverNode = null;
+                _serverFeatures = null;
+                _warpActive = null;
+                _serverVersion = null;
+                _ytDlpVersion = null;
+                var welcomeTcs = new TaskCompletionSource<WelcomeFrame?>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _welcomeTcs = welcomeTcs;
+                _ = Task.Delay(WelcomeTimeout, ct).ContinueWith(_ =>
+                {
+                    if (welcomeTcs.TrySetResult(null))
+                    {
+                        Interlocked.CompareExchange(ref _serverProtocolVersion, 1, 0);
+                        Console.WriteLine("[mesh] no welcome within 1s — assuming v1 server");
+                    }
+                }, TaskScheduler.Default);
+
+                Console.WriteLine("[mesh] connected node=" + node);
 
                 await PumpAsync(ct).ConfigureAwait(false);
                 Console.WriteLine("[mesh] disconnected — clean close");
@@ -147,6 +231,9 @@ internal sealed class MeshClient : IAsyncDisposable
             }
             finally
             {
+                // Drain any blocked welcome waiters so subsequent ResolveAsync
+                // calls don't hang on a stale TCS while we try to reconnect.
+                _welcomeTcs?.TrySetResult(null);
                 try { _ws?.Dispose(); } catch { /* ignore */ }
                 _ws = null;
             }
@@ -270,15 +357,52 @@ internal sealed class MeshClient : IAsyncDisposable
                 if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
                     id = idEl.GetString() ?? "";
                 if (string.IsNullOrEmpty(id)) { doc.Dispose(); return; }
+
+                if (action == WireConstants.ActionFallbackNative)
+                    LogFallbackNative(doc.RootElement, id);
+
                 if (_pending.TryRemove(id, out var tcs))
                 {
                     if (action == WireConstants.ActionResolved) _reconnectAttempt = 0;
-                    tcs.TrySetResult(doc);
+                    if (!tcs.TrySetResult(doc))
+                    {
+                        // Caller already cancelled — own the disposal so we
+                        // don't leak the JsonDocument's pooled buffers.
+                        doc.Dispose();
+                    }
                 }
                 else
                 {
                     doc.Dispose();
                 }
+                return;
+            }
+            case WireConstants.ActionWelcome:
+            {
+                WelcomeFrame? welcome = null;
+                try { welcome = JsonSerializer.Deserialize<WelcomeFrame>(payload); }
+                catch (Exception ex) { Console.WriteLine("[mesh] welcome parse failed: " + ex.Message); }
+
+                if (welcome != null)
+                {
+                    Interlocked.Exchange(ref _serverProtocolVersion, welcome.ProtocolVersion);
+                    _serverNode = welcome.Node;
+                    _serverFeatures = welcome.Features;
+                    _warpActive = welcome.WarpActive;
+                    _serverVersion = welcome.ServerVersion;
+                    _ytDlpVersion = welcome.YtDlpVersion;
+
+                    int featureCount = welcome.Features?.Length ?? 0;
+                    Console.WriteLine(
+                        "[mesh] welcome node=" + (welcome.Node ?? "?") +
+                        " v=" + welcome.ProtocolVersion +
+                        " server=" + (welcome.ServerVersion ?? "?") +
+                        " yt-dlp=" + (welcome.YtDlpVersion ?? "?") +
+                        " warp_active=" + (welcome.WarpActive?.ToString() ?? "?") +
+                        " features=" + featureCount);
+                }
+                _welcomeTcs?.TrySetResult(welcome);
+                doc.Dispose();
                 return;
             }
             case WireConstants.ActionResolveLog:
@@ -304,13 +428,43 @@ internal sealed class MeshClient : IAsyncDisposable
         }
     }
 
+    // Surface fallback_native reasons on the watchdog console so a user with
+    // a console window open can correlate "video failed" with "server bailed
+    // because warp_down" or "unity_unsupported_format". The patched yt-dlp
+    // still owns the decision of whether to exec yt-dlp-og.exe; the new v2
+    // reasons are advisory ("don't bother with native, it'll hit the same
+    // wall") but the watchdog enforces nothing.
+    private static void LogFallbackNative(JsonElement root, string id)
+    {
+        string reason = "";
+        if (root.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String)
+            reason = reasonEl.GetString() ?? "";
+
+        switch (reason)
+        {
+            case WireConstants.ReasonUnityUnsupportedFormat:
+                Console.WriteLine($"[mesh] fallback_native id={id} reason=unity_unsupported_format (no Unity-playable stream — try AVPro)");
+                return;
+            case WireConstants.ReasonWarpDown:
+                Console.WriteLine($"[mesh] fallback_native id={id} reason=warp_down (server WARP egress unhealthy — transient, retry shortly or another node)");
+                return;
+            default:
+                Console.WriteLine($"[mesh] fallback_native id={id} reason={(string.IsNullOrEmpty(reason) ? "?" : reason)}");
+                return;
+        }
+    }
+
     private void FailAllPending(string reason)
     {
         foreach (var kvp in _pending.ToArray())
         {
             if (_pending.TryRemove(kvp.Key, out var tcs))
             {
-                try { tcs.TrySetResult(MakeFallbackDoc(kvp.Key, reason)); }
+                try
+                {
+                    var doc = MakeFallbackDoc(kvp.Key, reason);
+                    if (!tcs.TrySetResult(doc)) doc.Dispose();
+                }
                 catch { tcs.TrySetCanceled(); }
             }
         }

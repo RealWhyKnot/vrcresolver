@@ -116,7 +116,13 @@ internal sealed class LocalIpcServer : IDisposable
             string? failReason = null;
             try
             {
-                respDoc = await _mesh.ResolveAsync(req.Url, req.Player, req.MaxHeight, perReqCts.Token).ConfigureAwait(false);
+                // Lossless forward: hand the whole DTO to MeshClient so v2 fields
+                // (protocol_version / accept_protocols / accept_codecs / etc.)
+                // and any unknown fields populated by the patched yt-dlp pass
+                // through to the mesh server unchanged. The DTO's
+                // [JsonExtensionData] bag preserves anything we don't statically
+                // know about.
+                respDoc = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
                 await WriteDocAsync(pipe, respDoc, perReqCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
