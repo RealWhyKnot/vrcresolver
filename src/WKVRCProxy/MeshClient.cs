@@ -151,9 +151,14 @@ internal sealed class MeshClient : IAsyncDisposable
         {
             await ws.SendAsync(payload, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
             _pending.TryRemove(req.Id, out _);
+            Console.WriteLine(
+                "[mesh] send failed id=" + req.Id +
+                CidSuffix(req.CorrelationId) +
+                ": " + ex.GetType().Name + ": " +
+                LogUtil.SanitizeForConsole(ex.Message, 160));
             return MakeFallbackDoc(req.Id, WireConstants.FallbackServerUnreachable);
         }
 
@@ -362,7 +367,15 @@ internal sealed class MeshClient : IAsyncDisposable
     {
         JsonDocument doc;
         try { doc = JsonDocument.Parse(payload); }
-        catch { return; }
+        catch (Exception ex)
+        {
+            // Server protocol regression / framing bug. Without this log a
+            // malformed frame would drop pending TCS to time out 10s later as
+            // server_unreachable with no breadcrumb. Dedupe by exception type
+            // so a flapping server can't fill the scrollback.
+            LogParseFailure(ex, payload);
+            return;
+        }
 
         string action = "";
         if (doc.RootElement.TryGetProperty("action", out var actionEl) && actionEl.ValueKind == JsonValueKind.String)
@@ -401,7 +414,15 @@ internal sealed class MeshClient : IAsyncDisposable
             {
                 WelcomeFrame? welcome = null;
                 try { welcome = JsonSerializer.Deserialize<WelcomeFrame>(payload); }
-                catch (Exception ex) { Console.WriteLine("[mesh] welcome parse failed: " + ex.Message); }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[mesh] welcome parse failed — assuming v1 server: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                    // Pin protocol version to v1 so subsequent ResolveAsync calls
+                    // don't get stuck waiting for a welcome that never arrives in
+                    // a parseable form.
+                    Interlocked.CompareExchange(ref _serverProtocolVersion, 1, 0);
+                }
 
                 if (welcome != null)
                 {
@@ -436,6 +457,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 return;
             }
             case WireConstants.ActionResolveLog:
+                LogResolveLogFrame(doc.RootElement);
                 doc.Dispose();
                 return;
             case WireConstants.ActionPong:
@@ -452,11 +474,78 @@ internal sealed class MeshClient : IAsyncDisposable
                 catch { /* heartbeat will catch dead socket */ }
                 return;
             default:
-                Console.WriteLine("[mesh] unknown action — discarding: " + action);
+                // Server-supplied string — strip control chars + truncate so a
+                // hostile or buggy server can't inject ANSI escapes into the
+                // user's console window.
+                Console.WriteLine("[mesh] unknown action — discarding: "
+                    + LogUtil.SanitizeForConsole(action, 64));
                 doc.Dispose();
                 return;
         }
     }
+
+    // Surface server-emitted resolve_log frames. The server emits diagnostic
+    // narrative per resolve attempt (candidate URLs, codec choices, fallback
+    // decisions). Previously discarded silently — now visible on the console
+    // so a user debugging "why did this fall back" gets the server's own story.
+    private static void LogResolveLogFrame(JsonElement root)
+    {
+        string id = "";
+        if (root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
+            id = idEl.GetString() ?? "";
+
+        string level = "info";
+        if (root.TryGetProperty("level", out var levelEl) && levelEl.ValueKind == JsonValueKind.String)
+            level = levelEl.GetString() ?? "info";
+
+        string message = "";
+        if (root.TryGetProperty("message", out var msgEl) && msgEl.ValueKind == JsonValueKind.String)
+            message = msgEl.GetString() ?? "";
+
+        Console.WriteLine(
+            "[mesh][resolve_log] id=" + LogUtil.SanitizeForConsole(id, 32) +
+            " level=" + LogUtil.SanitizeForConsole(level, 16) +
+            " " + LogUtil.SanitizeForConsole(message, 240));
+    }
+
+    // Dedupe parse-failure logs by exception type so a flapping server can't
+    // fill scrollback. One log per (type) per minute, plus a counter.
+    private readonly Dictionary<string, (DateTime LastEmit, int Count)> _parseFailDedupe = new();
+    private void LogParseFailure(Exception ex, byte[] payload)
+    {
+        string key = ex.GetType().Name;
+        var now = DateTime.UtcNow;
+        bool emit;
+        int count;
+        lock (_parseFailDedupe)
+        {
+            if (!_parseFailDedupe.TryGetValue(key, out var entry)
+                || (now - entry.LastEmit).TotalMinutes >= 1)
+            {
+                count = entry.Count + 1;
+                _parseFailDedupe[key] = (now, count);
+                emit = true;
+            }
+            else
+            {
+                count = entry.Count + 1;
+                _parseFailDedupe[key] = (entry.LastEmit, count);
+                emit = false;
+            }
+        }
+        if (emit)
+        {
+            Console.WriteLine(
+                "[mesh] frame parse failed (" + key + " x" + count + " in last min): " +
+                LogUtil.SanitizeForConsole(ex.Message, 80) +
+                " — preview=" + LogUtil.PayloadPreview(payload, 120));
+        }
+    }
+
+    // Format helper: " cid=<id>" suffix for log lines, only when correlation_id
+    // is populated. Keeps log-line construction terse at call sites.
+    private static string CidSuffix(string? correlationId) =>
+        string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
 
     // Surface fallback_native reasons on the watchdog console so a user with
     // a console window open can correlate "video failed" with "server bailed
@@ -469,6 +558,10 @@ internal sealed class MeshClient : IAsyncDisposable
         string reason = "";
         if (root.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String)
             reason = reasonEl.GetString() ?? "";
+
+        // Sanitize: reason is server-supplied; treat with the same control-char
+        // hygiene as `action`.
+        reason = LogUtil.SanitizeForConsole(reason, 64);
 
         switch (reason)
         {
@@ -486,10 +579,12 @@ internal sealed class MeshClient : IAsyncDisposable
 
     private void FailAllPending(string reason)
     {
+        var failedIds = new List<string>();
         foreach (var kvp in _pending.ToArray())
         {
             if (_pending.TryRemove(kvp.Key, out var tcs))
             {
+                failedIds.Add(kvp.Key);
                 try
                 {
                     var doc = MakeFallbackDoc(kvp.Key, reason);
@@ -498,6 +593,18 @@ internal sealed class MeshClient : IAsyncDisposable
                 catch { tcs.TrySetCanceled(); }
             }
         }
+
+        if (failedIds.Count == 0) return;
+        // Per-id visibility for post-hoc correlation. Truncate the id list at
+        // a reasonable size so a one-off disaster (50+ pending) doesn't fill
+        // the scrollback in one line.
+        const int MaxIdsInLine = 8;
+        string idList = failedIds.Count <= MaxIdsInLine
+            ? string.Join(",", failedIds)
+            : string.Join(",", failedIds.GetRange(0, MaxIdsInLine)) + ",…(+" + (failedIds.Count - MaxIdsInLine) + ")";
+        Console.WriteLine(
+            "[mesh] failing " + failedIds.Count + " pending requests reason=" + reason +
+            " ids=" + idList);
     }
 
     private static JsonDocument MakeFallbackDoc(string id, string reason)
