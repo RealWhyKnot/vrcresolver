@@ -343,7 +343,7 @@ internal sealed class PatchManager : IDisposable
     // tmp on dst's volume, then atomic same-volume rename. A kill mid-copy
     // leaves dst untouched (still vanilla or still patched, but never
     // truncated). The tmp file is cleaned up on any failure path.
-    private static void AtomicCopy(string src, string dst)
+    internal static void AtomicCopy(string src, string dst)
     {
         string tmp = dst + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
         try

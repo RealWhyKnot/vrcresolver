@@ -4,5 +4,6 @@
     <Project Path="src/WKVRCProxy.Shared/WKVRCProxy.Shared.csproj" />
     <Project Path="src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" />
     <Project Path="src/WKVRCProxy.Uninstaller/WKVRCProxy.Uninstaller.csproj" />
+    <Project Path="src/WKVRCProxy.Tests/WKVRCProxy.Tests.csproj" />
   </Folder>
 </Solution>

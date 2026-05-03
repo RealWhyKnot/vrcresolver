@@ -18,4 +18,8 @@
     <ProjectReference Include="..\WKVRCProxy.Shared\WKVRCProxy.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="WKVRCProxy.Tests" />
+  </ItemGroup>
+
 </Project>
