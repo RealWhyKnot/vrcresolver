@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
@@ -41,6 +42,11 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        // First thing: install the crash logger so any unhandled exception
+        // from this point on lands on disk instead of scrolling off the
+        // console. Idempotent — safe even on the elevated re-exec branch.
+        CrashHandler.Install("watchdog");
+
         // Internal re-exec: hosts add/remove from elevated child. Both branches
         // run before mutex acquisition because they exit before the watchdog starts.
         if (args.Length > 0)
