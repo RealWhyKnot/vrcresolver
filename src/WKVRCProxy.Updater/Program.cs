@@ -191,15 +191,34 @@ internal static class Program
 
     private static bool PromptUpdate()
     {
+        // KeyAvailable throws InvalidOperationException when stdin is redirected
+        // (updater piped from another tool, run from Task Scheduler, etc.).
+        // In that case we treat it as headless and default to N rather than
+        // crashing. A future opt-in could read a single line from stdin
+        // instead, but for now silent-default-N matches the documented
+        // 15s-timeout behaviour.
+        if (Console.IsInputRedirected)
+        {
+            Console.WriteLine("Update available — stdin is redirected, declining update silently.");
+            return false;
+        }
         Console.Write($"Update available — install now? [Y/N] (auto-N in {PromptTimeoutSec}s): ");
         DateTime deadline = DateTime.UtcNow.AddSeconds(PromptTimeoutSec);
         while (DateTime.UtcNow < deadline)
         {
-            if (Console.KeyAvailable)
+            try
             {
-                var k = Console.ReadKey(intercept: false);
+                if (Console.KeyAvailable)
+                {
+                    var k = Console.ReadKey(intercept: false);
+                    Console.WriteLine();
+                    return k.Key == ConsoleKey.Y;
+                }
+            }
+            catch (InvalidOperationException)
+            {
                 Console.WriteLine();
-                return k.Key == ConsoleKey.Y;
+                return false;
             }
             Thread.Sleep(100);
         }

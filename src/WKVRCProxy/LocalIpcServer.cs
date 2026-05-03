@@ -24,7 +24,12 @@ namespace WKVRCProxy;
 internal sealed class LocalIpcServer : IDisposable
 {
     private static readonly TimeSpan PerRequestTimeout = TimeSpan.FromSeconds(10);
-    private const int MaxRequestBytes = 64 * 1024;
+    // Match the WS-side 4 MiB cap so a giant vrchat_format_arg (raw yt-dlp
+    // -f selector) round-trips end-to-end. Pre-fix this was 64 KiB which
+    // silently truncated large selectors mid-string; the resulting
+    // truncated JSON failed to parse and surfaced as fallback_internal_error
+    // with no diagnostic about WHY.
+    private const int MaxRequestBytes = 4 * 1024 * 1024;
 
     private readonly MeshClient _mesh;
     private readonly CancellationTokenSource _cts = new();
@@ -98,7 +103,15 @@ internal sealed class LocalIpcServer : IDisposable
         string? cid = null;
         try
         {
-            string? line = await ReadLineAsync(pipe, perReqCts.Token).ConfigureAwait(false);
+            var (line, truncated) = await ReadLineAsync(pipe, perReqCts.Token).ConfigureAwait(false);
+            if (truncated)
+            {
+                Console.WriteLine("[ipc] rejecting request: payload exceeded "
+                    + MaxRequestBytes + " bytes without a newline terminator");
+                await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
+                return;
+            }
+
             ResolveRequest? req = null;
             string? parseError = null;
             if (!string.IsNullOrWhiteSpace(line))
@@ -231,20 +244,27 @@ internal sealed class LocalIpcServer : IDisposable
     private static string CidSuffix(string? correlationId) =>
         string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
 
-    private static async Task<string?> ReadLineAsync(Stream s, CancellationToken ct)
+    // Returns the line, or null on empty connection. Sets `truncated` to
+    // true if MaxRequestBytes was hit before a '\n' arrived — the caller
+    // can then surface a "request_too_large" diagnostic instead of
+    // confusing "malformed JSON" (which is what JsonSerializer would
+    // report against a truncated payload).
+    private static async Task<(string? Line, bool Truncated)> ReadLineAsync(Stream s, CancellationToken ct)
     {
         using var ms = new MemoryStream();
         byte[] one = new byte[1];
+        bool sawNewline = false;
         while (ms.Length < MaxRequestBytes)
         {
             int n = await s.ReadAsync(one, 0, 1, ct).ConfigureAwait(false);
             if (n == 0) break;
-            if (one[0] == (byte)'\n') break;
+            if (one[0] == (byte)'\n') { sawNewline = true; break; }
             if (one[0] == (byte)'\r') continue;
             ms.WriteByte(one[0]);
         }
-        if (ms.Length == 0) return null;
-        return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+        if (ms.Length == 0) return (null, false);
+        bool truncated = !sawNewline && ms.Length >= MaxRequestBytes;
+        return (Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length), truncated);
     }
 
     private static async Task WriteDocAsync(Stream s, JsonDocument doc, CancellationToken ct)
