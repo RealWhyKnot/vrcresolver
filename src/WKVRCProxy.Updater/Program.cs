@@ -251,9 +251,12 @@ internal static class Program
                 {
                     backup = dst + ".old-" + Guid.NewGuid().ToString("N").Substring(0, 8);
                     File.Move(dst, backup);
+                    // Register BEFORE the second move. If File.Move(tmp, dst)
+                    // throws between here and line below, the rollback loop
+                    // needs to know about this backup to restore it.
+                    renamed.Add((backup, dst));
                 }
                 File.Move(tmp, dst);
-                if (backup != null) renamed.Add((backup, dst));
             }
         }
         catch
