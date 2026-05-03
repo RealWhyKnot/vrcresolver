@@ -23,6 +23,7 @@ The most recent release is at the top.
 - **mesh:** V2 protocol — lossless forward, welcome handshake, fallback logging (a2179f1)
 - **mesh:** Logging hardening (C3 + C4 + H7 + H8 + H9 + H10) (b8bd27c)
 - **ipc:** Logging hardening + fallback frame stays v1-shape (H13+H14+H21+BC2) (1cf83da)
+- **crash:** State-snapshot delegate enriches postmortem logs (H20) (a1a9b74)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
