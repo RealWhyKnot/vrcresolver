@@ -29,20 +29,9 @@ wwwroot/
 *.local
 
 # Project Specific
-build_test/
-_ytdlp_build/
-test_extract*/
-VRCYTProxy*.zip
-_tmp*/
+_tools_staging/
+.local_build_state.json
 *.log
-build_log.ps1.txt
-build.txt
-build.utf8.txt
-wrapper_state.json
-version.txt
-/src/WKVRCProxy.UI/ui/src/version.ts
-system.db
-system.db-journal
 
 # Test / sample media — not for version control
 *.webm

@@ -11,14 +11,12 @@ name: Release
 # from release/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
 #
 # Changelog promotion: before the build runs, .github/scripts/Update-Changelog.ps1 renames the
-# "## Unreleased" heading in CHANGELOG.md and wiki/Changelog.md to "## [vTAG] - DATE",
-# linking to this release. The build then embeds the promoted CHANGELOG.md inside the exe (via
-# WKVRCProxy.UI.csproj <EmbeddedResource>) so the in-app changelog viewer for this version
-# carries that version's notes. After the GitHub release is created, the promoted files are
-# pushed to a release/promote-changelog-<tag> branch and a PR is opened with auto-merge so
-# main eventually carries the promotion (squashed in by github-actions[bot] once CI passes).
-# Direct push doesn't work on protected main: the dotnet-build-+-test required check is missing
-# on bot pushes, so branch protection rejects them.
+# "## Unreleased" heading in CHANGELOG.md and wiki/Changelog.md to "## [vTAG] - DATE", linking
+# to this release. After the GitHub release is created the promoted files are pushed to a
+# release/promote-changelog-<tag> branch and a PR is opened with auto-merge so main eventually
+# carries the promotion (squashed in by github-actions[bot] once CI passes). Direct push does
+# not work on protected main: the dotnet-build-+-test required check is missing on bot pushes,
+# so branch protection rejects them.
 on:
   push:
     tags:
@@ -54,17 +52,6 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
-          dotnet-quality: 'preview'
-
-      - name: Setup Node 20
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-
-      - name: Install frontend dependencies
-        shell: pwsh
-        working-directory: src/WKVRCProxy.UI/ui
-        run: npm ci
 
       - name: Promote Unreleased -> tagged section
         shell: pwsh
@@ -150,7 +137,7 @@ jobs:
           $notes  = @"
           ## WKVRCProxy $tag
 
-          Download **$name** below and extract anywhere. The bundled ``updater.exe`` and ``uninstall.exe`` live next to ``WKVRCProxy.exe``.
+          Download **$name** below and extract anywhere. The bundled ``WKVRCProxy.Updater.exe`` and ``WKVRCProxy.Uninstaller.exe`` live next to ``WKVRCProxy.exe``.
 
           SHA256: $sha
 
