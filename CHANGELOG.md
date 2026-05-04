@@ -29,6 +29,7 @@ The most recent release is at the top.
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
 - Buffered pipe reads + pre-baked WS frames + WS keepalive off (546172c)
 - Cache patched yt-dlp hash + size precheck (T1.2) (129d864)
+- ux: patch first, then UAC prompt fire-and-forget (T1.6) (677cb94)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
