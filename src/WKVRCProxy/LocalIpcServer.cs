@@ -23,7 +23,13 @@ namespace WKVRCProxy;
 [SupportedOSPlatform("windows")]
 internal sealed class LocalIpcServer : IDisposable
 {
-    private static readonly TimeSpan PerRequestTimeout = TimeSpan.FromSeconds(10);
+    // Per-request budget. Sized so the server has room to escalate from
+    // its standard tier (yt-dlp:youtube-tv-combo, ~3-8 s) to a heavier
+    // tier (browser-extract, vrchat-impersonate) without the watchdog
+    // synthesizing a fallback_native too eagerly. The wrapper's read
+    // budget (18 s) sits above this so the synthesized response always
+    // wins the race when this timeout fires.
+    private static readonly TimeSpan PerRequestTimeout = TimeSpan.FromSeconds(15);
     // Match the WS-side 4 MiB cap so a giant vrchat_format_arg (raw yt-dlp
     // -f selector) round-trips end-to-end. Pre-fix this was 64 KiB which
     // silently truncated large selectors mid-string; the resulting
