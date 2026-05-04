@@ -6,12 +6,22 @@ namespace WKVRCProxy.Uninstaller;
 
 // No flags. No prompt. Running this exe IS consent.
 //
-// 1. Close any running WKVRCProxy.exe
-// 2. Restore yt-dlp.exe from yt-dlp-og.exe in VRChat Tools (belt-and-suspenders:
-//    drop the bundled vanilla in if og went missing)
-// 3. Remove the hosts entry (UAC re-exec via WKVRCProxy.exe --remove-hosts-entry)
-// 4. Wipe %LOCALAPPDATA%\WKVRCProxy\
-// 5. Schedule install-dir self-deletion via cmd.exe /c
+// 1. Close any running WKVRCProxy.exe (only ones launched from THIS install
+//    dir — parallel installs in other dirs are left alone)
+// 2. Restore yt-dlp.exe from yt-dlp-og.exe in VRChat Tools (belt-and-
+//    suspenders: drop the bundled vanilla in if og went missing; warn if
+//    even the bundled fallback is absent so VRChat won't be left with our
+//    patched yt-dlp pointing at a soon-to-be-deleted install dir)
+// 3. Remove the hosts entry (UAC re-exec via WKVRCProxy.exe
+//    --remove-hosts-entry, but only if the entry is actually present —
+//    avoids a UAC prompt for users who never enabled public-instance mode)
+// 4. Wipe %LOCALAPPDATA%Low\WKVRCProxy\ (current state root) AND the
+//    legacy %LOCALAPPDATA%\WKVRCProxy\ tree
+// 5. Schedule install-dir self-deletion via cmd.exe /c, capturing the
+//    rmdir output to %TEMP% so a stuck rmdir leaves a diagnostic trail
+//
+// Per-step start/ok/skipped breadcrumbs are emitted to the rolling log so
+// "uninstall left X behind" reports can be diagnosed without a repro.
 [SupportedOSPlatform("windows")]
 internal static class Program
 {
@@ -25,20 +35,13 @@ internal static class Program
         string installDir = AppContext.BaseDirectory.TrimEnd('\\', '/');
         string watchdogExe = Path.Combine(installDir, "WKVRCProxy.exe");
 
-        try { CloseRunningWatchdog(); }
-        catch (Exception ex) { LogStepError("close-watchdog", ex); errors++; }
+        Console.WriteLine("[uninstall] start installDir=" + installDir);
 
-        try { RestoreYtDlp(installDir); }
-        catch (Exception ex) { LogStepError("restore-yt-dlp", ex); errors++; }
-
-        try { RemoveHostsEntry(watchdogExe); }
-        catch (Exception ex) { LogStepError("remove-hosts", ex); errors++; }
-
-        try { WipeLocalAppData(); }
-        catch (Exception ex) { LogStepError("wipe-localappdata", ex); errors++; }
-
-        try { ScheduleInstallDirDelete(installDir); }
-        catch (Exception ex) { LogStepError("schedule-self-delete", ex); errors++; }
+        errors += RunStep("close-watchdog", () => CloseRunningWatchdog(installDir));
+        errors += RunStep("restore-yt-dlp", () => RestoreYtDlp(installDir));
+        errors += RunStep("remove-hosts", () => RemoveHostsEntry(watchdogExe));
+        errors += RunStep("wipe-state", WipeState);
+        errors += RunStep("schedule-self-delete", () => ScheduleInstallDirDelete(installDir));
 
         Console.WriteLine(errors == 0
             ? "WKVRCProxy uninstalled. The install folder will disappear in a moment."
@@ -46,34 +49,72 @@ internal static class Program
         return errors == 0 ? 0 : 2;
     }
 
-    // Step-error log helper: preserves exception type alongside the message
-    // so a bug report shows whether a "restore-yt-dlp" failure was an
-    // UnauthorizedAccessException (permissions), IOException (file locked),
-    // FileNotFoundException (target gone), etc.
-    private static void LogStepError(string step, Exception ex) =>
-        Console.Error.WriteLine(step + ": " + ex.GetType().Name + ": " + ex.Message);
-
-    private static void CloseRunningWatchdog()
+    // Per-step wrapper: emits start/ok/error breadcrumbs to the log so the
+    // remote postmortem can see which step ran, in what order, and whether
+    // it skipped vs threw. Returns 1 on caught exception so the caller can
+    // accumulate an error count.
+    private static int RunStep(string step, Action body)
     {
+        Console.WriteLine("[uninstall] " + step + " start");
+        try
+        {
+            body();
+            Console.WriteLine("[uninstall] " + step + " ok");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("[uninstall] " + step + " ERROR " + ex.GetType().Name + ": " + ex.Message);
+            return 1;
+        }
+    }
+
+    // Only close watchdog processes that were launched from THIS install
+    // dir's WKVRCProxy.exe. A user with parallel installs (release + dev,
+    // or two VRChat profiles) would otherwise have the OTHER install's
+    // watchdog killed when uninstalling one — hard to diagnose, easy to
+    // avoid. MainModule.FileName lookup throws on processes the current
+    // user can't open (admin-elevated watchdog from a non-admin uninstall);
+    // we treat those as "not ours" rather than failing the step.
+    private static void CloseRunningWatchdog(string installDir)
+    {
+        string ownExe = Path.Combine(installDir, "WKVRCProxy.exe");
+        int closed = 0, skipped = 0;
         foreach (var p in Process.GetProcessesByName("WKVRCProxy"))
         {
             using (p)
             {
+                string? procExe = null;
+                try { procExe = p.MainModule?.FileName; }
+                catch { /* probably elevated and we're not */ skipped++; continue; }
+                if (procExe == null
+                    || !string.Equals(Path.GetFullPath(procExe), Path.GetFullPath(ownExe),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    skipped++;
+                    continue;
+                }
                 try
                 {
                     if (!p.CloseMainWindow()) p.Kill();
                     p.WaitForExit(5000);
+                    closed++;
                 }
                 catch { /* best-effort */ }
             }
         }
-        Thread.Sleep(500);
+        Console.WriteLine("[uninstall] close-watchdog matched=" + closed + " skipped_other_installs=" + skipped);
+        if (closed > 0) Thread.Sleep(500);
     }
 
     private static void RestoreYtDlp(string installDir)
     {
         string? toolsDir = TryFindVrcTools();
-        if (string.IsNullOrEmpty(toolsDir)) return;
+        if (string.IsNullOrEmpty(toolsDir))
+        {
+            Console.WriteLine("[uninstall] restore-yt-dlp skipped: VRChat Tools dir not found");
+            return;
+        }
 
         // Sweep before AND after: clears any sidecars from prior unclean runs
         // up front, and clears the .stale-<utc> we may produce ourselves below.
@@ -132,6 +173,23 @@ internal static class Program
                     try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
                     throw;
                 }
+                return;
+            }
+            // Both backup AND bundled fallback missing. If yt-dlp.exe exists in
+            // VRChat's Tools dir it's almost certainly OUR patched wrapper —
+            // pointing at an install dir we're about to delete. VRChat will
+            // hard-fail every video play once the install is gone with no
+            // clear diagnostic. Surface a loud warning so the user knows what
+            // to do (let VRChat re-download yt-dlp on next launch).
+            if (File.Exists(target))
+            {
+                Console.Error.WriteLine(
+                    "[uninstall] WARNING: VRChat Tools/yt-dlp.exe could not be restored to vanilla — "
+                    + "neither yt-dlp-og.exe nor the bundled fallback at " + bundled + " was available. "
+                    + "Delete VRChat Tools/yt-dlp.exe manually so VRChat re-downloads it on next launch, "
+                    + "or reinstall VRChat.");
+                throw new InvalidOperationException(
+                    "Tools/yt-dlp.exe could not be restored — backup and bundled fallback both missing");
             }
         }
         finally
@@ -145,7 +203,20 @@ internal static class Program
 
     private static void RemoveHostsEntry(string watchdogExe)
     {
-        if (!File.Exists(watchdogExe)) return;
+        if (!File.Exists(watchdogExe))
+        {
+            Console.WriteLine("[uninstall] remove-hosts skipped: watchdog exe missing (can't re-exec elevated)");
+            return;
+        }
+        // Skip the UAC prompt entirely if no entry is present — users who
+        // never enabled public-instance mode shouldn't see a UAC dialog
+        // for a no-op write. The hosts file is world-readable so we can
+        // check from this unelevated process.
+        if (!HostsFileContainsBypassEntry())
+        {
+            Console.WriteLine("[uninstall] remove-hosts skipped: entry already absent");
+            return;
+        }
         try
         {
             var psi = new ProcessStartInfo
@@ -165,20 +236,89 @@ internal static class Program
         }
     }
 
-    private static void WipeLocalAppData()
+    // Local read-only check that mirrors HostsManager.IsBypassActive (we
+    // can't reference the watchdog assembly's internal class from here).
+    // Match: a non-comment line containing both "127.0.0.1" and the marker
+    // host. Best-effort — failures (file missing, locked) return false so
+    // the caller falls through to the UAC re-exec which has its own
+    // error handling.
+    private const string BypassMarkerHost = "localhost.youtube.com";
+    private static bool HostsFileContainsBypassEntry()
     {
-        string dir = Path.Combine(
+        string p = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "drivers", "etc", "hosts");
+        if (!File.Exists(p)) return false;
+        try
+        {
+            using var fs = new FileStream(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            string? line;
+            while ((line = sr.ReadLine()) != null)
+            {
+                string t = line.Trim();
+                if (t.StartsWith('#')) continue;
+                if (t.Contains("127.0.0.1") && t.Contains(BypassMarkerHost)) return true;
+            }
+        }
+        catch { /* best-effort */ }
+        return false;
+    }
+
+    // Wipe BOTH the current state root (LocalLow, where everything lives
+    // post-integrity-fix) AND the legacy %LOCALAPPDATA%\WKVRCProxy\ tree
+    // (in case migration was incomplete or never ran). Earlier impl only
+    // wiped the legacy path — every uninstall left the user's logs,
+    // crashes, codec-state.json, and update-check JSON behind on the
+    // LocalLow side. Confirmed bug.
+    //
+    // Closes the open log writer first so the BaseStream's FileShare.Read
+    // handle doesn't block Directory.Delete on the logs subdir. After
+    // close, Tee() is a no-op — subsequent Console.WriteLine still reaches
+    // the underlying console writer for the user's "uninstalled" banner.
+    private static void WipeState()
+    {
+        Logger.Close();
+
+        int wiped = 0;
+        string lowRoot = WkvrcPaths.StateRoot();
+        if (Directory.Exists(lowRoot))
+        {
+            try { Directory.Delete(lowRoot, recursive: true); wiped++; }
+            catch (Exception ex) { Console.Error.WriteLine("[uninstall] could not wipe " + lowRoot + ": " + ex.Message); }
+        }
+
+        string legacyRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "WKVRCProxy");
-        if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        if (Directory.Exists(legacyRoot))
+        {
+            try { Directory.Delete(legacyRoot, recursive: true); wiped++; }
+            catch (Exception ex) { Console.Error.WriteLine("[uninstall] could not wipe " + legacyRoot + ": " + ex.Message); }
+        }
+
+        Console.WriteLine("[uninstall] wipe-state directories_wiped=" + wiped);
     }
 
     private static void ScheduleInstallDirDelete(string installDir)
     {
+        // Defensive: refuse to interpolate a path containing a `"` character.
+        // AppContext.BaseDirectory cannot reach this state on Windows (file
+        // APIs reject quotes in path segments), but bail loudly rather than
+        // emitting malformed cmd that could be mistakenly parsed.
+        if (installDir.Contains('"'))
+            throw new InvalidOperationException("install dir contains a quote character: " + installDir);
+
         // Spawn detached cmd.exe that waits, then rmdir's the install dir.
-        // The uninstaller exits before the wait elapses so its own exe is no
-        // longer locked.
-        string cmd = $"/c ping 127.0.0.1 -n 2 > nul & rmdir /s /q \"{installDir}\"";
+        // The uninstaller exits before the wait elapses so its own exe is
+        // no longer locked. 3-second wait is conservative — earlier 1s wait
+        // raced against AV scanners holding the exe handle on slow disks.
+        // Capture rmdir output to %TEMP% so a stuck rmdir leaves a
+        // diagnostic trail (otherwise the user sees "uninstalled" but the
+        // dir survives, with no clue why).
+        string log = Path.Combine(Path.GetTempPath(),
+            "WKVRCProxy-uninstall-rmdir-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss") + ".log");
+        string cmd = $"/c (ping 127.0.0.1 -n 4 > nul) & (rmdir /s /q \"{installDir}\") > \"{log}\" 2>&1";
         var psi = new ProcessStartInfo("cmd.exe", cmd)
         {
             UseShellExecute = false,
@@ -186,6 +326,7 @@ internal static class Program
             WorkingDirectory = Path.GetTempPath(),
         };
         Process.Start(psi);
+        Console.WriteLine("[uninstall] schedule-self-delete cmd-log=" + log);
     }
 
     private static string? TryFindVrcTools()
