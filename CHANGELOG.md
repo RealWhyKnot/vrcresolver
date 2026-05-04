@@ -26,6 +26,7 @@ The most recent release is at the top.
 - **crash:** State-snapshot delegate enriches postmortem logs (H20) (a1a9b74)
 - **yt-dlp:** Restore patched yt-dlp wrapper as 5th project (R1) (586ef85)
 - Restore silent codec auto-install (R3) (58937d9)
+- Runtime updater for bundled yt-dlp fallback (R4) (4844988)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
