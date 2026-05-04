@@ -26,6 +26,12 @@ Rules that contributors MUST follow. These exist because of real bugs we've hit;
 
 **How to apply**: When extending the wrapper, run `dotnet publish src/WKVRCProxy.YtDlp -c Release -r win-x64` locally and confirm zero IL3050/IL2026 warnings. The watchdog/updater/uninstaller are NOT AOT'd and can use full reflection — keep AOT-discipline scoped to `WKVRCProxy.YtDlp` only.
 
+### Wire-protocol DTOs — byte-exact with whyknot.dev + source-gen on the v3 path
+
+**Any new field/action/feature added to `src/WKVRCProxy.Shared/Protocol.cs` MUST mirror whyknot.dev's `MeshResolveProtocol.cs` byte-exact** (literal string, casing, snake_case vs camelCase, type). A casing flip silently desyncs the wire and surfaces as "frame parse failed" hours later. Add a constant + a unit test in `WireConstants_*_match_server_spec_strings` so a desync is caught at build time, not at user playback.
+
+**v3-path DTOs go through the source-gen `MeshJsonContext`** at `src/WKVRCProxy/MeshJsonContext.cs`, NOT reflection. Touching the v3 surface? Add the new type to `[JsonSerializable(typeof(...))]` so the path stays AOT-clean for the future watchdog AOT audit. The existing v2 `JsonSerializer.Deserialize<WelcomeFrame>` reflection call is intentionally left in place — that's the watchdog AOT audit's scope. Don't bundle a v2-side conversion with v3 work.
+
 ### Integrity-level model — Low wrapper, Medium watchdog, named-pipe SACL
 
 **The patched yt-dlp wrapper runs at Low integrity** (inherited from VRChat's `Tools\` dir, which lives under `%LOCALAPPDATA%Low\`). The watchdog runs at Medium. The named pipe `\\.\pipe\WKVRCProxy.resolve` is created with an explicit SACL granting Low-integrity connect access.
