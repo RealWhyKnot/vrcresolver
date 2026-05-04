@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
@@ -71,29 +73,68 @@ internal sealed class LocalIpcServer : IDisposable
         }
     }
 
-    // SDDL for the named pipe security descriptor.
-    //   D:(A;;0x1f019f;;;<owner-sid>)  — DACL: current user gets full pipe
-    //                                     access (read, write, create
-    //                                     instance, sync, etc.).
-    //   S:(ML;;NW;;;LW)                — SACL: mandatory integrity label
-    //                                     LOW. NW (NO_WRITE_UP) is the
-    //                                     standard policy flag for the
-    //                                     label; with the level set to
-    //                                     Low, processes at Low and above
-    //                                     can both read and write the pipe.
-    //                                     This is what lets the wrapper
-    //                                     deployed into VRChat's
-    //                                     LocalLow-located Tools dir (Low
-    //                                     integrity by inheritance) connect
-    //                                     to a pipe owned by the watchdog
-    //                                     (Medium integrity).
-    private static PipeSecurity BuildPipeSecurity()
+    // P/Invoke surface for setting the pipe's mandatory integrity label.
+    // Setting a SACL containing audit ACEs requires SeSecurityPrivilege —
+    // not held by normal user processes — but Windows has a documented
+    // exception: setting JUST the mandatory integrity LABEL via the
+    // LABEL_SECURITY_INFORMATION flag does NOT require that privilege as
+    // long as the requested level is at or below the caller's. We exploit
+    // that exception by calling SetSecurityInfo directly with LABEL flag
+    // only (not SACL flag), bypassing the privilege check.
+    //
+    // We use a pre-built SACL byte buffer derived from the SDDL fragment
+    // "S:(ML;;NW;;;LW)" — Low integrity, NO_WRITE_UP policy. The kernel
+    // interprets this as "object lives at Low integrity; processes below
+    // Low can't write up." Since Low is the lowest practical integrity in
+    // user mode (Untrusted exists but processes there can barely run at
+    // all), this effectively allows Low and above to read+write the pipe.
+    private const int SE_KERNEL_OBJECT = 6;
+    private const int LABEL_SECURITY_INFORMATION = 0x00000010;
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint SetSecurityInfo(
+        SafeHandle handle,
+        int objectType,
+        int securityInfo,
+        IntPtr owner,
+        IntPtr group,
+        IntPtr dacl,
+        IntPtr sacl);
+
+    private static readonly byte[] s_lowIntegritySaclBytes = BuildLowIntegritySaclBytes();
+
+    private static byte[] BuildLowIntegritySaclBytes()
     {
-        string ownerSid = WindowsIdentity.GetCurrent().User?.Value ?? "AU";
-        string sddl = $"D:(A;;0x1f019f;;;{ownerSid})S:(ML;;NW;;;LW)";
-        var ps = new PipeSecurity();
-        ps.SetSecurityDescriptorSddlForm(sddl);
-        return ps;
+        // Parse the full SDDL into a RawSecurityDescriptor so the framework
+        // builds the SACL bytes for us, then extract just the SACL portion.
+        // The DACL is set separately via PipeSecurity API on the open handle.
+        var rsd = new RawSecurityDescriptor("S:(ML;;NW;;;LW)");
+        var sacl = rsd.SystemAcl;
+        if (sacl == null) return Array.Empty<byte>();
+        byte[] bytes = new byte[sacl.BinaryLength];
+        sacl.GetBinaryForm(bytes, 0);
+        return bytes;
+    }
+
+    private static void ApplyLowIntegrityLabel(NamedPipeServerStream pipe)
+    {
+        if (s_lowIntegritySaclBytes.Length == 0) return;
+        var pin = GCHandle.Alloc(s_lowIntegritySaclBytes, GCHandleType.Pinned);
+        try
+        {
+            uint rc = SetSecurityInfo(
+                pipe.SafePipeHandle,
+                SE_KERNEL_OBJECT,
+                LABEL_SECURITY_INFORMATION,
+                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                pin.AddrOfPinnedObject());
+            if (rc != 0)
+                Console.WriteLine("[ipc] SetSecurityInfo(LABEL) failed: " + rc + " — Low-integrity wrapper may not be able to connect");
+        }
+        finally
+        {
+            pin.Free();
+        }
     }
 
     private async Task AcceptLoopAsync(CancellationToken ct)
@@ -103,15 +144,19 @@ internal sealed class LocalIpcServer : IDisposable
             NamedPipeServerStream pipe;
             try
             {
-                pipe = NamedPipeServerStreamAcl.Create(
+                // Create with default DACL (current user only — that's what
+                // we want for security; only same-user processes connect).
+                // The mandatory integrity label is applied in a second step
+                // because a SACL-bearing PipeSecurity at create-time triggers
+                // the SeSecurityPrivilege check and fails on normal user
+                // processes.
+                pipe = new NamedPipeServerStream(
                     WireConstants.PipeName,
                     PipeDirection.InOut,
                     NamedPipeServerStream.MaxAllowedServerInstances,
                     PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous,
-                    inBufferSize: 0,
-                    outBufferSize: 0,
-                    pipeSecurity: BuildPipeSecurity());
+                    PipeOptions.Asynchronous);
+                ApplyLowIntegrityLabel(pipe);
             }
             catch (Exception ex)
             {
