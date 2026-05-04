@@ -48,6 +48,11 @@ internal static class Program
         // stdout, child consoles inheriting a legacy codepage).
         try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* best-effort */ }
 
+        // Install the rolling file logger so every Console.WriteLine also lands
+        // in %LOCALAPPDATA%\WKVRCProxy\logs\watchdog-<utc>.log. Bug reports
+        // become "attach this file" instead of "paste your scrollback".
+        Logger.Install("watchdog");
+
         // Install the crash logger so any unhandled exception from this point on
         // lands on disk instead of scrolling off the console. Idempotent — safe
         // even on the elevated re-exec branch.

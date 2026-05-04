@@ -18,6 +18,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* best-effort */ }
+        Logger.Install("uninstaller");
         CrashHandler.Install("uninstaller");
         int errors = 0;
         string installDir = AppContext.BaseDirectory.TrimEnd('\\', '/');
