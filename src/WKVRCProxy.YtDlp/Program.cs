@@ -170,7 +170,7 @@ internal static class Program
         };
 
         byte[] payload;
-        try { payload = JsonSerializer.SerializeToUtf8Bytes(req); }
+        try { payload = JsonSerializer.SerializeToUtf8Bytes(req, WrapperJsonContext.Default.ResolveRequest); }
         catch (Exception ex) { Log("request serialize failed: " + ex.Message); return null; }
 
         var swSend = Stopwatch.StartNew();
@@ -193,7 +193,7 @@ internal static class Program
         Log("response received bytes=" + line.Length + " elapsed_ms=" + swRead.ElapsedMilliseconds);
 
         ResolveResponse? resp;
-        try { resp = JsonSerializer.Deserialize<ResolveResponse>(line); }
+        try { resp = JsonSerializer.Deserialize(line, WrapperJsonContext.Default.ResolveResponse); }
         catch (Exception ex) { Log("response parse failed: " + ex.GetType().Name + ": " + ex.Message); return null; }
         if (resp == null) { Log("response was null after deserialize"); return null; }
 
