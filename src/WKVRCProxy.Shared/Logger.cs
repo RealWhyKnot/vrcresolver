@@ -30,9 +30,7 @@ public static class Logger
         _component = component;
         try
         {
-            _logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "WKVRCProxy", "logs");
+            _logDir = WkvrcPaths.LogsDir();
             Directory.CreateDirectory(_logDir);
             PruneOld();
             OpenNew();

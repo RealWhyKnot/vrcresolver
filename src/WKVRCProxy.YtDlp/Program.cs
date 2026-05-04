@@ -445,18 +445,19 @@ internal static class Program
     }
 
     // Best-effort single-file diagnostic. Log lands at
-    //   %LOCALAPPDATA%\WKVRCProxy\logs\yt-dlp-wrapper.log
-    // — same dir tree as the watchdog / updater / uninstaller component
-    // logs so all per-component diagnostics live under one root. Failures
-    // are swallowed — a yt-dlp invocation that can't log shouldn't break
-    // the resolve pipeline.
+    //   %LOCALAPPDATA%Low\WKVRCProxy\logs\yt-dlp-wrapper.log
+    // — must live under LocalLow because the wrapper runs at Low integrity
+    // (inherited from VRChat's Tools dir which sits in LocalLow). A
+    // Low-integrity process cannot write to Medium-integrity dirs, so the
+    // earlier %LOCALAPPDATA% path silently failed for every VRChat-invoked
+    // call. Watchdog reads from this same LocalLow path so log surfaces
+    // are unified across components. Failures are still swallowed — a
+    // yt-dlp invocation that can't log shouldn't break the resolve pipeline.
     private static void Log(string message)
     {
         try
         {
-            string logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "WKVRCProxy", "logs");
+            string logDir = WkvrcPaths.LogsDir();
             Directory.CreateDirectory(logDir);
             string logPath = Path.Combine(logDir, "yt-dlp-wrapper.log");
             string line = "[" + DateTime.UtcNow.ToString("o") + "] [" + s_rid + "] " + message + "\n";

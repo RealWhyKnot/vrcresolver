@@ -48,8 +48,14 @@ internal static class Program
         // stdout, child consoles inheriting a legacy codepage).
         try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* best-effort */ }
 
+        // Migrate any state from the legacy %LOCALAPPDATA%\WKVRCProxy\
+        // location to the LocalLow root before any logger / crash handler
+        // tries to open files. Idempotent — runs only on first launch
+        // after the integrity fix landed.
+        WkvrcPaths.MigrateLegacyState(Console.WriteLine);
+
         // Install the rolling file logger so every Console.WriteLine also lands
-        // in %LOCALAPPDATA%\WKVRCProxy\logs\watchdog-<utc>.log. Bug reports
+        // in %LOCALAPPDATA%Low\WKVRCProxy\logs\watchdog-<utc>.log. Bug reports
         // become "attach this file" instead of "paste your scrollback".
         Logger.Install("watchdog");
 
@@ -163,9 +169,7 @@ internal static class Program
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         string installDir = AppContext.BaseDirectory;
-        string stateDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "WKVRCProxy");
+        string stateDir = WkvrcPaths.StateRoot();
         string vrcToolsDir = VrcPathLocator.Find() ?? "<not found — launch VRChat once>";
 
         Console.WriteLine($"WKVRCProxy {version}");
