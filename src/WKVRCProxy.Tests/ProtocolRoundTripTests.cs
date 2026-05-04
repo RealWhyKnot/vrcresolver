@@ -204,6 +204,9 @@ public class ProtocolRoundTripTests
         Assert.Equal("warp_down", WireConstants.ReasonWarpDown);
         Assert.Equal("avpro", WireConstants.PlayerAvPro);
         Assert.Equal("unity", WireConstants.PlayerUnity);
-        Assert.Equal(2, WireConstants.ClientProtocolVersion);
+        // Bumped 2 → 3 alongside v3 wire-protocol shipping. v2 servers
+        // negotiate down via Math.Clamp(server, 1, client) on welcome
+        // receipt — backward compat preserved.
+        Assert.Equal(3, WireConstants.ClientProtocolVersion);
     }
 }

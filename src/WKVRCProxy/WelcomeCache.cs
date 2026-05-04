@@ -1,0 +1,140 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using WKVRCProxy.Shared;
+
+namespace WKVRCProxy;
+
+// Per-node persistent cache of v3 welcome contents, keyed by SHA256-prefix
+// fingerprint the server emits in welcome.welcome_hash. On each reconnect
+// the client sends client_hello carrying the cached hash; if the server's
+// hash matches, it replies with the small welcome_cached frame instead of
+// the full welcome — saving bytes on every reconnect.
+//
+// Stored at %LOCALAPPDATA%Low\WKVRCProxy\v3_welcome_cache.json (next to
+// codec-state.json, yt-dlp-update-check.json — same LocalLow state-root
+// convention; see project_locallow_state_layout.md).
+//
+// Per-node keying matters: apex-302 routes to either node1 or node2 and
+// their welcomes can differ (different yt_dlp_version, different node
+// label, different warp_active state). Single-slot would thrash on every
+// node-rotation reconnect.
+//
+// Thread-safety: Get / Store / Invalidate are called from the MeshClient
+// run loop only — single reader, single writer. Atomic write (tmp-file +
+// File.Move) so a crash mid-write leaves either old or new file intact,
+// never a half-written one. Best-effort everywhere; cache miss never
+// breaks the resolve hot path.
+internal sealed class WelcomeCache
+{
+    private readonly string _path;
+
+    public WelcomeCache()
+    {
+        _path = Path.Combine(WkvrcPaths.StateRoot(), "v3_welcome_cache.json");
+    }
+
+    // Test-only constructor allowing the cache to point at a custom path
+    // (per-test temp file). Production uses the parameterless ctor.
+    internal WelcomeCache(string path)
+    {
+        _path = path;
+    }
+
+    public WelcomeCacheEntry? Get(string nodeHost)
+    {
+        if (string.IsNullOrEmpty(nodeHost)) return null;
+        WelcomeCacheFile? file = LoadFile();
+        if (file?.Nodes == null) return null;
+        return file.Nodes.TryGetValue(nodeHost, out var entry) ? entry : null;
+    }
+
+    // Replace the entry for nodeHost with the contents of the freshly-
+    // received welcome plus the hash the server sent. Writes the whole
+    // file atomically — other nodes' entries survive.
+    public void Store(string nodeHost, WelcomeFrame welcome, string hash)
+    {
+        if (string.IsNullOrEmpty(nodeHost) || string.IsNullOrEmpty(hash)) return;
+        WelcomeCacheFile file = LoadFile() ?? new WelcomeCacheFile();
+        file.Nodes ??= new Dictionary<string, WelcomeCacheEntry>(StringComparer.OrdinalIgnoreCase);
+        file.Nodes[nodeHost] = new WelcomeCacheEntry
+        {
+            WelcomeHash = hash,
+            ProtocolVersion = welcome.ProtocolVersion,
+            Node = welcome.Node,
+            Engines = welcome.Engines,
+            Features = welcome.Features,
+            WarpActive = welcome.WarpActive,
+            YtDlpVersion = welcome.YtDlpVersion,
+            ServerVersion = welcome.ServerVersion,
+            StoredAt = DateTime.UtcNow.ToString("o"),
+        };
+        SaveFile(file);
+    }
+
+    // Drop the entry for nodeHost. Used when the server replies with
+    // welcome_cached but our local cache slot is empty (sync drift —
+    // rare; defensive).
+    public void Invalidate(string nodeHost)
+    {
+        if (string.IsNullOrEmpty(nodeHost)) return;
+        WelcomeCacheFile? file = LoadFile();
+        if (file?.Nodes == null || !file.Nodes.ContainsKey(nodeHost)) return;
+        file.Nodes.Remove(nodeHost);
+        SaveFile(file);
+    }
+
+    private WelcomeCacheFile? LoadFile()
+    {
+        try
+        {
+            if (!File.Exists(_path)) return null;
+            using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return JsonSerializer.Deserialize(fs, MeshJsonContext.Default.WelcomeCacheFile);
+        }
+        catch
+        {
+            // Corrupt file / permissions / etc. — pretend cache miss.
+            // Next Store will overwrite; or the file persists harmlessly.
+            return null;
+        }
+    }
+
+    private void SaveFile(WelcomeCacheFile file)
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(_path)!;
+            Directory.CreateDirectory(dir);
+            string tmp = _path + ".new";
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(file, MeshJsonContext.Default.WelcomeCacheFile);
+            File.WriteAllBytes(tmp, bytes);
+            File.Move(tmp, _path, overwrite: true);
+        }
+        catch
+        {
+            // Best-effort. Cache miss next launch isn't a regression —
+            // server just sends the full welcome again.
+        }
+    }
+}
+
+// Local state-file root. Single key today; future v3.x revisions could
+// add sibling top-level fields without breaking the per-node map.
+internal sealed class WelcomeCacheFile
+{
+    [JsonPropertyName("nodes")] public Dictionary<string, WelcomeCacheEntry>? Nodes { get; set; }
+}
+
+internal sealed class WelcomeCacheEntry
+{
+    [JsonPropertyName("welcome_hash")] public string? WelcomeHash { get; set; }
+    [JsonPropertyName("protocol_version")] public int ProtocolVersion { get; set; }
+    [JsonPropertyName("node")] public string? Node { get; set; }
+    [JsonPropertyName("engines")] public string[]? Engines { get; set; }
+    [JsonPropertyName("features")] public string[]? Features { get; set; }
+    [JsonPropertyName("warp_active")] public bool? WarpActive { get; set; }
+    [JsonPropertyName("yt_dlp_version")] public string? YtDlpVersion { get; set; }
+    [JsonPropertyName("server_version")] public string? ServerVersion { get; set; }
+    // Diagnostic only — not part of the wire protocol.
+    [JsonPropertyName("stored_at")] public string? StoredAt { get; set; }
+}
