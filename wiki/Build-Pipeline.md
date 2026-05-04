@@ -27,16 +27,29 @@ Hits `api.github.com/repos/yt-dlp/yt-dlp/releases/latest`, downloads `yt-dlp.exe
 The fallback is what the watchdog drops back into VRChat's Tools dir as `yt-dlp-og.exe` if the user's backup goes missing — it keeps the patched yt-dlp's server-down fallback path functional.
 
 ### 4. .NET publish
-Each project is published self-contained, win-x64, single-file:
 
-- `WKVRCProxy` → `dist/WKVRCProxy.exe` (the watchdog daemon)
-- `WKVRCProxy.Updater` → `dist/WKVRCProxy.Updater.exe`
-- `WKVRCProxy.Uninstaller` → `dist/WKVRCProxy.Uninstaller.exe`
+Six projects total: `WKVRCProxy.Shared` (DLL referenced by all four exes) + `WKVRCProxy` (watchdog) + `WKVRCProxy.Updater` + `WKVRCProxy.Uninstaller` + `WKVRCProxy.YtDlp` (patched wrapper) + `WKVRCProxy.Tests`. All target `net10.0`.
+
+The four exes split into two publish profiles:
+
+**Self-contained, single-file, R2R (Updater / Uninstaller / Watchdog):**
+- `WKVRCProxy` → `dist/WKVRCProxy.exe` (~80 MB)
+- `WKVRCProxy.Updater` → `dist/WKVRCProxy.Updater.exe` (~80 MB)
+- `WKVRCProxy.Uninstaller` → `dist/WKVRCProxy.Uninstaller.exe` (~80 MB)
+
+These embed the .NET 10 runtime + R2R-precompiled images. R2R is enabled for `OutputType=Exe AND IsTestProject!=true` projects via `src/Directory.Build.targets`.
+
+**AOT, native, single-binary (the patched yt-dlp wrapper):**
+- `WKVRCProxy.YtDlp` → `dist/tools/yt-dlp.exe` (~3.27 MB)
+
+`<PublishAot>true</PublishAot>` + `<PublishTrimmed>true</PublishTrimmed>` + `<TrimMode>full</TrimMode>` + `<InvariantGlobalization>true</InvariantGlobalization>`. JSON serialization goes through the `WrapperJsonContext` source-gen at `src/WKVRCProxy.YtDlp/WrapperJsonContext.cs` — `ResolveRequest` and `ResolveResponse` only. **Don't widen the context** to types the wrapper doesn't actually serialize; the trimmer can't drop them once they're listed.
+
+**AOT prerequisites**: Visual Studio Build Tools "Desktop development with C++" workload. The AOT publish step calls MSVC's `link.exe`. `build.ps1` prepends the VS Installer dir (where `vswhere.exe` lives) to PATH so the AOT target can locate the toolchain. CI uses `windows-latest` which already has the workload installed; local devs need to install it once.
 
 ### 5. Tools staging in dist
-- `dist/tools/yt-dlp-og-fallback.exe` — bundled vanilla yt-dlp
+- `dist/tools/yt-dlp-og-fallback.exe` — bundled vanilla yt-dlp (downloaded fresh from yt-dlp/yt-dlp releases each build)
 - `dist/tools/yt-dlp-og-fallback.version.txt` — version tag of the bundled vanilla yt-dlp
-- `dist/tools/yt-dlp-patched.exe` — the patched yt-dlp build. **Drop this in before shipping** — it's not produced by this repo (separate project) and `build.ps1` warns if it's missing in `dist/`.
+- `dist/tools/yt-dlp.exe` — the patched yt-dlp wrapper (built FROM this repo — `WKVRCProxy.YtDlp` with `<AssemblyName>yt-dlp</AssemblyName>` so the AOT publish lands the binary as `yt-dlp.exe`).
 
 ### 6. Release zip
 - `release/WKVRCProxy-v<version>.zip` containing the contents of `dist/`.
