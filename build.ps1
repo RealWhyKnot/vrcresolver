@@ -82,10 +82,15 @@ $BuildTools = Join-Path $BuildDir "tools"
 New-Item -ItemType Directory $BuildTools -Force | Out-Null
 Copy-Item $YtDlpFallback (Join-Path $BuildTools "yt-dlp-og-fallback.exe") -Force
 Copy-Item $YtDlpVerFile  (Join-Path $BuildTools "yt-dlp-og-fallback.version.txt") -Force
-$PatchedDest = Join-Path $BuildTools "yt-dlp-patched.exe"
-if (-not (Test-Path $PatchedDest)) {
-    Write-Host "NOTE: tools/yt-dlp-patched.exe is missing from dist - drop the patched yt-dlp build in before shipping." -ForegroundColor Yellow
-}
+
+# Publish the patched yt-dlp wrapper directly into dist/tools/. AssemblyName=yt-dlp
+# in the project produces yt-dlp.exe; PatchManager copies this over VRChat's
+# Tools/yt-dlp.exe at runtime.
+$YtDlpPubArgs = @("-c","Release","-r","win-x64","--self-contained","true",
+                  "/p:PublishSingleFile=true","/p:Version=$AsmVersion",
+                  "-o",$BuildTools,"--nologo")
+dotnet publish "src/WKVRCProxy.YtDlp/WKVRCProxy.YtDlp.csproj" @YtDlpPubArgs
+if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.YtDlp publish failed" }
 
 # --- Trim debug symbols we don't ship ---
 Get-ChildItem $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue

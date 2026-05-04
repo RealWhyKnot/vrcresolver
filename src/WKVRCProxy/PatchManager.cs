@@ -45,7 +45,7 @@ internal sealed class PatchManager : IDisposable
 
     public PatchManager(string installDir)
     {
-        _patchedYtDlpPath = Path.Combine(installDir, "tools", "yt-dlp-patched.exe");
+        _patchedYtDlpPath = Path.Combine(installDir, "tools", "yt-dlp.exe");
         _bundledFallbackPath = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.exe");
         _bundledFallbackVerPath = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.version.txt");
 
