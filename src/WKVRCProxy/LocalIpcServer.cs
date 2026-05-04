@@ -319,7 +319,6 @@ internal sealed class LocalIpcServer : IDisposable
             string playerLabel = FormatPlayerLabel(req);
             WriteUserActivity(ConsoleColor.Cyan, "  -> " + host + "  (" + playerLabel + ")");
 
-            JsonDocument? respDoc = null;
             string? failReason = null;
             string outcome = "?";
             string? serverReason = null;
@@ -331,24 +330,16 @@ internal sealed class LocalIpcServer : IDisposable
                 // through to the mesh server unchanged. The DTO's
                 // [JsonExtensionData] bag preserves anything we don't statically
                 // know about.
-                respDoc = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
-                await WriteDocAsync(pipe, respDoc, perReqCts.Token).ConfigureAwait(false);
-
-                // Determine outcome from the response action for the success log.
-                if (respDoc.RootElement.TryGetProperty("action", out var actEl)
-                    && actEl.ValueKind == JsonValueKind.String)
-                {
-                    outcome = actEl.GetString() ?? "?";
-                }
-                // Capture server-supplied reason on fallback_native so the
-                // user-facing summary can show the specific reason
-                // (discovery_in_progress, all_configs_failed, etc.) without
-                // relying on outcome-string concatenation.
-                if (respDoc.RootElement.TryGetProperty("reason", out var reasonEl)
-                    && reasonEl.ValueKind == JsonValueKind.String)
-                {
-                    serverReason = reasonEl.GetString();
-                }
+                //
+                // ResolveAsync returns the verified raw response bytes plus
+                // the pre-extracted action and server-supplied reason. We
+                // write the bytes straight to the pipe — no JsonDocument
+                // re-encode on the hot path — and use the extracted strings
+                // for the user-facing console summary.
+                MeshResolveResult result = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
+                await WriteFrameAsync(pipe, result.Frame, perReqCts.Token).ConfigureAwait(false);
+                outcome = result.Action;
+                serverReason = result.Reason;
             }
             catch (OperationCanceledException)
             {
@@ -361,10 +352,6 @@ internal sealed class LocalIpcServer : IDisposable
                     ": " + ex.GetType().Name + ": " +
                     LogUtil.SanitizeForConsole(ex.Message, 160));
                 failReason = WireConstants.FallbackInternalError;
-            }
-            finally
-            {
-                respDoc?.Dispose();
             }
 
             if (failReason != null)
@@ -491,9 +478,14 @@ internal sealed class LocalIpcServer : IDisposable
         return (Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length), truncated);
     }
 
-    private static async Task WriteDocAsync(Stream s, JsonDocument doc, CancellationToken ct)
+    // Pass through pre-serialized JSON bytes from MeshClient. Appends the
+    // NDJSON framing newline in-place and writes once. No JsonDocument
+    // re-encode on the hot path — earlier impl took a JsonDocument and
+    // called SerializeToUtf8Bytes(doc.RootElement) here, which re-emitted
+    // the same JSON the dispatch handler had just parsed.
+    private static async Task WriteFrameAsync(Stream s, byte[] frame, CancellationToken ct)
     {
-        byte[] payload = AppendNewline(JsonSerializer.SerializeToUtf8Bytes(doc.RootElement));
+        byte[] payload = AppendNewline(frame);
         await s.WriteAsync(payload, ct).ConfigureAwait(false);
     }
 

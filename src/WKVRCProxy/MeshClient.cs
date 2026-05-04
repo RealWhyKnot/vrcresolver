@@ -6,6 +6,14 @@ using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
+// Carries the verified raw JSON bytes from a `resolved` / `fallback_native`
+// WS frame plus the action + server-supplied reason already extracted by
+// the dispatch handler. Letting the caller (LocalIpcServer) write Frame
+// straight through to the pipe avoids a JsonDocument re-encode on the hot
+// path; passing Action/Reason through avoids a second TryGetProperty parse
+// for the user-facing console summary.
+internal readonly record struct MeshResolveResult(byte[] Frame, string Action, string? Reason);
+
 // Persistent reconnecting WebSocket client to whyknot.dev's mesh endpoint.
 //
 // Apex-302 discovery: GET https://whyknot.dev/ with auto-redirect off, parse
@@ -45,7 +53,7 @@ internal sealed class MeshClient : IAsyncDisposable
 
     private readonly string _userAgent;
     private readonly HttpClient _httpClient;
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<MeshResolveResult>> _pending = new();
     private readonly Random _rng = new();
 
     // Stable per-process identity included on every playback_feedback frame as
@@ -234,12 +242,16 @@ internal sealed class MeshClient : IAsyncDisposable
     // pipe. The watchdog adds protocol_version=2 if the server is v2-capable
     // and the patched yt-dlp didn't already set it; everything else round-trips
     // unchanged via [JsonExtensionData] on the DTO.
-    public async Task<JsonDocument> ResolveAsync(ResolveRequest req, CancellationToken ct)
+    //
+    // Returns a MeshResolveResult carrying the verified raw response bytes
+    // PLUS the parsed action and server-supplied reason. The caller writes
+    // Frame straight to the pipe — no JsonDocument re-encode on the hot path.
+    public async Task<MeshResolveResult> ResolveAsync(ResolveRequest req, CancellationToken ct)
     {
         // H5: defensive against null DTO from a misbehaving caller. Synthesize
         // a fallback rather than NRE before we have an id to key on.
         if (req == null)
-            return MakeFallbackDoc("", WireConstants.FallbackInternalError);
+            return MakeFallbackResult("", WireConstants.FallbackInternalError);
 
         // Generate per-attempt id if patched yt-dlp didn't supply one. Needed
         // for the pending-TCS key regardless.
@@ -248,7 +260,7 @@ internal sealed class MeshClient : IAsyncDisposable
 
         var ws = _ws;
         if (ws is not { State: WebSocketState.Open })
-            return MakeFallbackDoc(req.Id, WireConstants.FallbackServerUnreachable);
+            return MakeFallbackResult(req.Id, WireConstants.FallbackServerUnreachable);
 
         // Per-connection welcome handshake — wait up to 1s so we know whether
         // the server is v2-capable before deciding whether to opt into v2
@@ -272,7 +284,7 @@ internal sealed class MeshClient : IAsyncDisposable
         if (_serverProtocolVersion >= 2 && !req.ProtocolVersion.HasValue && CallerOptedIntoV2(req))
             req.ProtocolVersion = WireConstants.ClientProtocolVersion;
 
-        var tcs = new TaskCompletionSource<JsonDocument>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tcs = new TaskCompletionSource<MeshResolveResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[req.Id] = tcs;
         // Stash whichever cid the originating request carries (prefer
         // patched-yt-dlp-supplied correlation_id, else fall back to the
@@ -290,7 +302,7 @@ internal sealed class MeshClient : IAsyncDisposable
             _pending.TryRemove(req.Id, out _);
             _inflightCids.TryRemove(req.Id, out _);
             Console.WriteLine($"[mesh] request serialization failed id={req.Id}: {ex.Message}");
-            return MakeFallbackDoc(req.Id, WireConstants.FallbackInternalError);
+            return MakeFallbackResult(req.Id, WireConstants.FallbackInternalError);
         }
 
         try
@@ -306,7 +318,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 CidSuffix(req.CorrelationId) +
                 ": " + ex.GetType().Name + ": " +
                 LogUtil.SanitizeForConsole(ex.Message, 160));
-            return MakeFallbackDoc(req.Id, WireConstants.FallbackServerUnreachable);
+            return MakeFallbackResult(req.Id, WireConstants.FallbackServerUnreachable);
         }
 
         string id = req.Id;
@@ -322,7 +334,7 @@ internal sealed class MeshClient : IAsyncDisposable
         }
         catch (TaskCanceledException)
         {
-            return MakeFallbackDoc(id, WireConstants.FallbackServerUnreachable);
+            return MakeFallbackResult(id, WireConstants.FallbackServerUnreachable);
         }
     }
 
@@ -550,13 +562,35 @@ internal sealed class MeshClient : IAsyncDisposable
             case WireConstants.ActionResolved:
             case WireConstants.ActionFallbackNative:
             {
+                // Extract id, reason, and (on `resolved`) the resolved URL
+                // from the parsed doc; then dispose the doc and hand the
+                // verified raw frame bytes to the pending TCS. Caller writes
+                // bytes through to the pipe — no JsonDocument re-encode on
+                // the hot path.
                 string id = "";
                 if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
                     id = idEl.GetString() ?? "";
-                if (string.IsNullOrEmpty(id)) { doc.Dispose(); return; }
+
+                string? reason = null;
+                if (doc.RootElement.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String)
+                    reason = reasonEl.GetString();
+
+                string? resolvedUrl = null;
+                if (action == WireConstants.ActionResolved
+                    && doc.RootElement.TryGetProperty("url", out var urlEl)
+                    && urlEl.ValueKind == JsonValueKind.String)
+                {
+                    resolvedUrl = urlEl.GetString();
+                }
 
                 if (action == WireConstants.ActionFallbackNative)
-                    LogFallbackNative(doc.RootElement, id);
+                    LogFallbackNative(id, reason);
+
+                // doc no longer needed past this point — payload bytes carry
+                // everything LocalIpcServer needs to forward to the wrapper.
+                doc.Dispose();
+
+                if (string.IsNullOrEmpty(id)) return;
 
                 // Pop the inflight cid so VrcLogMonitor can later look it up by
                 // the resolved URL. Only on `resolved` — fallback_native means
@@ -565,27 +599,15 @@ internal sealed class MeshClient : IAsyncDisposable
                 _inflightCids.TryRemove(id, out var cid);
                 if (action == WireConstants.ActionResolved
                     && !string.IsNullOrEmpty(cid)
-                    && doc.RootElement.TryGetProperty("url", out var urlEl)
-                    && urlEl.ValueKind == JsonValueKind.String)
+                    && !string.IsNullOrEmpty(resolvedUrl))
                 {
-                    string? resolvedUrl = urlEl.GetString();
-                    if (!string.IsNullOrEmpty(resolvedUrl))
-                        RememberResolvedUrlCid(resolvedUrl!, cid);
+                    RememberResolvedUrlCid(resolvedUrl!, cid);
                 }
 
                 if (_pending.TryRemove(id, out var tcs))
                 {
                     if (action == WireConstants.ActionResolved) _reconnectAttempt = 0;
-                    if (!tcs.TrySetResult(doc))
-                    {
-                        // Caller already cancelled — own the disposal so we
-                        // don't leak the JsonDocument's pooled buffers.
-                        doc.Dispose();
-                    }
-                }
-                else
-                {
-                    doc.Dispose();
+                    tcs.TrySetResult(new MeshResolveResult(payload, action, reason));
                 }
                 return;
             }
@@ -764,13 +786,9 @@ internal sealed class MeshClient : IAsyncDisposable
     // there and stayed visible only as legacy verbosity. Routed to the
     // rolling watchdog log so deep diagnosis still has the per-frame
     // record (with the v2-reason advisory copy preserved).
-    private static void LogFallbackNative(JsonElement root, string id)
+    private static void LogFallbackNative(string id, string? reasonRaw)
     {
-        string reason = "";
-        if (root.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String)
-            reason = reasonEl.GetString() ?? "";
-
-        reason = LogUtil.SanitizeForConsole(reason, 64);
+        string reason = LogUtil.SanitizeForConsole(reasonRaw ?? "", 64);
 
         string line = reason switch
         {
@@ -796,31 +814,7 @@ internal sealed class MeshClient : IAsyncDisposable
             if (_pending.TryRemove(kvp.Key, out var tcs))
             {
                 failedIds.Add(kvp.Key);
-                JsonDocument? doc = null;
-                try
-                {
-                    doc = MakeFallbackDoc(kvp.Key, reason);
-                    if (!tcs.TrySetResult(doc))
-                    {
-                        // Caller already cancelled — own the disposal so we
-                        // don't leak the JsonDocument's pooled buffers.
-                        doc.Dispose();
-                        doc = null;
-                    }
-                    else
-                    {
-                        // TCS owns it now; clear local so finally doesn't double-dispose.
-                        doc = null;
-                    }
-                }
-                catch
-                {
-                    // TrySetResult itself shouldn't throw, but defensive: any
-                    // unexpected throw above means the doc isn't owned by the
-                    // TCS — dispose locally and cancel the awaiter.
-                    try { doc?.Dispose(); } catch { /* best-effort */ }
-                    try { tcs.TrySetCanceled(); } catch { /* best-effort */ }
-                }
+                tcs.TrySetResult(MakeFallbackResult(kvp.Key, reason));
             }
         }
 
@@ -837,15 +831,20 @@ internal sealed class MeshClient : IAsyncDisposable
             " ids=" + idList);
     }
 
-    private static JsonDocument MakeFallbackDoc(string id, string reason)
+    // Synthesize a fallback_native frame (raw JSON bytes + parsed action +
+    // reason) for callers that never made it onto the wire — null DTO,
+    // socket down, send threw, mesh disconnect during outstanding wait, etc.
+    // Bytes match what the server would emit for the same shape so the pipe
+    // forward is wire-identical to a real server fallback.
+    private static MeshResolveResult MakeFallbackResult(string id, string reason)
     {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new
         {
             action = WireConstants.ActionFallbackNative,
             id,
             reason
         });
-        return JsonDocument.Parse(bytes);
+        return new MeshResolveResult(bytes, WireConstants.ActionFallbackNative, reason);
     }
 
     public async ValueTask DisposeAsync()
