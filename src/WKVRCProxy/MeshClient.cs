@@ -534,10 +534,13 @@ internal sealed class MeshClient : IAsyncDisposable
         }
     }
 
-    // Surface server-emitted resolve_log frames. The server emits diagnostic
-    // narrative per resolve attempt (candidate URLs, codec choices, fallback
-    // decisions). Previously discarded silently — now visible on the console
-    // so a user debugging "why did this fall back" gets the server's own story.
+    // Server-emitted resolve_log frames. The server narrates per-strategy
+    // attempts (candidate URLs, codec choices, fallback decisions) — useful
+    // for deep diagnosis but verbose enough to drown the user-facing console
+    // (5-15 frames per resolve). Routed to FILE-ONLY logging so the watchdog
+    // log captures everything for grep / bug reports while the live console
+    // stays scannable; LocalIpcServer prints a single user-friendly summary
+    // per resolve at terminal-response time.
     private static void LogResolveLogFrame(JsonElement root)
     {
         string id = "";
@@ -552,7 +555,7 @@ internal sealed class MeshClient : IAsyncDisposable
         if (root.TryGetProperty("message", out var msgEl) && msgEl.ValueKind == JsonValueKind.String)
             message = msgEl.GetString() ?? "";
 
-        Console.WriteLine(
+        Logger.WriteFileOnly(
             "[mesh][resolve_log] id=" + LogUtil.SanitizeForConsole(id, 32) +
             " level=" + LogUtil.SanitizeForConsole(level, 16) +
             " " + LogUtil.SanitizeForConsole(message, 240));

@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
@@ -107,6 +109,7 @@ internal sealed class LocalIpcServer : IDisposable
         perReqCts.CancelAfter(PerRequestTimeout);
         string id = "";
         string? cid = null;
+        var swReq = Stopwatch.StartNew();
         try
         {
             var (line, truncated) = await ReadLineAsync(pipe, perReqCts.Token).ConfigureAwait(false);
@@ -180,6 +183,14 @@ internal sealed class LocalIpcServer : IDisposable
                 return;
             }
 
+            // User-facing per-resolve summary — request line. Hostname only
+            // (no path/query — token risk), player + target resolution.
+            // Companion "response" line fires below at terminal-response
+            // time so the operator sees both halves of every resolve.
+            string host = ExtractHost(req.Url);
+            string playerLabel = FormatPlayerLabel(req);
+            WriteUserActivity(ConsoleColor.Cyan, "  -> " + host + "  (" + playerLabel + ")");
+
             JsonDocument? respDoc = null;
             string? failReason = null;
             string outcome = "?";
@@ -236,13 +247,48 @@ internal sealed class LocalIpcServer : IDisposable
                     ReportingService.ReportFallback(req, reason, null);
             }
 
-            // Per-request success log. Captures id, optional correlation_id,
-            // player, and the outcome action so users have a baseline of
-            // resolves-served they can correlate against failures.
-            Console.WriteLine(
+            // User-facing per-resolve summary — terminal-response line.
+            // Colour signals at-a-glance status: green = resolved, yellow =
+            // server replied with fallback_native (we'll defer to og), red =
+            // we synthesised fallback_native locally (server timeout / IPC
+            // budget tripped). Pairs visually with the "->" request line.
+            swReq.Stop();
+            string elapsedLabel = FormatElapsed(swReq.Elapsed.TotalSeconds);
+            ConsoleColor color;
+            string symbolAndStatus;
+            if (outcome == WireConstants.ActionResolved)
+            {
+                color = ConsoleColor.Green;
+                symbolAndStatus = "OK resolved";
+            }
+            else if (failReason != null)
+            {
+                color = ConsoleColor.Red;
+                symbolAndStatus = "XX failed (" + failReason + ")";
+            }
+            else if (outcome.StartsWith(WireConstants.ActionFallbackNative))
+            {
+                color = ConsoleColor.Yellow;
+                string reason = outcome.Length > WireConstants.ActionFallbackNative.Length + 1
+                    ? outcome[(WireConstants.ActionFallbackNative.Length + 1)..]
+                    : "?";
+                symbolAndStatus = "!! fallback (" + reason + ")";
+            }
+            else
+            {
+                color = ConsoleColor.DarkGray;
+                symbolAndStatus = "?? " + outcome;
+            }
+            WriteUserActivity(color, "     " + symbolAndStatus + "  " + elapsedLabel);
+
+            // Detailed per-request line (id, cid, full outcome) routed to
+            // the rolling watchdog log only — kept off the user-facing
+            // console window so the friendly summary above stays scannable.
+            Logger.WriteFileOnly(
                 "[ipc] resolve id=" + id + CidSuffix(cid) +
                 " player=" + LogUtil.SanitizeForConsole(req.Player ?? WireConstants.PlayerUnknown, 16) +
-                " outcome=" + LogUtil.SanitizeForConsole(outcome, 48));
+                " outcome=" + LogUtil.SanitizeForConsole(outcome, 48) +
+                " elapsed_ms=" + (long)swReq.Elapsed.TotalMilliseconds);
         }
         catch (Exception ex)
         {
@@ -334,6 +380,82 @@ internal sealed class LocalIpcServer : IDisposable
             await s.FlushAsync(ct).ConfigureAwait(false);
         }
         catch { /* peer may have hung up — we tried */ }
+    }
+
+    // Bare hostname (host minus optional "www." prefix) for the user-facing
+    // per-resolve summary. Path / query are NEVER printed to console — they
+    // can carry user-identifying tokens (YouTube video ids, twitch streams,
+    // etc.). The full URL stays in the watchdog log file via Logger.
+    private static string ExtractHost(string url)
+    {
+        try
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var u))
+            {
+                string h = u.Host;
+                if (h.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) h = h[4..];
+                return h;
+            }
+        }
+        catch { /* best-effort */ }
+        return "?";
+    }
+
+    private static readonly Regex HeightCapRegex = new(@"height<=(\d+)", RegexOptions.Compiled);
+
+    // Player + target resolution label for the request line. The wrapper
+    // doesn't populate maxHeight today (the constraint lives in the
+    // vrchat_format_arg's `[height<=N]` selector instead) so we parse that
+    // when the explicit field is absent. Falls back to "max" when neither
+    // is available.
+    private static string FormatPlayerLabel(ResolveRequest req)
+    {
+        string player = req.Player == WireConstants.PlayerUnity ? "Unity" : "AVPro";
+        if (req.MaxHeight is int mh && mh > 0)
+            return player + " " + mh + "p";
+        if (!string.IsNullOrEmpty(req.VrchatFormatArg))
+        {
+            var m = HeightCapRegex.Match(req.VrchatFormatArg);
+            if (m.Success) return player + " " + m.Groups[1].Value + "p";
+        }
+        return player + " max";
+    }
+
+    // Compact elapsed-time label for the response line. Always one decimal
+    // under 60 s so a 0.5 s cache hit is visible vs a 12.3 s server escalate;
+    // switches to "<m>m<s>s" past 60 s for the unusual stuck case.
+    private static string FormatElapsed(double seconds)
+    {
+        if (seconds < 60) return seconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "s";
+        int m = (int)(seconds / 60);
+        int s = (int)(seconds - m * 60);
+        return m + "m" + s + "s";
+    }
+
+    // Atomic colour-set + line-write + colour-reset under a static lock so
+    // concurrent resolves (a busy world spawning 10+ video players at once)
+    // don't interleave their colour-state changes mid-line. Writes a local
+    // HH:mm:ss timestamp at the head so the operator can eyeball the time
+    // gap between request and response without parsing the file log.
+    private static readonly object s_consoleLock = new();
+    private static void WriteUserActivity(ConsoleColor color, string body)
+    {
+        string stamped = "[" + DateTime.Now.ToString("HH:mm:ss") + "]" + body;
+        lock (s_consoleLock)
+        {
+            ConsoleColor prev;
+            try { prev = Console.ForegroundColor; }
+            catch { prev = ConsoleColor.Gray; }
+            try
+            {
+                try { Console.ForegroundColor = color; } catch { /* no-tty */ }
+                Console.WriteLine(stamped);
+            }
+            finally
+            {
+                try { Console.ForegroundColor = prev; } catch { /* no-tty */ }
+            }
+        }
     }
 
     public void Dispose()
