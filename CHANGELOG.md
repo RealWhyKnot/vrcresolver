@@ -29,6 +29,9 @@ The most recent release is at the top.
 - Runtime updater for bundled yt-dlp fallback (R4) (4844988)
 - Anonymous failure reporting opt-in (R5) (41d38a1)
 - VrcLogMonitor + playback_feedback mesh action (R2) (87d273b)
+- **watchdog:** [via lh-yt] resolve tag + 30-min heartbeat with stats (b6490da)
+- **watchdog:** Periodic hosts entry tick + tightened parser + tests (0e2a1e6)
+- **logger:** Tee Console.Error too; expose Logger.Close() (4aeac2e)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
@@ -73,6 +76,9 @@ The most recent release is at the top.
 - **integrity:** Relocate state to LocalLow + Low-integrity SACL on pipe (8173dc3)
 - **integrity:** Pipe label via P/Invoke; skip logs in migration (fa33565)
 - **integrity:** Create pipe with embedded SACL via CreateNamedPipe P/Invoke (cb2838f)
+- **updater:** Mutex-poll release, retry rename, hint locked-file cause (0c91a02)
+- **updater:** HTTP timeout + Content-Type + corp-proxy + temp sweep (41cb8d6)
+- **uninstaller:** Wipe LocalLow state, scope kills, per-step breadcrumbs (b570aca)
 
 ---
 
