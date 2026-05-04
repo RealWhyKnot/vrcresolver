@@ -28,6 +28,7 @@ The most recent release is at the top.
 - Restore silent codec auto-install (R3) (58937d9)
 - Runtime updater for bundled yt-dlp fallback (R4) (4844988)
 - Anonymous failure reporting opt-in (R5) (41d38a1)
+- VrcLogMonitor + playback_feedback mesh action (R2) (87d273b)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
