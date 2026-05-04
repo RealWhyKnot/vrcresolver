@@ -33,6 +33,13 @@ internal sealed class PatchManager : IDisposable
     private int _started;  // Interlocked: 0 = not started, 1 = started
     private int _stopping; // Interlocked: 0 = idle, 1 = stop in flight / done
 
+    // Patched binary's size + SHA, computed once on first read and reused
+    // for every tick comparison thereafter. Pre-fix every 3 s tick re-hashed
+    // BOTH files (~25 MiB × 2) even though the patched side never changes
+    // mid-run.
+    private long _patchedYtDlpSize;
+    private string? _patchedYtDlpHash;
+
     public string? VrcToolsDir => _vrcToolsDir;
     public bool Halted => _halted;
 
@@ -81,7 +88,7 @@ internal sealed class PatchManager : IDisposable
             return;
         }
 
-        if (File.Exists(targetPath) && File.Exists(_patchedYtDlpPath) && FilesEqualByHash(targetPath, _patchedYtDlpPath))
+        if (File.Exists(targetPath) && File.Exists(_patchedYtDlpPath) && TargetEqualsPatched(targetPath))
         {
             // Orphan: yt-dlp.exe is our patched binary AND there's no og to
             // restore from. Don't just delete — we'd leave VRChat with no
@@ -217,7 +224,7 @@ internal sealed class PatchManager : IDisposable
 
         if (!File.Exists(backupPath))
         {
-            if (File.Exists(targetPath) && !FilesEqualByHash(targetPath, _patchedYtDlpPath))
+            if (File.Exists(targetPath) && !TargetEqualsPatched(targetPath))
             {
                 try { File.Move(targetPath, backupPath); }
                 catch (IOException) { return; } // target locked — retry next tick
@@ -265,7 +272,7 @@ internal sealed class PatchManager : IDisposable
             return;
         }
 
-        if (FilesEqualByHash(targetPath, _patchedYtDlpPath))
+        if (TargetEqualsPatched(targetPath))
         {
             _consecutiveLockFailures = 0;
             return;
@@ -394,12 +401,36 @@ internal sealed class PatchManager : IDisposable
         }
     }
 
-    private static bool FilesEqualByHash(string a, string b)
+    // Compare target against the cached patched fingerprint. Length-precheck
+    // before SHA so a different-size yt-dlp.exe (the common case mid-update
+    // or after a VRChat-side download) returns instantly without touching
+    // the hashing path.
+    private bool TargetEqualsPatched(string targetPath)
     {
-        string ha = HashUtils.GetFileHash(a);
-        string hb = HashUtils.GetFileHash(b);
-        if (string.IsNullOrEmpty(ha) || string.IsNullOrEmpty(hb)) return false;
-        return ha == hb;
+        var (patchedSize, patchedHash) = GetPatchedFingerprint();
+        if (patchedHash == null) return false;
+        long targetSize;
+        try { targetSize = new FileInfo(targetPath).Length; }
+        catch { return false; }
+        if (targetSize != patchedSize) return false;
+        string targetHash = HashUtils.GetFileHash(targetPath);
+        return !string.IsNullOrEmpty(targetHash) && targetHash == patchedHash;
+    }
+
+    private (long Size, string? Hash) GetPatchedFingerprint()
+    {
+        var hash = _patchedYtDlpHash;
+        if (hash != null) return (_patchedYtDlpSize, hash);
+        try
+        {
+            long size = new FileInfo(_patchedYtDlpPath).Length;
+            string h = HashUtils.GetFileHash(_patchedYtDlpPath);
+            if (string.IsNullOrEmpty(h)) return (size, null);
+            _patchedYtDlpSize = size;
+            _patchedYtDlpHash = h;
+            return (size, h);
+        }
+        catch { return (0, null); }
     }
 
     private string ReadBundledFallbackVersion()
