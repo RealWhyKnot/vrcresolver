@@ -213,6 +213,11 @@ internal static class Program
         // doesn't re-trigger on every boot.
         CodecInstaller.StartBackgroundCheck();
 
+        // Keep the bundled vanilla yt-dlp at <install>/tools/yt-dlp-og-fallback.exe
+        // current with upstream releases. Once per 24 h. Never touches
+        // VRChat's pinned yt-dlp-og.exe nor our patched yt-dlp.exe wrapper.
+        YtDlpUpdater.StartBackgroundCheck();
+
         s_quitSignal.Wait();
         Console.WriteLine("Shutting down…");
 
