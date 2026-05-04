@@ -69,12 +69,26 @@ public static class WkvrcPaths
             foreach (string sub in Directory.EnumerateDirectories(legacy))
             {
                 string subName = Path.GetFileName(sub);
+
+                // Don't migrate the logs/ subdir. File.Move preserves the
+                // mandatory integrity label of the moved file — log files
+                // created by the pre-fix code carry the Medium label, which
+                // would block the Low-integrity wrapper from appending after
+                // migration. Logs are append-only diagnostic streams, safe
+                // to leave behind; new entries land fresh in the LocalLow
+                // logs/ dir and inherit Low integrity from the parent.
+                // Discard the legacy logs to avoid disk pile-up.
+                if (string.Equals(subName, "logs", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { Directory.Delete(sub, recursive: true); } catch { /* best-effort */ }
+                    continue;
+                }
+
                 string dst = Path.Combine(newRoot, subName);
                 if (Directory.Exists(dst))
                 {
-                    // New dir already populated (we may have written a fresh
-                    // log file before migration ran). Move only files that
-                    // don't conflict.
+                    // New dir already populated. Move only files that don't
+                    // conflict.
                     foreach (string f in Directory.EnumerateFiles(sub))
                     {
                         string fileName = Path.GetFileName(f);
