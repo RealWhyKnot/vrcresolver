@@ -444,9 +444,18 @@ internal sealed class LocalIpcServer : IDisposable
     private static string CidSuffix(string? correlationId) =>
         string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
 
-    // Pre-baked single-byte newline terminator. Used twice per response
-    // (success + fallback paths). Avoids allocating a fresh byte[] per write.
-    private static readonly byte[] NewlineFrame = new byte[] { (byte)'\n' };
+    // Append the NDJSON framing newline to a payload byte[] so the wire
+    // send is one WriteAsync instead of two (payload + separate newline).
+    // Named pipes (PIPE_TYPE_BYTE | PIPE_WAIT) dispatch the write atomically,
+    // so coalescing also lets the caller drop the explicit FlushAsync that
+    // used to follow the newline write.
+    private static byte[] AppendNewline(byte[] payload)
+    {
+        byte[] framed = new byte[payload.Length + 1];
+        Buffer.BlockCopy(payload, 0, framed, 0, payload.Length);
+        framed[payload.Length] = (byte)'\n';
+        return framed;
+    }
 
     // Returns the line, or null on empty connection. Sets `truncated` to
     // true if MaxRequestBytes was hit before a '\n' arrived — the caller
@@ -484,10 +493,8 @@ internal sealed class LocalIpcServer : IDisposable
 
     private static async Task WriteDocAsync(Stream s, JsonDocument doc, CancellationToken ct)
     {
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(doc.RootElement);
+        byte[] payload = AppendNewline(JsonSerializer.SerializeToUtf8Bytes(doc.RootElement));
         await s.WriteAsync(payload, ct).ConfigureAwait(false);
-        await s.WriteAsync(NewlineFrame, ct).ConfigureAwait(false);
-        await s.FlushAsync(ct).ConfigureAwait(false);
     }
 
     // Skip null fields when serializing the synthetic fallback frame so the
@@ -508,12 +515,10 @@ internal sealed class LocalIpcServer : IDisposable
             Id = id,
             Reason = reason,
         };
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(frame, FallbackSerializerOptions);
+        byte[] payload = AppendNewline(JsonSerializer.SerializeToUtf8Bytes(frame, FallbackSerializerOptions));
         try
         {
             await s.WriteAsync(payload, ct).ConfigureAwait(false);
-            await s.WriteAsync(NewlineFrame, ct).ConfigureAwait(false);
-            await s.FlushAsync(ct).ConfigureAwait(false);
         }
         catch { /* peer may have hung up — we tried */ }
     }

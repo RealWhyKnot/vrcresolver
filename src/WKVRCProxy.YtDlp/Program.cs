@@ -180,16 +180,23 @@ internal static class Program
         };
 
         byte[] payload;
-        try { payload = JsonSerializer.SerializeToUtf8Bytes(req, WrapperJsonContext.Default.ResolveRequest); }
+        try { payload = SerializeWithTrailingNewline(req); }
         catch (Exception ex) { Log("request serialize failed: " + ex.Message); return null; }
 
         var swSend = Stopwatch.StartNew();
         try
         {
+            // Single WriteAsync containing payload + '\n'. Earlier impl
+            // split this across two WriteAsync calls + an explicit
+            // FlushAsync — three kernel transitions per pipe send. Named
+            // pipes don't buffer like FileStream so the explicit Flush
+            // was already redundant; the byte-mode pipe with PIPE_WAIT
+            // dispatches the write atomically.
             await pipe.WriteAsync(payload, ctsResolve.Token).ConfigureAwait(false);
-            await pipe.WriteAsync(NewlineFrame, ctsResolve.Token).ConfigureAwait(false);
-            await pipe.FlushAsync(ctsResolve.Token).ConfigureAwait(false);
-            Log("request sent id=" + requestId[..8] + " bytes=" + payload.Length + " player=" + player + " elapsed_ms=" + swSend.ElapsedMilliseconds);
+            // Subtract 1 from the logged byte count so the existing log
+            // ("request sent ... bytes=...") keeps reporting the JSON
+            // payload length and stays comparable across the change.
+            Log("request sent id=" + requestId[..8] + " bytes=" + (payload.Length - 1) + " player=" + player + " elapsed_ms=" + swSend.ElapsedMilliseconds);
         }
         catch (Exception ex) { Log("pipe write failed: " + ex.GetType().Name + ": " + ex.Message); return null; }
 
@@ -223,7 +230,18 @@ internal static class Program
         return null;
     }
 
-    private static readonly byte[] NewlineFrame = new byte[] { (byte)'\n' };
+    // Serialize the request DTO with a trailing '\n' framing byte appended
+    // in-place. Source-gen path (WrapperJsonContext) writes through a
+    // PooledByteBufferWriter under the hood; we copy out and append the
+    // newline so the wire send is one WriteAsync instead of two.
+    private static byte[] SerializeWithTrailingNewline(ResolveRequest req)
+    {
+        byte[] body = JsonSerializer.SerializeToUtf8Bytes(req, WrapperJsonContext.Default.ResolveRequest);
+        byte[] framed = new byte[body.Length + 1];
+        Buffer.BlockCopy(body, 0, framed, 0, body.Length);
+        framed[body.Length] = (byte)'\n';
+        return framed;
+    }
 
     // Buffered NDJSON read. Mirrors LocalIpcServer's read loop so a single
     // response line is consumed up to the first '\n'.
