@@ -60,6 +60,7 @@ The most recent release is at the top.
 - **patch:** Start + StopAsync are now idempotent (H15 + H16) (9aa3501)
 - **updater:** Graceful watchdog stop + dev-tag parsing + missing-exe error (13c7ff9)
 - **cleanup-invariant:** Wrapper log out of VRChat Tools dir (365d99c)
+- **patch:** File-lock probe + VRChat-running banner (crash mitigation) (3b7800e)
 
 ---
 
