@@ -53,6 +53,11 @@ internal static class Program
         // become "attach this file" instead of "paste your scrollback".
         Logger.Install("watchdog");
 
+        // Anonymous failure reporting (default off; enable with
+        // WKVRCPROXY_ANONYMOUS_REPORTING=1). Initialized early so the
+        // opt-in banner prints alongside the rest of startup logging.
+        ReportingService.Initialize();
+
         // Install the crash logger so any unhandled exception from this point on
         // lands on disk instead of scrolling off the console. Idempotent — safe
         // even on the elevated re-exec branch.
