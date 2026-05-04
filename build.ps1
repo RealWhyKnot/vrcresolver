@@ -66,15 +66,41 @@ if ($NeedRefresh) {
 }
 
 # --- Publish .NET projects ---
+# The four exes split into two publish profiles:
+#   * Watchdog (WKVRCProxy.exe) — regular self-contained single-file with R2R.
+#     Long-lived process; size doesn't matter as much; AOT audit pending.
+#   * Updater + Uninstaller — AOT (csproj sets PublishAot/Trimmed/full).
+#     Single native exe each; PublishSingleFile is incompatible with AOT
+#     so the cmdline arg is split out into the watchdog-only PubArgs below.
+#   * Wrapper (yt-dlp.exe in dist/tools/) — AOT, published separately
+#     into dist/tools/ further down.
+#
+# Three of the four publishes (Updater, Uninstaller, YtDlp wrapper) run
+# AOT, which means MSBuild's AOT target needs link.exe from MSVC. It looks
+# up link.exe via vswhere.exe but vswhere isn't on PATH by default — VS
+# Build Tools install it at %ProgramFiles(x86)%\Microsoft Visual Studio\
+# Installer but the installer doesn't add the dir to PATH. Front-load the
+# PATH munge once before any publish runs.
 Write-Host "`n--- Publishing ---" -ForegroundColor Cyan
-$PubArgs = @("-c","Release","-r","win-x64","--self-contained","true",
-             "/p:PublishSingleFile=true","/p:Version=$AsmVersion",
-             "-o",$BuildDir,"--nologo")
-dotnet publish "src/WKVRCProxy/WKVRCProxy.csproj" @PubArgs
+$ProgFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+$VsInstaller = Join-Path $ProgFilesX86 'Microsoft Visual Studio\Installer'
+if (Test-Path (Join-Path $VsInstaller 'vswhere.exe')) {
+    if ($env:PATH -notlike "*$VsInstaller*") { $env:PATH = "$VsInstaller;$env:PATH" }
+} else {
+    Write-Warning "vswhere.exe not found at $VsInstaller -- AOT link step may fail. Install Visual Studio Build Tools with the Desktop C++ workload."
+}
+
+$WatchdogPubArgs = @("-c","Release","-r","win-x64","--self-contained","true",
+                     "/p:PublishSingleFile=true","/p:Version=$AsmVersion",
+                     "-o",$BuildDir,"--nologo")
+$AotPubArgs      = @("-c","Release","-r","win-x64","--self-contained","true",
+                     "/p:Version=$AsmVersion",
+                     "-o",$BuildDir,"--nologo")
+dotnet publish "src/WKVRCProxy/WKVRCProxy.csproj" @WatchdogPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy publish failed" }
-dotnet publish "src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" @PubArgs
+dotnet publish "src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" @AotPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Updater publish failed" }
-dotnet publish "src/WKVRCProxy.Uninstaller/WKVRCProxy.Uninstaller.csproj" @PubArgs
+dotnet publish "src/WKVRCProxy.Uninstaller/WKVRCProxy.Uninstaller.csproj" @AotPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Uninstaller publish failed" }
 
 # --- Stage tools/ subdir in dist ---
@@ -94,16 +120,8 @@ Copy-Item $YtDlpVerFile  (Join-Path $BuildTools "yt-dlp-og-fallback.version.txt"
 # stays on regular self-contained .NET 10 (one-shot launch; size doesn't matter).
 #
 # Drops PublishSingleFile (AOT incompatible — produces a single native .exe
-# inherently). Adds vswhere.exe to PATH for the link.exe lookup since MSBuild's
-# AOT target invokes vswhere unqualified — VS Build Tools install it at
-# %ProgramFiles(x86)%\Microsoft Visual Studio\Installer but don't put it on PATH.
-$ProgFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
-$VsInstaller = Join-Path $ProgFilesX86 'Microsoft Visual Studio\Installer'
-if (Test-Path (Join-Path $VsInstaller 'vswhere.exe')) {
-    if ($env:PATH -notlike "*$VsInstaller*") { $env:PATH = "$VsInstaller;$env:PATH" }
-} else {
-    Write-Warning "vswhere.exe not found at $VsInstaller -- AOT link step may fail. Install Visual Studio Build Tools with the Desktop C++ workload."
-}
+# inherently). vswhere.exe is already on PATH from the front-loaded munge
+# at the top of the publish section.
 $YtDlpPubArgs = @("-c","Release","-r","win-x64","--self-contained","true",
                   "/p:Version=$AsmVersion",
                   "-o",$BuildTools,"--nologo")
