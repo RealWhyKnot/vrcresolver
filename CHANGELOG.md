@@ -42,6 +42,8 @@ The most recent release is at the top.
 - diag(yt-dlp wrapper): comprehensive per-invocation log + correct empty-stdout-on-failure (6d5d6bb)
 - ux(watchdog): user-friendly per-resolve console summary (e5d1256)
 - ux(watchdog): show server fallback reason + suppress redundant mesh line (b78a5d9)
+- **wrapper:** AOT-publish the yt-dlp wrapper (~79 MB -> ~3 MB) (4f35e3d)
+- **wrapper:** Source-gen JSON via WrapperJsonContext (1249e43)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
