@@ -315,9 +315,20 @@ internal sealed class LocalIpcServer : IDisposable
             // (no path/query — token risk), player + target resolution.
             // Companion "response" line fires below at terminal-response
             // time so the operator sees both halves of every resolve.
+            //
+            // The `[via lh-yt]` tag fires when the user-pasted URL host is
+            // localhost.youtube.com — the public-instance trust-list bypass
+            // path. Surfaces at-a-glance whether the public-world workaround
+            // is being exercised vs a direct-host paste. Same per-process
+            // counter goes to the heartbeat line for aggregate visibility.
             string host = ExtractHost(req.Url);
+            bool viaLhYt = IsLocalhostYoutubeUrl(req.Url);
             string playerLabel = FormatPlayerLabel(req);
-            WriteUserActivity(ConsoleColor.Cyan, "  -> " + host + "  (" + playerLabel + ")");
+            string requestLine = viaLhYt
+                ? "  -> " + host + " [via lh-yt]  (" + playerLabel + ")"
+                : "  -> " + host + "  (" + playerLabel + ")";
+            WriteUserActivity(ConsoleColor.Cyan, requestLine);
+            WatchdogStats.RecordResolve(viaLhYt);
 
             string? failReason = null;
             string outcome = "?";
@@ -513,6 +524,22 @@ internal sealed class LocalIpcServer : IDisposable
             await s.WriteAsync(payload, ct).ConfigureAwait(false);
         }
         catch { /* peer may have hung up — we tried */ }
+    }
+
+    // True iff the URL's host is exactly `localhost.youtube.com`. Used for
+    // the `[via lh-yt]` console tag and the heartbeat's via-lh-yt counter.
+    // Match is exact (not substring); a longer host like
+    // `notlocalhost.youtube.com` does NOT count.
+    private static bool IsLocalhostYoutubeUrl(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return false;
+        try
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var u))
+                return u.Host.Equals(HostsManager.MarkerHost, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { /* best-effort */ }
+        return false;
     }
 
     // Bare hostname (host minus optional "www." prefix) for the user-facing

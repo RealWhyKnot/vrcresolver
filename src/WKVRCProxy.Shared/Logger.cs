@@ -26,6 +26,13 @@ public static class Logger
     private static string _component = "unknown";
     private static int _installed;
 
+    // Stamp updated on every Tee write so the watchdog's Heartbeat ticker
+    // can suppress its periodic "still alive" line when something else has
+    // already logged recently. Volatile read is fine — heartbeat only cares
+    // about "was anything logged in the last 5 minutes" coarse-grained.
+    private static long _lastWriteTicksUtc;
+    public static DateTime LastWriteUtc => new(Volatile.Read(ref _lastWriteTicksUtc), DateTimeKind.Utc);
+
     public static void Install(string component)
     {
         if (Interlocked.Exchange(ref _installed, 1) != 0) return;
@@ -76,6 +83,7 @@ public static class Logger
 
     private static void Tee(string? line)
     {
+        Volatile.Write(ref _lastWriteTicksUtc, DateTime.UtcNow.Ticks);
         var w = _writer;
         if (w == null) return;
         lock (_lock)
