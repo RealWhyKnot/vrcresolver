@@ -176,6 +176,13 @@ internal static class Program
         Console.WriteLine($"  runtime:   {RuntimeInformation.FrameworkDescription}");
         Console.WriteLine();
 
+        // Detect a pre-existing VRChat process so the operator sees up-front
+        // whether the patch can apply immediately or whether it will defer
+        // until VRChat releases its yt-dlp.exe handle. PID + start time
+        // surface so a "deferring" log line later is correlatable to the
+        // exact VRChat invocation that's holding the file.
+        PatchManager.LogVrcProcessState();
+
         // Patch the Tools dir FIRST so VRChat sees the patched yt-dlp within
         // ~200 ms of launch. The hosts entry only matters for public-instance
         // support and the UAC prompt can sit unanswered for up to a minute —
