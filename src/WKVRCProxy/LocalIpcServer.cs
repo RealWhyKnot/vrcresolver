@@ -73,67 +73,125 @@ internal sealed class LocalIpcServer : IDisposable
         }
     }
 
-    // P/Invoke surface for setting the pipe's mandatory integrity label.
-    // Setting a SACL containing audit ACEs requires SeSecurityPrivilege —
-    // not held by normal user processes — but Windows has a documented
-    // exception: setting JUST the mandatory integrity LABEL via the
-    // LABEL_SECURITY_INFORMATION flag does NOT require that privilege as
-    // long as the requested level is at or below the caller's. We exploit
-    // that exception by calling SetSecurityInfo directly with LABEL flag
-    // only (not SACL flag), bypassing the privilege check.
+    // P/Invoke surface for creating the named pipe with both DACL and SACL
+    // embedded in the SECURITY_DESCRIPTOR at CREATE time. The kernel
+    // applies the SACL during creation without a SeSecurityPrivilege
+    // check as long as the mandatory integrity level being set is at or
+    // below the caller's — which is exactly our case (watchdog at Medium,
+    // pipe label set to Low so the wrapper at Low can connect).
     //
-    // We use a pre-built SACL byte buffer derived from the SDDL fragment
-    // "S:(ML;;NW;;;LW)" — Low integrity, NO_WRITE_UP policy. The kernel
-    // interprets this as "object lives at Low integrity; processes below
-    // Low can't write up." Since Low is the lowest practical integrity in
-    // user mode (Untrusted exists but processes there can barely run at
-    // all), this effectively allows Low and above to read+write the pipe.
-    private const int SE_KERNEL_OBJECT = 6;
-    private const int LABEL_SECURITY_INFORMATION = 0x00000010;
+    // Why not SetSecurityInfo post-create? Because the pipe handle returned
+    // by CreateNamedPipe doesn't carry WRITE_OWNER access; SetSecurityInfo
+    // with LABEL_SECURITY_INFORMATION fails with ACCESS_DENIED (5) on a
+    // handle without WRITE_OWNER. The CREATE-time path bypasses this — the
+    // kernel evaluates privilege at the create call rather than against
+    // an open-handle access mask.
+    //
+    // Why not NamedPipeServerStreamAcl.Create with PipeSecurity carrying
+    // a SACL via SetSecurityDescriptorSddlForm? The .NET path invokes a
+    // SACL-modifying code branch that requires SeSecurityPrivilege — not
+    // held by normal user processes. Direct P/Invoke avoids that path.
 
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint SetSecurityInfo(
-        SafeHandle handle,
-        int objectType,
-        int securityInfo,
-        IntPtr owner,
-        IntPtr group,
-        IntPtr dacl,
-        IntPtr sacl);
+    private const uint PIPE_ACCESS_DUPLEX = 0x00000003;
+    private const uint FILE_FLAG_OVERLAPPED = 0x40000000;
+    private const uint PIPE_TYPE_BYTE = 0x00000000;
+    private const uint PIPE_READMODE_BYTE = 0x00000000;
+    private const uint PIPE_WAIT = 0x00000000;
+    private const uint PIPE_UNLIMITED_INSTANCES = 255;
+    private const uint NMPWAIT_USE_DEFAULT_WAIT = 0;
 
-    private static readonly byte[] s_lowIntegritySaclBytes = BuildLowIntegritySaclBytes();
-
-    private static byte[] BuildLowIntegritySaclBytes()
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SECURITY_ATTRIBUTES
     {
-        // Parse the full SDDL into a RawSecurityDescriptor so the framework
-        // builds the SACL bytes for us, then extract just the SACL portion.
-        // The DACL is set separately via PipeSecurity API on the open handle.
-        var rsd = new RawSecurityDescriptor("S:(ML;;NW;;;LW)");
-        var sacl = rsd.SystemAcl;
-        if (sacl == null) return Array.Empty<byte>();
-        byte[] bytes = new byte[sacl.BinaryLength];
-        sacl.GetBinaryForm(bytes, 0);
-        return bytes;
+        public uint nLength;
+        public IntPtr lpSecurityDescriptor;
+        public int bInheritHandle;
     }
 
-    private static void ApplyLowIntegrityLabel(NamedPipeServerStream pipe)
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafePipeHandle CreateNamedPipeW(
+        string lpName,
+        uint dwOpenMode,
+        uint dwPipeMode,
+        uint nMaxInstances,
+        uint nOutBufferSize,
+        uint nInBufferSize,
+        uint nDefaultTimeOut,
+        IntPtr lpSecurityAttributes);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        string sddl,
+        int sddlRevision,
+        out IntPtr secDesc,
+        IntPtr secDescSize);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr hMem);
+
+    private const int SDDL_REVISION_1 = 1;
+    private const string PipeSddl =
+        // Owner = current user (filled in at runtime via {0}).
+        // DACL: allow current user full pipe access (0x1f019f) + SYSTEM full
+        //       access (so the kernel-level pipe namespace bookkeeping
+        //       doesn't get denied).
+        // SACL: mandatory integrity label LOW with NO_WRITE_UP policy. The
+        //       label tags the object at Low integrity; NW (the standard
+        //       policy flag) is required syntactically but with the level
+        //       at Low it has no effect on Low+ processes.
+        "O:{0}G:{0}D:(A;;0x1f019f;;;{0})(A;;0x1f019f;;;SY)S:(ML;;NW;;;LW)";
+
+    private NamedPipeServerStream CreatePipeWithLowIntegrityLabel()
     {
-        if (s_lowIntegritySaclBytes.Length == 0) return;
-        var pin = GCHandle.Alloc(s_lowIntegritySaclBytes, GCHandleType.Pinned);
+        string ownerSid = WindowsIdentity.GetCurrent().User?.Value
+            ?? throw new InvalidOperationException("could not resolve current user SID");
+        string sddl = string.Format(PipeSddl, ownerSid);
+
+        IntPtr secDesc = IntPtr.Zero;
+        if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, out secDesc, IntPtr.Zero) == 0)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),
+                "ConvertStringSecurityDescriptorToSecurityDescriptor failed");
+
         try
         {
-            uint rc = SetSecurityInfo(
-                pipe.SafePipeHandle,
-                SE_KERNEL_OBJECT,
-                LABEL_SECURITY_INFORMATION,
-                IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
-                pin.AddrOfPinnedObject());
-            if (rc != 0)
-                Console.WriteLine("[ipc] SetSecurityInfo(LABEL) failed: " + rc + " — Low-integrity wrapper may not be able to connect");
+            var sa = new SECURITY_ATTRIBUTES
+            {
+                nLength = (uint)Marshal.SizeOf<SECURITY_ATTRIBUTES>(),
+                lpSecurityDescriptor = secDesc,
+                bInheritHandle = 0,
+            };
+            IntPtr saPtr = Marshal.AllocHGlobal((int)sa.nLength);
+            try
+            {
+                Marshal.StructureToPtr(sa, saPtr, false);
+                string fullName = @"\\.\pipe\" + WireConstants.PipeName;
+                var handle = CreateNamedPipeW(
+                    fullName,
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                    PIPE_UNLIMITED_INSTANCES,
+                    nOutBufferSize: 0,
+                    nInBufferSize: 0,
+                    nDefaultTimeOut: NMPWAIT_USE_DEFAULT_WAIT,
+                    lpSecurityAttributes: saPtr);
+                if (handle.IsInvalid)
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),
+                        "CreateNamedPipeW failed");
+                // Wrap the raw handle in NamedPipeServerStream. The
+                // overload taking a SafePipeHandle expects the pipe to
+                // already exist; isAsync=true matches the FILE_FLAG_OVERLAPPED
+                // we passed in. isConnected=false because no client has
+                // connected yet — the caller will WaitForConnectionAsync.
+                return new NamedPipeServerStream(PipeDirection.InOut, isAsync: true, isConnected: false, handle);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(saPtr);
+            }
         }
         finally
         {
-            pin.Free();
+            LocalFree(secDesc);
         }
     }
 
@@ -144,19 +202,7 @@ internal sealed class LocalIpcServer : IDisposable
             NamedPipeServerStream pipe;
             try
             {
-                // Create with default DACL (current user only — that's what
-                // we want for security; only same-user processes connect).
-                // The mandatory integrity label is applied in a second step
-                // because a SACL-bearing PipeSecurity at create-time triggers
-                // the SeSecurityPrivilege check and fails on normal user
-                // processes.
-                pipe = new NamedPipeServerStream(
-                    WireConstants.PipeName,
-                    PipeDirection.InOut,
-                    NamedPipeServerStream.MaxAllowedServerInstances,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
-                ApplyLowIntegrityLabel(pipe);
+                pipe = CreatePipeWithLowIntegrityLabel();
             }
             catch (Exception ex)
             {
