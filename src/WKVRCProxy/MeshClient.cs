@@ -423,12 +423,31 @@ internal sealed class MeshClient : IAsyncDisposable
                 // silently fall back to v2 behaviour below.
                 _ws.Options.AddSubProtocol(WireConstants.SubprotocolV3);
                 // v3: offer permessage-deflate (RFC 7692) compression on
-                // the upgrade. Microsoft named the property "Dangerous"
-                // because a hostile server can compression-amplify a
-                // malicious peer's bytes; we trust whyknot.dev so the
-                // risk is N/A here. Server still gets to refuse, in
-                // which case the connection is uncompressed but
-                // functional — same wire shape, just larger frames.
+                // the upgrade. Server still gets to refuse, in which case
+                // the connection is uncompressed but functional — same
+                // wire shape, just larger frames.
+                //
+                // Microsoft named the property "Dangerous" because of
+                // DECOMPRESSION-AMPLIFICATION risk: a hostile peer can
+                // send a small compressed payload that decompresses to
+                // arbitrarily many bytes (a "zip bomb" on the wire). With
+                // an unbounded receiver, that's an OOM vector.
+                //
+                // Trust boundary: this MeshClient ONLY connects to
+                // wss://*.whyknot.dev/mesh (the apex-redirect at line
+                // ~437 below resolves to one of node1/node2). We trust
+                // that endpoint not to send hostile decompressed
+                // payloads. If MeshClient is ever pointed at a different
+                // endpoint (e.g., a self-hosted mesh tier, a
+                // user-configurable URL), this trust assumption breaks
+                // and DangerousDeflateOptions must be revisited.
+                //
+                // Mitigation in depth: the WS receive loop at line ~592
+                // caps any single received frame (post-decompression) at
+                // 4 MiB and tears down the connection on overflow. Even
+                // if the trust assumption fails, the blast radius is one
+                // 4 MiB alloc per connection plus reconnect-with-backoff
+                // (capped 30 s).
                 _ws.Options.DangerousDeflateOptions = new System.Net.WebSockets.WebSocketDeflateOptions
                 {
                     ClientMaxWindowBits = 15,

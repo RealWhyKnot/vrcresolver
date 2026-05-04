@@ -35,6 +35,13 @@ internal static class ClientIdentity
 {
     internal const string FileName = "client_id.txt";
 
+    // Defensive cap on the file's read size. Legitimate file is 32 bytes
+    // (one N-format GUID) plus at most a trailing CRLF (34 bytes). 256
+    // bytes is ~7× that — generous enough to tolerate hand-edits with
+    // extra whitespace, tight enough that a corrupt or hostile multi-GB
+    // file can't induce a File.ReadAllText alloc before the catch fires.
+    internal const long MaxClientIdFileBytes = 256;
+
     public static string LoadOrCreate() => LoadOrCreate(DefaultPath());
 
     // Test-only overload: caller supplies the file path so unit tests can
@@ -46,20 +53,37 @@ internal static class ClientIdentity
         {
             if (File.Exists(path))
             {
-                string content = File.ReadAllText(path).Trim();
-                if (Guid.TryParseExact(content, "N", out var g))
-                    return g.ToString("N");
-                // File present but contents not a 32-hex-digit GUID —
-                // treat as corrupt, regenerate. Don't throw.
+                var info = new FileInfo(path);
+                if (info.Length > MaxClientIdFileBytes)
+                {
+                    // File is far larger than any legitimate client_id —
+                    // corrupt, hostile, or unrelated file dropped at our
+                    // path. Skip the read, fall through to regenerate +
+                    // overwrite. Don't try to ReadAllText: a 1 GB file
+                    // would alloc 1 GB before the (caught) OOM.
+                    // No file-only log here — ClientIdentity has no
+                    // Logger dependency by design (it runs at MeshClient
+                    // field-init time, before Logger.Install). Falling
+                    // through to write the fresh value overwrites the
+                    // pathological file in place.
+                }
+                else
+                {
+                    string content = File.ReadAllText(path).Trim();
+                    if (Guid.TryParseExact(content, "N", out var g))
+                        return g.ToString("N");
+                    // File present but contents not a 32-hex-digit GUID —
+                    // treat as corrupt, regenerate. Don't throw.
+                }
             }
         }
         catch { /* fall through to generate + write */ }
 
         string fresh = Guid.NewGuid().ToString("N");
+        string tmp = path + ".new";
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            string tmp = path + ".new";
             File.WriteAllText(tmp, fresh);
             File.Move(tmp, path, overwrite: true);
         }
@@ -69,6 +93,9 @@ internal static class ClientIdentity
             // and either succeed (if the transient cause cleared) or
             // generate ANOTHER fresh GUID. Server sees two short-lived
             // identities — same as pre-persistence behaviour, no worse.
+            // Clean up any tmp residue so a partial write doesn't
+            // accumulate orphan .new files on disk.
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
         }
         return fresh;
     }
