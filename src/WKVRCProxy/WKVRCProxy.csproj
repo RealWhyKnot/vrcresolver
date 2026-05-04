@@ -4,6 +4,16 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>WKVRCProxy</RootNamespace>
     <AssemblyName>WKVRCProxy</AssemblyName>
+    <!-- Compress embedded assemblies in the single-file bundle. The
+         watchdog can't go AOT yet (long-lived process, more BCL surface
+         area, threading patterns require a separate audit), but
+         compression+R2R together still cut the binary roughly in half
+         with only a small first-launch decompression cost — and the
+         watchdog launches once per VRChat session, so the cost amortises
+         immediately. AOT-published exes (Updater, Uninstaller, YtDlp
+         wrapper) ignore this setting because they don't bundle managed
+         assemblies in the first place. -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <ItemGroup>
