@@ -63,6 +63,7 @@ The most recent release is at the top.
 - **updater:** Graceful watchdog stop + dev-tag parsing + missing-exe error (13c7ff9)
 - **cleanup-invariant:** Wrapper log out of VRChat Tools dir (365d99c)
 - **patch:** File-lock probe + VRChat-running banner (crash mitigation) (3b7800e)
+- **integrity:** Relocate state to LocalLow + Low-integrity SACL on pipe (8173dc3)
 
 ---
 
