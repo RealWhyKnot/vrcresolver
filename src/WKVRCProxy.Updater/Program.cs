@@ -27,19 +27,30 @@ internal static class Program
     private const string WatchdogExeName = "WKVRCProxy.exe";
     private const int PromptTimeoutSec = 15;
 
+    private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DownloadHardCap = TimeSpan.FromMinutes(10);
+
+    // Anchored to start-of-line (multiline) so a release body containing
+    // sample/quoted text like `` `SHA256: <fill in>` `` doesn't accidentally
+    // match a placeholder before the real line. release.yml emits exactly
+    // one bare-line `SHA256: <hex>`; tighten to that.
     internal static readonly Regex Sha256Line =
-        new(@"SHA256:\s*([0-9A-Fa-f]{64})", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        new(@"^SHA256:\s*([0-9A-Fa-f]{64})\s*$",
+            RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.IgnoreCase);
 
     private static async Task<int> Main(string[] args)
     {
         try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* best-effort */ }
-        WkvrcPaths.MigrateLegacyState(Console.WriteLine);
+        // Logger first so the migration log line lands in the file too.
         Logger.Install("updater");
+        WkvrcPaths.MigrateLegacyState(Console.WriteLine);
         CrashHandler.Install("updater");
+        SweepStaleTempArtifacts();
         try
         {
             string installDir = AppContext.BaseDirectory;
             string watchdogPath = Path.Combine(installDir, WatchdogExeName);
+            Logger.WriteFileOnly("[updater] start installDir=" + installDir);
             Version current = ReadCurrentVersion(watchdogPath);
             Console.WriteLine($"Current version: {current}");
 
@@ -160,11 +171,37 @@ internal static class Program
 
     private static async Task<(Version Latest, string ZipUrl, string TagName, string? Sha256)> FetchLatestAsync()
     {
-        using var http = new HttpClient();
+        // Explicit handler so corp-proxy / NTLM environments inherit Windows
+        // credentials (default HttpClient leaves UseDefaultCredentials=false
+        // and gets 407 Proxy Auth Required). Auto-redirect capped at 5 to
+        // catch redirect loops if GitHub ever serves a misconfigured 30x.
+        using var handler = new HttpClientHandler
+        {
+            UseDefaultCredentials = true,
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 5,
+        };
+        using var http = new HttpClient(handler) { Timeout = FetchTimeout };
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WKVRCProxy-Updater", "1.0"));
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        Logger.WriteFileOnly("[updater] GET " + ApiUrl);
         using var resp = await http.GetAsync(ApiUrl);
+        Logger.WriteFileOnly("[updater] response status=" + (int)resp.StatusCode + " content-type="
+            + (resp.Content.Headers.ContentType?.ToString() ?? "<none>"));
         resp.EnsureSuccessStatusCode();
+
+        // Cloudflare's "Always Online" / GitHub's maintenance pages return
+        // 200 OK with an HTML body. JsonDocument.Parse on HTML throws a
+        // confusing JsonException — surface a clearer error instead.
+        var ct = resp.Content.Headers.ContentType?.MediaType ?? "";
+        if (!ct.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "GitHub releases API returned non-JSON content (Content-Type: "
+                + ct + "). This usually means GitHub is returning a maintenance/error page. "
+                + "Try again in a few minutes.");
+        }
+
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         string tag = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
         Version v = ParseTagVersion(tag);
@@ -176,6 +213,7 @@ internal static class Program
             if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
             {
                 zipUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                Logger.WriteFileOnly("[updater] selected asset: " + name + " url=" + zipUrl);
                 break;
             }
         }
@@ -187,6 +225,8 @@ internal static class Program
         string body = doc.RootElement.TryGetProperty("body", out var b) ? (b.GetString() ?? "") : "";
         var match = Sha256Line.Match(body);
         string? sha = match.Success ? match.Groups[1].Value : null;
+        Logger.WriteFileOnly("[updater] sha256-line "
+            + (sha != null ? "matched (" + sha.Length + " chars)" : "absent"));
 
         return (v, zipUrl, tag, sha);
     }
@@ -300,13 +340,93 @@ internal static class Program
     private static async Task DownloadAsync(string url, string dest)
     {
         Console.WriteLine("Downloading…");
-        using var http = new HttpClient();
+        // Hard cap on the whole download so a half-open TCP from a corp
+        // proxy doesn't wedge the updater forever after the watchdog has
+        // already been killed. HttpClient's default Timeout doesn't apply
+        // to the body stream once headers have arrived; an explicit
+        // CancellationToken on CopyToAsync is the only reliable cap.
+        using var cts = new CancellationTokenSource(DownloadHardCap);
+        using var handler = new HttpClientHandler
+        {
+            UseDefaultCredentials = true,
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 5,
+        };
+        using var http = new HttpClient(handler) { Timeout = FetchTimeout };
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WKVRCProxy-Updater", "1.0"));
-        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+
+        Logger.WriteFileOnly("[updater] download GET " + url + " dest=" + dest);
+        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
         resp.EnsureSuccessStatusCode();
-        await using var src = await resp.Content.ReadAsStreamAsync();
+
+        long? total = resp.Content.Headers.ContentLength;
+        if (total.HasValue)
+        {
+            // Refuse to start the download if temp drive doesn't have ~1.5×
+            // the asset size free. yt-dlp + bundled artifacts mean releases
+            // are routinely 250+ MB; a constrained Windows install dir can
+            // run out of disk mid-write and leave the user with a stuck
+            // half-zip + no clear error.
+            try
+            {
+                var tempDrive = new DriveInfo(Path.GetPathRoot(Path.GetTempPath()) ?? "C:\\");
+                long needed = (long)(total.Value * 1.5);
+                if (tempDrive.AvailableFreeSpace < needed)
+                {
+                    throw new IOException(
+                        "Insufficient free space on " + tempDrive.Name + " for download (need ~"
+                        + (needed / (1024 * 1024)) + " MiB, have "
+                        + (tempDrive.AvailableFreeSpace / (1024 * 1024)) + " MiB).");
+                }
+            }
+            catch (ArgumentException) { /* path-root parse failed; skip the check */ }
+            Logger.WriteFileOnly("[updater] download size=" + (total.Value / 1024) + " KiB");
+        }
+
+        await using var src = await resp.Content.ReadAsStreamAsync(cts.Token);
         await using var dst = File.Create(dest);
-        await src.CopyToAsync(dst);
+        await src.CopyToAsync(dst, cts.Token);
+        Logger.WriteFileOnly("[updater] download complete bytes=" + dst.Length);
+    }
+
+    // Sweep stale temp artifacts from prior failed runs so they don't pile
+    // up. WKVRCProxy-extract-<guid> dirs and WKVRCProxy-<tag>.zip files
+    // older than 1 day get cleaned. Best-effort — failures are logged but
+    // not fatal.
+    private static void SweepStaleTempArtifacts()
+    {
+        string tmp = Path.GetTempPath();
+        DateTime cutoff = DateTime.UtcNow.AddDays(-1);
+        int swept = 0;
+        try
+        {
+            foreach (var d in Directory.EnumerateDirectories(tmp, "WKVRCProxy-extract-*"))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(d) < cutoff)
+                    {
+                        Directory.Delete(d, recursive: true);
+                        swept++;
+                    }
+                }
+                catch { /* skip */ }
+            }
+            foreach (var f in Directory.EnumerateFiles(tmp, "WKVRCProxy-*.zip"))
+            {
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(f) < cutoff)
+                    {
+                        File.Delete(f);
+                        swept++;
+                    }
+                }
+                catch { /* skip */ }
+            }
+        }
+        catch { /* skip */ }
+        if (swept > 0) Logger.WriteFileOnly("[updater] swept " + swept + " stale temp artifacts");
     }
 
     internal static string ComputeSha256(string path)
