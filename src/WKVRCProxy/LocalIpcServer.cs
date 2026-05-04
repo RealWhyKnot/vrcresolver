@@ -194,6 +194,7 @@ internal sealed class LocalIpcServer : IDisposable
             JsonDocument? respDoc = null;
             string? failReason = null;
             string outcome = "?";
+            string? serverReason = null;
             try
             {
                 // Lossless forward: hand the whole DTO to MeshClient so v2 fields
@@ -210,6 +211,15 @@ internal sealed class LocalIpcServer : IDisposable
                     && actEl.ValueKind == JsonValueKind.String)
                 {
                     outcome = actEl.GetString() ?? "?";
+                }
+                // Capture server-supplied reason on fallback_native so the
+                // user-facing summary can show the specific reason
+                // (discovery_in_progress, all_configs_failed, etc.) without
+                // relying on outcome-string concatenation.
+                if (respDoc.RootElement.TryGetProperty("reason", out var reasonEl)
+                    && reasonEl.ValueKind == JsonValueKind.String)
+                {
+                    serverReason = reasonEl.GetString();
                 }
             }
             catch (OperationCanceledException)
@@ -266,12 +276,10 @@ internal sealed class LocalIpcServer : IDisposable
                 color = ConsoleColor.Red;
                 symbolAndStatus = "XX failed (" + failReason + ")";
             }
-            else if (outcome.StartsWith(WireConstants.ActionFallbackNative))
+            else if (outcome == WireConstants.ActionFallbackNative)
             {
                 color = ConsoleColor.Yellow;
-                string reason = outcome.Length > WireConstants.ActionFallbackNative.Length + 1
-                    ? outcome[(WireConstants.ActionFallbackNative.Length + 1)..]
-                    : "?";
+                string reason = !string.IsNullOrEmpty(serverReason) ? serverReason : "?";
                 symbolAndStatus = "!! fallback (" + reason + ")";
             }
             else

@@ -613,34 +613,31 @@ internal sealed class MeshClient : IAsyncDisposable
         req.MaxAudioChannels.HasValue ||
         !string.IsNullOrEmpty(req.VrchatFormatArg);
 
-    // Surface fallback_native reasons on the watchdog console so a user with
-    // a console window open can correlate "video failed" with "server bailed
-    // because warp_down" or "unity_unsupported_format". The patched yt-dlp
-    // still owns the decision of whether to exec yt-dlp-og.exe; the new v2
-    // reasons are advisory ("don't bother with native, it'll hit the same
-    // wall") but the watchdog enforces nothing.
+    // Server-emitted fallback_native — recorded for grep but no longer
+    // surfaced on console. The user-facing per-resolve summary in
+    // LocalIpcServer paints the same information as a single coloured
+    // "!! fallback (<reason>)" line; this mesh-side trace is redundant
+    // there and stayed visible only as legacy verbosity. Routed to the
+    // rolling watchdog log so deep diagnosis still has the per-frame
+    // record (with the v2-reason advisory copy preserved).
     private static void LogFallbackNative(JsonElement root, string id)
     {
         string reason = "";
         if (root.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String)
             reason = reasonEl.GetString() ?? "";
 
-        // Sanitize: reason is server-supplied; treat with the same control-char
-        // hygiene as `action`.
         reason = LogUtil.SanitizeForConsole(reason, 64);
 
-        switch (reason)
+        string line = reason switch
         {
-            case WireConstants.ReasonUnityUnsupportedFormat:
-                Console.WriteLine($"[mesh] fallback_native id={id} reason=unity_unsupported_format (no Unity-playable stream — try AVPro)");
-                return;
-            case WireConstants.ReasonWarpDown:
-                Console.WriteLine($"[mesh] fallback_native id={id} reason=warp_down (server WARP egress unhealthy — transient, retry shortly or another node)");
-                return;
-            default:
-                Console.WriteLine($"[mesh] fallback_native id={id} reason={(string.IsNullOrEmpty(reason) ? "?" : reason)}");
-                return;
-        }
+            WireConstants.ReasonUnityUnsupportedFormat =>
+                $"[mesh] fallback_native id={id} reason=unity_unsupported_format (no Unity-playable stream — try AVPro)",
+            WireConstants.ReasonWarpDown =>
+                $"[mesh] fallback_native id={id} reason=warp_down (server WARP egress unhealthy — transient, retry shortly or another node)",
+            _ =>
+                $"[mesh] fallback_native id={id} reason={(string.IsNullOrEmpty(reason) ? "?" : reason)}",
+        };
+        Logger.WriteFileOnly(line);
     }
 
     private void FailAllPending(string reason)
