@@ -287,8 +287,16 @@ internal static class Program
     // H17: prefer a graceful Ctrl+C event so the watchdog runs its real
     // shutdown (atomic restore + clean_exit.flag). Fall back to Kill only
     // if the process is still alive after the grace window.
+    //
+    // After the kill, poll for "no WKVRCProxy process exists AND the
+    // Global\WKVRCProxy.Watchdog mutex is acquirable" with a 5s budget,
+    // rather than a blind Sleep(500). Earlier impl raced against the
+    // kernel's mutex-handle release on slower machines: the new watchdog
+    // process launched at the end of Main() could hit AbandonedMutexException
+    // or fail to acquire the named pipe instance limit, then exit silently.
     private static void StopRunningWatchdog()
     {
+        int killedCount = 0;
         foreach (var p in Process.GetProcessesByName("WKVRCProxy"))
         {
             using (p)
@@ -296,14 +304,9 @@ internal static class Program
                 bool sentCtrlC = false;
                 try
                 {
-                    // Detach from our own console first; the AttachConsole
-                    // call below would otherwise fail with ALREADY_ATTACHED.
                     FreeConsole();
                     if (AttachConsole((uint)p.Id))
                     {
-                        // Ignore the Ctrl+C in OUR process (otherwise we'd kill
-                        // the updater along with the watchdog), then send to
-                        // the attached console's process group.
                         SetConsoleCtrlHandler(IntPtr.Zero, true);
                         sentCtrlC = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
                         FreeConsole();
@@ -316,9 +319,6 @@ internal static class Program
                 {
                     if (sentCtrlC)
                     {
-                        // Watchdog gets up to 5s to run its 12s shutdown
-                        // budget. The restore is atomic (fast) so it's
-                        // overwhelmingly likely to fit.
                         if (!p.WaitForExit(5000))
                         {
                             p.Kill();
@@ -330,11 +330,42 @@ internal static class Program
                         p.Kill();
                         p.WaitForExit(2000);
                     }
+                    killedCount++;
                 }
                 catch { /* best-effort */ }
             }
         }
-        Thread.Sleep(500);
+        if (killedCount == 0) return;
+        WaitForWatchdogReleaseAsync().GetAwaiter().GetResult();
+    }
+
+    // Poll for "no WKVRCProxy process exists AND mutex acquirable" with a
+    // 5s budget. Returns silently when both conditions hold; logs a
+    // breadcrumb if the budget expires (caller proceeds anyway — the new
+    // watchdog will surface the problem at acquisition time).
+    private static async Task WaitForWatchdogReleaseAsync()
+    {
+        const int BudgetMs = 5000;
+        const int PollMs = 100;
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < BudgetMs)
+        {
+            bool anyLeft = Process.GetProcessesByName("WKVRCProxy").Length > 0;
+            bool mutexFree = false;
+            if (!anyLeft)
+            {
+                try
+                {
+                    using var m = new System.Threading.Mutex(false, "Global\\WKVRCProxy.Watchdog", out _);
+                    mutexFree = m.WaitOne(0);
+                    if (mutexFree) m.ReleaseMutex();
+                }
+                catch { /* mutex creation failed (privilege?) — treat as ready */ mutexFree = true; }
+            }
+            if (!anyLeft && mutexFree) return;
+            await Task.Delay(PollMs).ConfigureAwait(false);
+        }
+        Logger.WriteFileOnly("[updater] watchdog-release wait timed out after " + sw.ElapsedMilliseconds + " ms — proceeding anyway");
     }
 
     private static async Task DownloadAsync(string url, string dest)
@@ -441,6 +472,12 @@ internal static class Program
     // File.Move(overwrite:true). On rename failure, all already-renamed
     // files are restored from the .old-<short> sidecar so a failed update
     // doesn't leave a half-old / half-new install.
+    //
+    // Each rename is retried up to 3 times with 200ms backoff to absorb
+    // brief AV-scanner holds on the new file. If the rollback ITSELF fails
+    // for some files, those failures are collected and surfaced in the
+    // rethrown exception so the user sees a manual-recovery hint instead
+    // of a silent inconsistent install.
     internal static void AtomicCopyOver(string from, string to)
     {
         var stagedFiles = new List<(string TempNew, string FinalDst)>();
@@ -460,8 +497,6 @@ internal static class Program
         }
         catch
         {
-            // Pre-rename failure: clean up staged tmps and rethrow. Original
-            // install is intact.
             foreach (var (tmp, _) in stagedFiles)
             {
                 try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
@@ -478,19 +513,48 @@ internal static class Program
                 if (File.Exists(dst))
                 {
                     backup = dst + ".old-" + Guid.NewGuid().ToString("N").Substring(0, 8);
-                    File.Move(dst, backup);
-                    // Register BEFORE the second move. If File.Move(tmp, dst)
-                    // throws between here and line below, the rollback loop
-                    // needs to know about this backup to restore it.
+                    MoveWithRetry(dst, backup, retries: 3);
                     renamed.Add((backup, dst));
                 }
-                File.Move(tmp, dst);
+                try
+                {
+                    MoveWithRetry(tmp, dst, retries: 3);
+                }
+                catch (Exception innerEx)
+                {
+                    // Decorate the lock case for known critical files so the
+                    // user sees an actionable hint rather than a generic
+                    // IOException. Tools/yt-dlp.exe is the file most likely
+                    // to be locked (VRChat or the running watchdog's probe
+                    // handle).
+                    string fname = Path.GetFileName(dst);
+                    if (innerEx is IOException
+                        && fname.Equals("yt-dlp.exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new IOException(
+                            "Failed to replace " + dst + " — file is locked. "
+                            + "Close VRChat (it may be holding yt-dlp.exe) and re-run the updater.",
+                            innerEx);
+                    }
+                    if (innerEx is IOException
+                        && fname.Equals("WKVRCProxy.exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new IOException(
+                            "Failed to replace " + dst + " — watchdog process may not have fully exited yet. "
+                            + "Wait a few seconds and re-run the updater.",
+                            innerEx);
+                    }
+                    throw;
+                }
             }
         }
-        catch
+        catch (Exception primaryEx)
         {
             // Rename pass failed midway. Restore previously-renamed files
-            // from their .old- sidecars.
+            // from their .old- sidecars; collect any rollback-step failures
+            // and decorate the rethrown exception with a manual-recovery
+            // hint listing the files left in an unknown state.
+            var rollbackFailures = new List<string>();
             foreach (var (backup, dst) in renamed)
             {
                 try
@@ -498,20 +562,52 @@ internal static class Program
                     if (File.Exists(dst)) File.Delete(dst);
                     File.Move(backup, dst);
                 }
-                catch { /* nothing useful left to do */ }
+                catch (Exception rbEx)
+                {
+                    rollbackFailures.Add(dst + " (backup at " + backup + "): " + rbEx.Message);
+                }
             }
-            // Clean up any unstaged tmps that were never renamed.
             foreach (var (tmp, _) in stagedFiles)
             {
                 try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
             }
+            if (rollbackFailures.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    primaryEx.Message + "\n"
+                    + "Rollback ALSO failed for " + rollbackFailures.Count + " file(s) — install may be inconsistent. "
+                    + "Manual recovery: in the install dir, find each *.old-<8hex> file listed below and rename it "
+                    + "back to its original name (drop the .old-* suffix).\n"
+                    + string.Join("\n", rollbackFailures.Select(s => "  - " + s)),
+                    primaryEx);
+            }
             throw;
         }
 
-        // Success — drop the .old-* backups.
         foreach (var (backup, _) in renamed)
         {
             try { File.Delete(backup); } catch { /* best-effort */ }
+        }
+    }
+
+    // Retry a File.Move up to `retries` times with 200ms backoff between
+    // attempts. Absorbs AV-scanner brief holds on the source file (Defender
+    // can hold a freshly-copied .new-<short> open for a tick before
+    // releasing). The last attempt's exception escapes if all retries fail.
+    private static void MoveWithRetry(string src, string dst, int retries)
+    {
+        for (int attempt = 1; attempt <= retries; attempt++)
+        {
+            try
+            {
+                if (File.Exists(dst)) File.Move(src, dst, overwrite: true);
+                else File.Move(src, dst);
+                return;
+            }
+            catch (IOException) when (attempt < retries)
+            {
+                Thread.Sleep(200);
+            }
         }
     }
 }
