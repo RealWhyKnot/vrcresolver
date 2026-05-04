@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Runtime.Versioning;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -11,14 +12,22 @@ namespace WKVRCProxy;
 
 // Named-pipe server at \\.\pipe\WKVRCProxy.resolve. The patched yt-dlp.exe
 // connects, sends one ResolveRequest, reads one ResolveResponse, and closes.
-// Default ACL = current user only — patched yt-dlp runs as the same user.
+//
+// ACL: pipe is created with an explicit security descriptor that grants the
+// current user full access (DACL) AND tags the pipe with a Low-integrity
+// mandatory label (SACL `S:(ML;;NW;;;LW)`). Without the Low-integrity SACL,
+// the wrapper deployed into VRChat's Tools dir (Low-integrity, inherited
+// from the LocalLow path) can't connect — Windows MIC blocks the connect
+// attempt before the DACL check fires. This was a silent bug for an entire
+// session: VRChat invoked our wrapper, wrapper's pipe connect failed, wrapper
+// silently fell through to og fallback. Mesh path bypassed entirely.
 //
 // Wire format on the pipe is newline-delimited JSON: client writes one
 // request followed by '\n', server writes one response followed by '\n'.
 // Newline framing keeps both sides simple — no length prefixes, no
 // read-to-end hangs that would happen with raw stream deserialization.
 //
-// Per-connection budget is 10s. On timeout/parse-error/MeshClient throwing
+// Per-connection budget is 15 s. On timeout/parse-error/MeshClient throwing
 // we synthesize a fallback_native frame with the appropriate reason rather
 // than dropping the connection, so the patched yt-dlp.exe always gets a
 // definitive answer it can act on.
@@ -62,6 +71,31 @@ internal sealed class LocalIpcServer : IDisposable
         }
     }
 
+    // SDDL for the named pipe security descriptor.
+    //   D:(A;;0x1f019f;;;<owner-sid>)  — DACL: current user gets full pipe
+    //                                     access (read, write, create
+    //                                     instance, sync, etc.).
+    //   S:(ML;;NW;;;LW)                — SACL: mandatory integrity label
+    //                                     LOW. NW (NO_WRITE_UP) is the
+    //                                     standard policy flag for the
+    //                                     label; with the level set to
+    //                                     Low, processes at Low and above
+    //                                     can both read and write the pipe.
+    //                                     This is what lets the wrapper
+    //                                     deployed into VRChat's
+    //                                     LocalLow-located Tools dir (Low
+    //                                     integrity by inheritance) connect
+    //                                     to a pipe owned by the watchdog
+    //                                     (Medium integrity).
+    private static PipeSecurity BuildPipeSecurity()
+    {
+        string ownerSid = WindowsIdentity.GetCurrent().User?.Value ?? "AU";
+        string sddl = $"D:(A;;0x1f019f;;;{ownerSid})S:(ML;;NW;;;LW)";
+        var ps = new PipeSecurity();
+        ps.SetSecurityDescriptorSddlForm(sddl);
+        return ps;
+    }
+
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -69,12 +103,15 @@ internal sealed class LocalIpcServer : IDisposable
             NamedPipeServerStream pipe;
             try
             {
-                pipe = new NamedPipeServerStream(
+                pipe = NamedPipeServerStreamAcl.Create(
                     WireConstants.PipeName,
                     PipeDirection.InOut,
                     NamedPipeServerStream.MaxAllowedServerInstances,
                     PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
+                    PipeOptions.Asynchronous,
+                    inBufferSize: 0,
+                    outBufferSize: 0,
+                    pipeSecurity: BuildPipeSecurity());
             }
             catch (Exception ex)
             {

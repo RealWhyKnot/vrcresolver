@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
@@ -196,9 +197,7 @@ internal static class YtDlpUpdater
 
     private static string StatePath()
     {
-        string dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "WKVRCProxy");
+        string dir = WkvrcPaths.StateRoot();
         Directory.CreateDirectory(dir);
         return Path.Combine(dir, "yt-dlp-update-check.json");
     }

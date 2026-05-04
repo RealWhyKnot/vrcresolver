@@ -104,9 +104,7 @@ internal sealed class PatchManager : IDisposable
         _bundledFallbackPath = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.exe");
         _bundledFallbackVerPath = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.version.txt");
 
-        string stateDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "WKVRCProxy");
+        string stateDir = WkvrcPaths.StateRoot();
         Directory.CreateDirectory(stateDir);
         _cleanExitFlagPath = Path.Combine(stateDir, "clean_exit.flag");
         _haltFlagPath = Path.Combine(stateDir, "halt.flag");

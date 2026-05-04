@@ -35,9 +35,7 @@ public static class CrashHandler
 
         try
         {
-            _logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "WKVRCProxy", "crashes");
+            _logDir = WkvrcPaths.CrashesDir();
             Directory.CreateDirectory(_logDir);
         }
         catch
