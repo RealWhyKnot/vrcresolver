@@ -4,6 +4,19 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>WKVRCProxy.YtDlp</RootNamespace>
     <AssemblyName>yt-dlp</AssemblyName>
+    <!-- AOT publish so the wrapper VRChat invokes per video player is ~10x
+         smaller and starts without JIT. The watchdog stays on regular self-
+         contained .NET 10 (it's a one-shot launch, size doesn't matter, and
+         it has heavier dependencies that aren't worth porting). Trimming
+         in 'full' mode is safe here because every reachable JSON path is
+         source-gen'd via WrapperJsonContext and there is no runtime
+         reflection over user types in this project. InvariantGlobalization
+         drops ICU data (~1 MB) — the wrapper does no culture-sensitive
+         formatting. -->
+    <PublishAot>true</PublishAot>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>full</TrimMode>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
