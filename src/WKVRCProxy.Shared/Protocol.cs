@@ -24,9 +24,19 @@ public static class WireConstants
 {
     public const string PipeName = "WKVRCProxy.resolve";
 
-    // Wire shape this client speaks. Sent in the optional request
-    // protocol_version field once welcome confirms the server is v2-capable.
-    public const int ClientProtocolVersion = 2;
+    // Wire shape this client speaks. Stamped on resolve requests' optional
+    // protocol_version field once welcome confirms the server's negotiated
+    // version. v3 adds permessage-deflate compression on the WS upgrade
+    // (negotiated via Sec-WebSocket-Extensions) and a welcome-cache
+    // handshake (client_hello → welcome_cached or welcome). v2 servers
+    // negotiate down to 2 via the existing Math.Clamp on welcome.
+    public const int ClientProtocolVersion = 3;
+
+    // v3 WebSocket subprotocol literal — sent in Sec-WebSocket-Protocol on
+    // the upgrade. Server echoes the same string on accept; if it comes
+    // back as anything else (null, "whyknot-v2", etc.) the client falls
+    // back to the v2 path (skip client_hello, wait for plain welcome).
+    public const string SubprotocolV3 = "whyknot-v3";
 
     // Action vocabulary
     public const string ActionResolve = "resolve";
@@ -36,6 +46,14 @@ public static class WireConstants
     public const string ActionPing = "ping";
     public const string ActionPong = "pong";
     public const string ActionWelcome = "welcome";
+    // v3: client → server first frame. Carries the optional welcome_hash
+    // (sha256-prefix of a previously-cached welcome from this node) so
+    // the server can skip resending unchanged welcome contents.
+    public const string ActionClientHello = "client_hello";
+    // v3: server → client when our welcome_hash matched. Carries only the
+    // dynamic fields (warp_active, node label) — engines/features/version
+    // strings are reused from the local cache keyed by the hash we sent.
+    public const string ActionWelcomeCached = "welcome_cached";
     // Client → server feedback. Fire-and-forget; server must not respond
     // and must tolerate parse errors. See VrcLogMonitor for emission
     // semantics and PlaybackFeedbackKind for the value vocabulary.
@@ -51,6 +69,14 @@ public static class WireConstants
     public const string FieldMaxAudioChannels = "max_audio_channels";
     public const string FieldVrchatFormatArg = "vrchat_format_arg";
     public const string FieldCorrelationId = "correlation_id";
+    // v3 field on welcome / client_hello.
+    public const string FieldWelcomeHash = "welcome_hash";
+
+    // v3 advisory feature strings that may appear in welcome.features. The
+    // client doesn't gate on them — feature presence reflects what the
+    // server promises, not what the client must verify.
+    public const string FeatureV3Compression = "v3_compression";
+    public const string FeatureWelcomeHashAck = "welcome_hash_ack";
 
     // Player vocabulary. Spec is case-sensitive; only "avpro" and "unity" are
     // valid on the wire. PlayerUnknown is a watchdog-internal tag for log
@@ -141,6 +167,11 @@ public sealed class ResolveResponse
 // Carries server capabilities so the client knows whether to use v2 fields.
 // Required: action, protocol_version, node, engines, features.
 // Optional: warp_active, yt_dlp_version, server_version.
+// v3 added: welcome_hash (server-emitted SHA256-prefix fingerprint of this
+// welcome's contents — client persists it per-node and offers it back on
+// the next reconnect's client_hello so the server can skip resending
+// unchanged contents). Backward compat on v2 servers: the field is just
+// absent; v2 deserialize unaffected.
 public sealed class WelcomeFrame
 {
     [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionWelcome;
@@ -151,6 +182,37 @@ public sealed class WelcomeFrame
     [JsonPropertyName("features")] public string[]? Features { get; set; }
     [JsonPropertyName("yt_dlp_version")] public string? YtDlpVersion { get; set; }
     [JsonPropertyName("server_version")] public string? ServerVersion { get; set; }
+    [JsonPropertyName("welcome_hash")] public string? WelcomeHash { get; set; }
+
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+}
+
+// v3 client → server, FIRST FRAME on a v3-negotiated connection. Sent
+// before any resolve. Optional welcome_hash carries an opaque
+// SHA256-prefix fingerprint of a previously-cached welcome from THIS
+// node; null means "no cache, send me the full welcome." client_id is
+// the same per-process GUID already used by playback_feedback frames so
+// the server can correlate the same client across resolve + telemetry.
+public sealed class ClientHelloFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionClientHello;
+    [JsonPropertyName("welcome_hash")] public string? WelcomeHash { get; set; }
+    [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
+
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+}
+
+// v3 server → client when our welcome_hash matched. Carries only the
+// dynamic fields the server may want to update on every reconnect
+// (warp_active is the primary case — node may rotate which tier is
+// healthy in real time). Engines / features / version strings are
+// reused from the local cache keyed by the hash we sent in client_hello.
+public sealed class WelcomeCachedFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionWelcomeCached;
+    [JsonPropertyName("protocol_version")] public int ProtocolVersion { get; set; }
+    [JsonPropertyName("node")] public string? Node { get; set; }
+    [JsonPropertyName("warp_active")] public bool? WarpActive { get; set; }
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
