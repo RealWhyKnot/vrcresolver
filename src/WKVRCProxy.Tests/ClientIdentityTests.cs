@@ -115,4 +115,67 @@ public class ClientIdentityTests : IDisposable
         // On a normal filesystem this also persisted.
         Assert.True(File.Exists(deepPath));
     }
+
+    [Fact]
+    public void LoadOrCreate_OversizeFile_RegeneratesFresh()
+    {
+        // Hardening: a multi-GB file at the client_id path must NOT be
+        // pumped through File.ReadAllText (would alloc full file before
+        // catch fires). Cap is FileInfo.Length pre-check; oversize
+        // fall-through regenerates a fresh GUID and overwrites in place.
+        long cap = ClientIdentity.MaxClientIdFileBytes;
+        File.WriteAllBytes(_path, new byte[cap + 1]);
+
+        string id = ClientIdentity.LoadOrCreate(_path);
+
+        // Returned GUID is fresh + valid.
+        Assert.Matches("^[0-9a-fA-F]{32}$", id);
+        // File on disk is now the fresh GUID, not the oversize blob.
+        Assert.Equal(id, File.ReadAllText(_path).Trim());
+        Assert.Equal(32, new FileInfo(_path).Length);
+    }
+
+    [Fact]
+    public void LoadOrCreate_SaveFailure_CleansTmpResidue()
+    {
+        // Simulate a save failure by holding the destination open with
+        // FileShare.None so File.Move can't overwrite it. The catch
+        // block must delete the .new tmp it just created.
+        // First seed a real client_id so File.Move's destination exists.
+        string seeded = ClientIdentity.LoadOrCreate(_path);
+        Assert.True(File.Exists(_path));
+
+        using (var lockFs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            // Plant something invalid at the path's content shape so the
+            // load path goes to the regenerate branch — but we can't
+            // overwrite the locked file from the test, so instead force
+            // the regenerate by deleting client_id.txt would also lock.
+            // Simpler: corrupt the LOADED content via a sibling path.
+            // We can't easily exercise the real path here; assert the
+            // baseline: after a clean LoadOrCreate the tmp doesn't
+            // linger.
+        }
+
+        Assert.False(File.Exists(_path + ".new"),
+            "After successful LoadOrCreate, no tmp residue should remain");
+
+        // Re-run LoadOrCreate while holding the destination locked. The
+        // load path falls through to regenerate; the write path's
+        // File.Move(tmp, _path, overwrite:true) will fail because the
+        // path is locked. Outer catch must delete the .new tmp.
+        using (var lockFs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            // Force the regen branch: provide a corrupted file mid-call.
+            // Since we hold the lock, ReadAllText will throw and fall to
+            // regenerate. The write will fail on File.Move. Catch block
+            // must clean up.
+            string id = ClientIdentity.LoadOrCreate(_path);
+            // Returned GUID is fresh (in-memory only).
+            Assert.Matches("^[0-9a-fA-F]{32}$", id);
+        }
+
+        Assert.False(File.Exists(_path + ".new"),
+            "LoadOrCreate catch should have deleted the .new tmp residue");
+    }
 }

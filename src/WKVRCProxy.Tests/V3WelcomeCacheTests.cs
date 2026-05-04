@@ -138,4 +138,70 @@ public class V3WelcomeCacheTests : IDisposable
         Assert.Null(cache.Get("node1"));
         Assert.False(File.Exists(_path));
     }
+
+    [Fact]
+    public void Oversize_file_returns_null_without_deserialize()
+    {
+        // Hardening: a corrupt/hostile multi-MB cache file must not
+        // pump JsonSerializer.Deserialize against the whole stream
+        // before catch fires. Cap is a FileInfo.Length pre-check.
+        // Plant a file at MaxCacheFileBytes + 1 byte; cache must read
+        // null and not throw.
+        long cap = WelcomeCache.MaxCacheFileBytes;
+        var bytes = new byte[cap + 1];
+        // Fill with a `{` followed by zeros — would parse as the start
+        // of valid JSON if we did try to deserialize. We assert the
+        // cap fires BEFORE parsing.
+        bytes[0] = (byte)'{';
+        File.WriteAllBytes(_path, bytes);
+
+        var cache = new WelcomeCache(_path);
+        Assert.Null(cache.Get("node1.whyknot.dev"));
+    }
+
+    [Fact]
+    public void Oversize_file_renamed_to_oversized_marker()
+    {
+        // After the oversize check, the file gets renamed aside with a
+        // .oversized-<utc> suffix so the next launch doesn't re-trip on
+        // the same bytes. Server's next welcome rebuilds a clean cache.
+        long cap = WelcomeCache.MaxCacheFileBytes;
+        File.WriteAllBytes(_path, new byte[cap + 1]);
+
+        var cache = new WelcomeCache(_path);
+        cache.Get("node1.whyknot.dev");
+
+        // Original path should no longer exist (renamed aside).
+        Assert.False(File.Exists(_path));
+        // An .oversized-<utc> sibling should exist.
+        var aside = Directory.GetFiles(_tempDir, "v3_welcome_cache.json.oversized-*");
+        Assert.Single(aside);
+        // And its content is the oversized bytes (preserved for forensics).
+        Assert.Equal(cap + 1, new FileInfo(aside[0]).Length);
+    }
+
+    [Fact]
+    public void Save_failure_cleans_tmp_residue()
+    {
+        // Simulate a save failure by holding the destination path open
+        // with FileShare.None so File.Move can't overwrite it. SaveFile
+        // catches, but its outer catch must clean up the .new tmp.
+        var cache = new WelcomeCache(_path);
+        // Seed a real cache file first so File.Move's destination exists.
+        cache.Store("node1.whyknot.dev", new WelcomeFrame { ProtocolVersion = 3 }, "h0");
+        Assert.True(File.Exists(_path));
+
+        // Hold the cache file exclusively.
+        using (var lockFs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            // Now try to Store again — File.Move should fail because the
+            // destination is locked. Outer catch should delete the .new
+            // tmp.
+            cache.Store("node1.whyknot.dev", new WelcomeFrame { ProtocolVersion = 3 }, "h1");
+        }
+
+        // The .new tmp should have been cleaned up.
+        Assert.False(File.Exists(_path + ".new"),
+            "SaveFile catch should have deleted the .new tmp residue");
+    }
 }

@@ -83,11 +83,41 @@ internal sealed class WelcomeCache
         SaveFile(file);
     }
 
+    // Defensive cap on the file's read size. Legitimate file is ~600 bytes
+    // for a single-node cache, ~1.2 KiB for two nodes, larger only if a
+    // future server adds dozens of features. 64 KiB is ~50× the realistic
+    // worst case — generous enough to never bite a legitimate file, tight
+    // enough that a hostile filesystem actor or unrelated corruption can't
+    // induce a multi-MB JsonSerializer.Deserialize alloc before the catch
+    // block fires.
+    internal const long MaxCacheFileBytes = 64 * 1024;
+
     private WelcomeCacheFile? LoadFile()
     {
         try
         {
             if (!File.Exists(_path)) return null;
+            var info = new FileInfo(_path);
+            if (info.Length > MaxCacheFileBytes)
+            {
+                // Cache file unexpectedly large — corrupt, hostile actor,
+                // or a server-side regression. Don't deserialize (would
+                // pump the whole stream into S.T.J's adaptive buffer
+                // before catch fires). Rename aside with a UTC marker so
+                // the next launch doesn't re-trip on the same bytes; the
+                // server's next welcome will rebuild a clean cache.
+                Logger.WriteFileOnly("[v3-cache] oversized cache file at " + _path
+                    + " (" + info.Length + " bytes; cap " + MaxCacheFileBytes
+                    + ") — renaming aside, treating as cache miss");
+                try
+                {
+                    string aside = _path + ".oversized-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+                    File.Move(_path, aside);
+                }
+                catch { /* best-effort — if rename fails next launch
+                          will hit this same branch and try again */ }
+                return null;
+            }
             using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);
             return JsonSerializer.Deserialize(fs, MeshJsonContext.Default.WelcomeCacheFile);
         }
@@ -101,11 +131,11 @@ internal sealed class WelcomeCache
 
     private void SaveFile(WelcomeCacheFile file)
     {
+        string tmp = _path + ".new";
         try
         {
             string dir = Path.GetDirectoryName(_path)!;
             Directory.CreateDirectory(dir);
-            string tmp = _path + ".new";
             byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(file, MeshJsonContext.Default.WelcomeCacheFile);
             File.WriteAllBytes(tmp, bytes);
             File.Move(tmp, _path, overwrite: true);
@@ -113,7 +143,10 @@ internal sealed class WelcomeCache
         catch
         {
             // Best-effort. Cache miss next launch isn't a regression —
-            // server just sends the full welcome again.
+            // server just sends the full welcome again. Clean up any
+            // tmp residue so a partial write doesn't accumulate orphan
+            // .new files on disk.
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
         }
     }
 }
