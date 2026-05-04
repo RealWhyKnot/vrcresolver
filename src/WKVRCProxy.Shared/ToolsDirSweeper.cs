@@ -16,11 +16,10 @@ namespace WKVRCProxy.Shared;
 // Called at every transition that ought to leave Tools/ pristine: startup
 // recovery, clean shutdown, halt, and uninstall. The user-visible invariant
 // is "after WKVRCProxy stops, Tools/ contains only vanilla yt-dlp.exe."
-public static class ToolsDirSweeper
+public static partial class ToolsDirSweeper
 {
-    private static readonly Regex SidecarPattern = new(
-        @"^yt-dlp(-og)?\.exe\.(new|stale)-",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    [GeneratedRegex(@"^yt-dlp(-og)?\.exe\.(new|stale)-", RegexOptions.IgnoreCase)]
+    private static partial Regex SidecarPattern();
 
     private static readonly string[] LiteralResidueNames =
     {
@@ -36,7 +35,7 @@ public static class ToolsDirSweeper
             foreach (string path in Directory.EnumerateFiles(toolsDir))
             {
                 string name = Path.GetFileName(path);
-                bool match = SidecarPattern.IsMatch(name);
+                bool match = SidecarPattern().IsMatch(name);
                 if (!match)
                 {
                     foreach (var literal in LiteralResidueNames)

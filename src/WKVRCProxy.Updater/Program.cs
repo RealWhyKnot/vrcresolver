@@ -20,7 +20,7 @@ namespace WKVRCProxy.Updater;
 // Failure-mode invariant: the watchdog is only stopped once the new
 // payload has been downloaded AND SHA-verified AND extracted. Any
 // failure before that step leaves the running watchdog untouched.
-internal static class Program
+internal static partial class Program
 {
     private const string Repo = "RealWhyKnot/WKVRCProxy";
     private const string ApiUrl = "https://api.github.com/repos/" + Repo + "/releases/latest";
@@ -34,9 +34,10 @@ internal static class Program
     // sample/quoted text like `` `SHA256: <fill in>` `` doesn't accidentally
     // match a placeholder before the real line. release.yml emits exactly
     // one bare-line `SHA256: <hex>`; tighten to that.
-    internal static readonly Regex Sha256Line =
-        new(@"^SHA256:\s*([0-9A-Fa-f]{64})\s*$",
-            RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.IgnoreCase);
+    [GeneratedRegex(@"^SHA256:\s*([0-9A-Fa-f]{64})\s*$",
+        RegexOptions.Multiline | RegexOptions.IgnoreCase)]
+    private static partial Regex Sha256LineRegex();
+    internal static Regex Sha256Line => Sha256LineRegex();
 
     private static async Task<int> Main(string[] args)
     {
@@ -159,11 +160,12 @@ internal static class Program
     // Strip the suffix before parsing — the numeric part is what we compare
     // against ReadCurrentVersion's FileVersion (which never carries the
     // suffix because AssemblyVersion is pure numeric).
-    private static readonly Regex DevSuffix = new(@"-[A-Fa-f0-9]{4}$", RegexOptions.Compiled);
+    [GeneratedRegex(@"-[A-Fa-f0-9]{4}$")]
+    private static partial Regex DevSuffixRegex();
     internal static Version ParseTagVersion(string tag)
     {
         string vNum = tag.StartsWith('v') ? tag[1..] : tag;
-        vNum = DevSuffix.Replace(vNum, "");
+        vNum = DevSuffixRegex().Replace(vNum, "");
         if (!Version.TryParse(vNum, out var v))
             throw new InvalidOperationException("Could not parse latest tag: " + tag);
         return v;
