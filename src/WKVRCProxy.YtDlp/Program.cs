@@ -65,54 +65,61 @@ internal static class Program
         s_rid = Guid.NewGuid().ToString("N")[..8];
         var swTotal = Stopwatch.StartNew();
 
-        string url = ExtractUrl(args);
-        string? formatArg = ExtractDashFValue(args);
-        string player = InferPlayer(formatArg);
-
-        LogStartBanner(args, url, formatArg, player);
-
-        int exitCode;
-        string outcome;
-
-        if (string.IsNullOrEmpty(url))
+        try
         {
-            // No URL in argv → not a resolve invocation (e.g.,
-            // `yt-dlp --version`, `--help`, or a probe). Forward
-            // straight to vanilla so diagnostic invocations work.
-            Log("no URL in argv → exec og fallback (diagnostic invocation)");
-            exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
-            outcome = "no-url-fallback";
-        }
-        else
-        {
-            string? resolved;
-            try
-            {
-                resolved = await ResolveOverPipeAsync(url, player, formatArg).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Log("UNHANDLED in pipe path: " + ex.GetType().Name + ": " + ex.Message);
-                resolved = null;
-            }
+            string url = ExtractUrl(args);
+            string? formatArg = ExtractDashFValue(args);
+            string player = InferPlayer(formatArg);
 
-            if (!string.IsNullOrEmpty(resolved))
+            LogStartBanner(args, url, formatArg, player);
+
+            int exitCode;
+            string outcome;
+
+            if (string.IsNullOrEmpty(url))
             {
-                WriteUrlToStdout(resolved);
-                Log("emitted resolved URL to stdout host=" + ExtractHost(resolved) + " bytes=" + resolved.Length);
-                exitCode = 0;
-                outcome = "pipe-resolved";
+                // No URL in argv → not a resolve invocation (e.g.,
+                // `yt-dlp --version`, `--help`, or a probe). Forward
+                // straight to vanilla so diagnostic invocations work.
+                Log("no URL in argv → exec og fallback (diagnostic invocation)");
+                exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
+                outcome = "no-url-fallback";
             }
             else
             {
-                exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
-                outcome = "pipe-failed-og-fallback";
-            }
-        }
+                string? resolved;
+                try
+                {
+                    resolved = await ResolveOverPipeAsync(url, player, formatArg).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Log("UNHANDLED in pipe path: " + ex.GetType().Name + ": " + ex.Message);
+                    resolved = null;
+                }
 
-        swTotal.Stop();
-        Log("END exit=" + exitCode + " outcome=" + outcome + " elapsed_ms=" + swTotal.ElapsedMilliseconds);
-        return exitCode;
+                if (!string.IsNullOrEmpty(resolved))
+                {
+                    WriteUrlToStdout(resolved);
+                    Log("emitted resolved URL to stdout host=" + ExtractHost(resolved) + " bytes=" + resolved.Length);
+                    exitCode = 0;
+                    outcome = "pipe-resolved";
+                }
+                else
+                {
+                    exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
+                    outcome = "pipe-failed-og-fallback";
+                }
+            }
+
+            swTotal.Stop();
+            Log("END exit=" + exitCode + " outcome=" + outcome + " elapsed_ms=" + swTotal.ElapsedMilliseconds);
+            return exitCode;
+        }
+        finally
+        {
+            CloseLog();
+        }
     }
 
     // Returns the resolved stream URL on success, null on any failure
@@ -453,16 +460,64 @@ internal static class Program
     // call. Watchdog reads from this same LocalLow path so log surfaces
     // are unified across components. Failures are still swallowed — a
     // yt-dlp invocation that can't log shouldn't break the resolve pipeline.
+    //
+    // Single FileStream cached for the lifetime of the invocation (~10-15
+    // Log calls per resolve). Earlier impl re-opened the file on every call
+    // via File.AppendAllText + Directory.CreateDirectory, costing 5-50 ms
+    // of avoidable I/O per resolve. Lazy-init on first call so a wrapper
+    // run that never logs (impossible today, but cheap to handle) doesn't
+    // touch disk. CloseLog() is invoked from Main's finally so the stream
+    // flushes before process exit; an exit that bypasses the finally still
+    // produces a useful tail because we Flush after every WriteLine.
+    private static readonly object s_logLock = new();
+    private static StreamWriter? s_logWriter;
+    private static bool s_logInitFailed;
+
     private static void Log(string message)
     {
+        try
+        {
+            string line = "[" + DateTime.UtcNow.ToString("o") + "] [" + s_rid + "] " + message;
+            lock (s_logLock)
+            {
+                var w = s_logWriter ?? OpenLogWriter();
+                if (w == null) return;
+                w.WriteLine(line);
+                w.Flush();
+            }
+        }
+        catch { /* best-effort */ }
+    }
+
+    private static StreamWriter? OpenLogWriter()
+    {
+        if (s_logInitFailed) return null;
         try
         {
             string logDir = WkvrcPaths.LogsDir();
             Directory.CreateDirectory(logDir);
             string logPath = Path.Combine(logDir, "yt-dlp-wrapper.log");
-            string line = "[" + DateTime.UtcNow.ToString("o") + "] [" + s_rid + "] " + message + "\n";
-            File.AppendAllText(logPath, line);
+            var fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            s_logWriter = new StreamWriter(fs, Encoding.UTF8) { AutoFlush = false, NewLine = "\n" };
+            return s_logWriter;
         }
-        catch { /* best-effort */ }
+        catch
+        {
+            // Disk full / permissions / unexpected layout. Set the failure
+            // flag so the next Log() doesn't keep retrying syscalls each
+            // call — that's the exact loss the refactor is meant to avoid.
+            s_logInitFailed = true;
+            return null;
+        }
+    }
+
+    private static void CloseLog()
+    {
+        lock (s_logLock)
+        {
+            try { s_logWriter?.Flush(); } catch { /* best-effort */ }
+            try { s_logWriter?.Dispose(); } catch { /* best-effort */ }
+            s_logWriter = null;
+        }
     }
 }
