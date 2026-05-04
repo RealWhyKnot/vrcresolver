@@ -34,6 +34,7 @@ The most recent release is at the top.
 - ux: richer startup banner with key paths + OS/runtime (T2.6) (e243a70)
 - diag: persistent rolling log file (T2.4) (bdfd60b)
 - sec: redact UserName + USERPROFILE from crash logs (T5.7) (ba6b808)
+- ux: startup 'update available' line (R6) (23166cf)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
