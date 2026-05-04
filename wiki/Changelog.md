@@ -51,6 +51,7 @@ The most recent release is at the top.
 - **ipc:** Coalesce payload+newline into one WriteAsync; drop FlushAsync (f7956ac)
 - **wrapper:** Drop unused Console.OutputEncoding=UTF8 setup (98cd5d6)
 - **wrapper:** Reuse one FileStream for log writes; CreateDirectory once (6f59c49)
+- Source-gen regexes for Updater + Shared (a2108be)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
