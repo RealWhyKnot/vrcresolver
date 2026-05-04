@@ -208,6 +208,11 @@ internal static class Program
         // prompt without having to remember to run the Updater manually.
         UpdateCheck.StartBackgroundCheck();
 
+        // Silent codec install (AV1 / HEVC / VP9) for AVPro decode support.
+        // State cached so a successful install or recent failed attempt
+        // doesn't re-trigger on every boot.
+        CodecInstaller.StartBackgroundCheck();
+
         s_quitSignal.Wait();
         Console.WriteLine("Shutting down…");
 
