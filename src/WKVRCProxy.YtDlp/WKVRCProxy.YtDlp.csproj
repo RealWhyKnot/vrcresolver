@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>WKVRCProxy.YtDlp</RootNamespace>
+    <AssemblyName>yt-dlp</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WKVRCProxy.Shared\WKVRCProxy.Shared.csproj" />
+  </ItemGroup>
+
+</Project>
