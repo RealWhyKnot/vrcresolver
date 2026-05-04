@@ -60,8 +60,11 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
-        try { Console.OutputEncoding = Encoding.UTF8; } catch { /* best-effort */ }
-
+        // No Console.OutputEncoding setup here — the wrapper writes its
+        // resolved URL via raw Console.OpenStandardOutput().Write(bytes)
+        // and og fallback via the same raw write. Console.WriteLine is
+        // never called. Setting OutputEncoding triggers SetConsoleOutputCP
+        // syscalls + buffer flushing that just waste 1-3 ms per invocation.
         s_rid = Guid.NewGuid().ToString("N")[..8];
         var swTotal = Stopwatch.StartNew();
 
