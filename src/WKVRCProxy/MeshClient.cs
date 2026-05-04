@@ -56,12 +56,15 @@ internal sealed class MeshClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MeshResolveResult>> _pending = new();
     private readonly Random _rng = new();
 
-    // Stable per-process identity included on every playback_feedback frame as
-    // `client_id`. Server logs it as `reported_client_id` (the server tags its
-    // own connection-side id separately) so an operator can join WKVRCProxy
-    // watchdog logs with server-side failures.jsonl entries without having to
-    // match on socket address.
-    private readonly string _clientId = Guid.NewGuid().ToString("N");
+    // Stable per-install identity included on every playback_feedback frame
+    // and v3 client_hello as `client_id`. Server logs it as
+    // `reported_client_id` (the server tags its own connection-side id
+    // separately) so an operator can join WKVRCProxy watchdog logs with
+    // server-side failures.jsonl entries without having to match on socket
+    // address — and a returning watchdog presents the same identity across
+    // launches. Persisted at %LOCALAPPDATA%Low\WKVRCProxy\client_id.txt;
+    // see ClientIdentity for the load/create flow.
+    private readonly string _clientId = ClientIdentity.LoadOrCreate();
 
     // Recent (resolved-url → correlation_id) mapping populated when the server
     // returns a `resolved` frame. VrcLogMonitor consults this when emitting
@@ -314,13 +317,20 @@ internal sealed class MeshClient : IAsyncDisposable
             catch (OperationCanceledException) { throw; }
         }
 
-        // Stamp protocol_version=2 ONLY when the server is v2-capable AND the
-        // patched yt-dlp has signalled awareness of v2 (either by setting
-        // protocol_version itself, or populating any optional v2 request
-        // field). Pre-fix this auto-stamped on any v1-shape request — pushing
-        // v2 response fields onto a strict-shape v1 patched yt-dlp that never
-        // opted in. Now: lossless v1 in → v1 out for callers that haven't
+        // Stamp protocol_version=ClientProtocolVersion (currently 3) ONLY
+        // when the server is v2-or-newer AND the patched yt-dlp has
+        // signalled awareness of v2+ (either by setting protocol_version
+        // itself, or populating any optional v2 request field). Pre-fix
+        // this auto-stamped on any v1-shape request — pushing v2 response
+        // fields onto a strict-shape v1 patched yt-dlp that never opted
+        // in. Now: lossless v1 in → v1 out for callers that haven't
         // declared v2 awareness.
+        //
+        // Wire note: a v1-shape wrapper short-circuits CallerOptedIntoV2
+        // and req.ProtocolVersion stays null. The default-options
+        // JsonSerializer still emits `"protocol_version": null` on the
+        // wire (no JsonIgnoreCondition.WhenWritingNull); server must
+        // coalesce null → v1 — same behaviour since v2 first shipped.
         if (_serverProtocolVersion >= 2 && !req.ProtocolVersion.HasValue && CallerOptedIntoV2(req))
             req.ProtocolVersion = WireConstants.ClientProtocolVersion;
 
@@ -954,10 +964,11 @@ internal sealed class MeshClient : IAsyncDisposable
         string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
 
     // Detect whether the patched yt-dlp populated any v2 request field. Used
-    // to decide whether the watchdog should auto-stamp protocol_version=2 —
-    // the audit's BC1 finding flagged that a strict-shape v1 patched yt-dlp
-    // shouldn't suddenly start receiving v2 response fields it never opted
-    // into.
+    // to decide whether the watchdog should auto-stamp protocol_version=
+    // ClientProtocolVersion (currently 3) — the audit's BC1 finding
+    // flagged that a strict-shape v1 patched yt-dlp shouldn't suddenly
+    // start receiving v2+ response fields it never opted into. v3 didn't
+    // change this gate; the constant being stamped just bumped to 3.
     private static bool CallerOptedIntoV2(ResolveRequest req) =>
         req.ProtocolVersion.HasValue ||
         !string.IsNullOrEmpty(req.CorrelationId) ||
