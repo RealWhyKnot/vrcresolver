@@ -18,6 +18,7 @@ internal static class Program
     private static LocalIpcServer? s_ipc;
     private static MeshClient? s_mesh;
     private static PatchManager? s_patcher;
+    private static VrcLogMonitor? s_logmon;
     private static readonly ManualResetEventSlim s_quitSignal = new(false);
     private static volatile bool s_fastShutdown;
 
@@ -201,6 +202,13 @@ internal static class Program
         s_ipc.Start();
         _ = s_mesh.StartAsync();
 
+        // Watch VRChat's output_log_*.txt for AVPro playback failures and
+        // forward as `playback_feedback` mesh frames. Server-side dispatch
+        // uses these to demote whichever strategy/config produced a URL
+        // AVPro couldn't actually load.
+        s_logmon = new VrcLogMonitor(s_mesh);
+        s_logmon.Start();
+
         if (!s_patcher.Start())
         {
             RunShutdown().GetAwaiter().GetResult();
@@ -290,11 +298,22 @@ internal static class Program
             if (done != t) Console.WriteLine("[shutdown] " + step + " exceeded budget — moving on");
         }
 
-        // Skip ipc + mesh on the fast path so the patcher restore gets the
-        // entire 4s window. The OS will tear down sockets and pipes when the
-        // process exits — they don't need clean shutdown to stay correct.
+        // Skip ipc + mesh + logmon on the fast path so the patcher restore
+        // gets the entire 4s window. The OS will tear down sockets, pipes,
+        // and file handles when the process exits — they don't need clean
+        // shutdown to stay correct.
         if (!fast)
         {
+            if (s_logmon != null)
+            {
+                try
+                {
+                    int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                    await WithTimeout(s_logmon.StopAsync(), Math.Min(remain, 1000), "logmon").ConfigureAwait(false);
+                }
+                catch (Exception ex) { Console.WriteLine("[shutdown] logmon: " + ex.Message); }
+            }
+
             if (s_ipc != null)
             {
                 try

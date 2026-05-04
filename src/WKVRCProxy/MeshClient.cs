@@ -48,6 +48,30 @@ internal sealed class MeshClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
     private readonly Random _rng = new();
 
+    // Stable per-process identity included on every playback_feedback frame as
+    // `client_id`. Server logs it as `reported_client_id` (the server tags its
+    // own connection-side id separately) so an operator can join WKVRCProxy
+    // watchdog logs with server-side failures.jsonl entries without having to
+    // match on socket address.
+    private readonly string _clientId = Guid.NewGuid().ToString("N");
+
+    // Recent (resolved-url → correlation_id) mapping populated when the server
+    // returns a `resolved` frame. VrcLogMonitor consults this when emitting
+    // playback_feedback so the server's dispatcher can hit its correlation
+    // cache (TTL 1h) and attribute the failure to the exact (domain, config)
+    // pair instead of falling back to URL-host extraction — which it skips
+    // entirely when the host is whyknot.dev (the proxy URL we returned).
+    private readonly object _recentCidsLock = new();
+    private readonly Dictionary<string, (string Cid, DateTime At)> _recentCids = new();
+    private const int MaxRecentCids = 256;
+    private static readonly TimeSpan RecentCidsTtl = TimeSpan.FromHours(1);
+
+    // In-flight (request_id → cid) so the resolved-frame handler can lift the
+    // cid out of the originating request and stash it under the resolved URL.
+    // Patched yt-dlp populates correlation_id when it knows; otherwise we use
+    // the request's `id` so the server can still cache-key on something stable.
+    private readonly ConcurrentDictionary<string, string> _inflightCids = new();
+
     private ClientWebSocket? _ws;
     private string? _cachedNodeHost;
     private CancellationTokenSource? _runCts;
@@ -74,6 +98,103 @@ internal sealed class MeshClient : IAsyncDisposable
     public int ServerProtocolVersion => _serverProtocolVersion;
     public string? ServerNode => _serverNode;
     public bool? WarpActive => _warpActive;
+
+    // Fire-and-forget client → server feedback frame. Sent when VrcLogMonitor
+    // observes that AVPro couldn't actually play a URL the dispatcher
+    // returned (load_failure within 10 s of Opening, or silent_stall after
+    // 12 s of nothing). Drops silently if the WS is down — the next launch
+    // re-reads the current output_log_*.txt and reports any unsignalled
+    // failures it finds there.
+    //
+    // Feature-gated on welcome.features containing "playback_feedback" so an
+    // older server (before 2026.5.4.0-0AFF) doesn't see an unknown action.
+    public async Task SendPlaybackFeedbackAsync(string url, string kind, int msSinceOpen)
+    {
+        var ws = _ws;
+        if (ws is not { State: WebSocketState.Open }) return;
+        if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(kind)) return;
+
+        var features = _serverFeatures;
+        if (features == null || Array.IndexOf(features, WireConstants.ActionPlaybackFeedback) < 0)
+            return;
+
+        string? cid = LookupRecentCorrelationId(url);
+
+        byte[] payload;
+        try
+        {
+            payload = BuildPlaybackFeedbackPayload(
+                url, kind, msSinceOpen, _clientId, cid, DateTime.UtcNow);
+        }
+        catch { return; }
+
+        try
+        {
+            await ws.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch { /* best-effort — heartbeat/run-loop will catch a dead socket */ }
+    }
+
+    // Frame builder split out so the wire shape can be unit-tested without
+    // standing up a real MeshClient + WS. `correlation_id` is omitted (not
+    // serialized as null) when caller passes null — keeps the frame shape
+    // consistent with "missing field" semantics on the server.
+    internal static byte[] BuildPlaybackFeedbackPayload(
+        string url,
+        string kind,
+        int msSinceOpen,
+        string clientId,
+        string? correlationId,
+        DateTime timestampUtc)
+    {
+        var frame = new Dictionary<string, object?>(7)
+        {
+            ["action"] = WireConstants.ActionPlaybackFeedback,
+            ["url"] = url,
+            ["kind"] = kind,
+            ["timestamp"] = timestampUtc.ToString("o"),
+            ["ms_since_open"] = msSinceOpen,
+            ["client_id"] = clientId,
+        };
+        if (!string.IsNullOrEmpty(correlationId))
+            frame["correlation_id"] = correlationId;
+        return JsonSerializer.SerializeToUtf8Bytes(frame);
+    }
+
+    private string? LookupRecentCorrelationId(string url)
+    {
+        lock (_recentCidsLock)
+        {
+            if (!_recentCids.TryGetValue(url, out var entry))
+                return null;
+            if (DateTime.UtcNow - entry.At > RecentCidsTtl)
+            {
+                _recentCids.Remove(url);
+                return null;
+            }
+            return entry.Cid;
+        }
+    }
+
+    private void RememberResolvedUrlCid(string url, string cid)
+    {
+        if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(cid)) return;
+        lock (_recentCidsLock)
+        {
+            _recentCids[url] = (cid, DateTime.UtcNow);
+            if (_recentCids.Count <= MaxRecentCids) return;
+
+            // Cap by evicting the oldest. 256 entries × occasional eviction is
+            // cheap enough; no need for a proper LRU structure.
+            string? oldestKey = null;
+            DateTime oldestAt = DateTime.MaxValue;
+            foreach (var kvp in _recentCids)
+            {
+                if (kvp.Value.At < oldestAt) { oldestAt = kvp.Value.At; oldestKey = kvp.Key; }
+            }
+            if (oldestKey != null) _recentCids.Remove(oldestKey);
+        }
+    }
 
     public MeshClient()
     {
@@ -153,6 +274,11 @@ internal sealed class MeshClient : IAsyncDisposable
 
         var tcs = new TaskCompletionSource<JsonDocument>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[req.Id] = tcs;
+        // Stash whichever cid the originating request carries (prefer
+        // patched-yt-dlp-supplied correlation_id, else fall back to the
+        // request id) so the resolved-frame handler can attach it to the
+        // (url → cid) recent-resolves map for VrcLogMonitor.
+        _inflightCids[req.Id] = string.IsNullOrEmpty(req.CorrelationId) ? req.Id : req.CorrelationId!;
 
         byte[] payload;
         try
@@ -162,6 +288,7 @@ internal sealed class MeshClient : IAsyncDisposable
         catch (Exception ex)
         {
             _pending.TryRemove(req.Id, out _);
+            _inflightCids.TryRemove(req.Id, out _);
             Console.WriteLine($"[mesh] request serialization failed id={req.Id}: {ex.Message}");
             return MakeFallbackDoc(req.Id, WireConstants.FallbackInternalError);
         }
@@ -173,6 +300,7 @@ internal sealed class MeshClient : IAsyncDisposable
         catch (Exception ex)
         {
             _pending.TryRemove(req.Id, out _);
+            _inflightCids.TryRemove(req.Id, out _);
             Console.WriteLine(
                 "[mesh] send failed id=" + req.Id +
                 CidSuffix(req.CorrelationId) +
@@ -185,6 +313,7 @@ internal sealed class MeshClient : IAsyncDisposable
         await using var reg = ct.Register(() =>
         {
             if (_pending.TryRemove(id, out var t)) t.TrySetCanceled();
+            _inflightCids.TryRemove(id, out _);
         });
 
         try
@@ -429,6 +558,21 @@ internal sealed class MeshClient : IAsyncDisposable
                 if (action == WireConstants.ActionFallbackNative)
                     LogFallbackNative(doc.RootElement, id);
 
+                // Pop the inflight cid so VrcLogMonitor can later look it up by
+                // the resolved URL. Only on `resolved` — fallback_native means
+                // the patched yt-dlp re-runs vanilla, so the URL AVPro
+                // ultimately opens isn't ours to attribute.
+                _inflightCids.TryRemove(id, out var cid);
+                if (action == WireConstants.ActionResolved
+                    && !string.IsNullOrEmpty(cid)
+                    && doc.RootElement.TryGetProperty("url", out var urlEl)
+                    && urlEl.ValueKind == JsonValueKind.String)
+                {
+                    string? resolvedUrl = urlEl.GetString();
+                    if (!string.IsNullOrEmpty(resolvedUrl))
+                        RememberResolvedUrlCid(resolvedUrl!, cid);
+                }
+
                 if (_pending.TryRemove(id, out var tcs))
                 {
                     if (action == WireConstants.ActionResolved) _reconnectAttempt = 0;
@@ -642,6 +786,10 @@ internal sealed class MeshClient : IAsyncDisposable
 
     private void FailAllPending(string reason)
     {
+        // Clear inflight cids unconditionally — anything still pending now will
+        // fail with no `resolved` to redeem the entry. Leaks in the dictionary
+        // would slowly grow under sustained reconnect storms.
+        _inflightCids.Clear();
         var failedIds = new List<string>();
         foreach (var kvp in _pending.ToArray())
         {

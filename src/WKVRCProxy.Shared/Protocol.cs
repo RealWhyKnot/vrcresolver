@@ -36,6 +36,13 @@ public static class WireConstants
     public const string ActionPing = "ping";
     public const string ActionPong = "pong";
     public const string ActionWelcome = "welcome";
+    // Client → server feedback. Fire-and-forget; server must not respond
+    // and must tolerate parse errors. See VrcLogMonitor for emission
+    // semantics and PlaybackFeedbackKind for the value vocabulary.
+    public const string ActionPlaybackFeedback = "playback_feedback";
+
+    public const string PlaybackFeedbackLoadFailure = "load_failure";
+    public const string PlaybackFeedbackSilentStall = "silent_stall";
 
     // v2 field names (snake_case, mirror server constants verbatim)
     public const string FieldProtocolVersion = "protocol_version";

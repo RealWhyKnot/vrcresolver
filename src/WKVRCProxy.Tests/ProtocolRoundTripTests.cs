@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WKVRCProxy;
 using WKVRCProxy.Shared;
 using Xunit;
 
@@ -130,6 +131,60 @@ public class ProtocolRoundTripTests
         Assert.Equal("2026.5.4-canary", w.ServerVersion);
         Assert.NotNull(w.Extra);
         Assert.True(w.Extra!.ContainsKey("future_capability"));
+    }
+
+    [Fact]
+    public void PlaybackFeedback_frame_matches_server_contract()
+    {
+        // Server-side validator (whyknot.dev mesh dispatcher) expects exactly:
+        //   action="playback_feedback", url, kind, timestamp (ISO-8601 UTC),
+        //   ms_since_open. Optional: correlation_id, client_id. The earlier
+        //   R2 stash sent `timestamp_utc` which the server rejected with a
+        //   protocol_error (field=timestamp); this test pins the new shape.
+        var ts = new DateTime(2026, 5, 4, 7, 22, 0, DateTimeKind.Utc);
+        byte[] bytes = MeshClient.BuildPlaybackFeedbackPayload(
+            url: "https://node1.whyknot.dev/r/abc",
+            kind: WireConstants.PlaybackFeedbackLoadFailure,
+            msSinceOpen: 4321,
+            clientId: "client-xyz",
+            correlationId: "cid-42",
+            timestampUtc: ts);
+
+        using var doc = JsonDocument.Parse(bytes);
+        var root = doc.RootElement;
+        Assert.Equal("playback_feedback", root.GetProperty("action").GetString());
+        Assert.Equal("https://node1.whyknot.dev/r/abc", root.GetProperty("url").GetString());
+        Assert.Equal("load_failure", root.GetProperty("kind").GetString());
+        Assert.Equal("2026-05-04T07:22:00.0000000Z", root.GetProperty("timestamp").GetString());
+        Assert.Equal(4321, root.GetProperty("ms_since_open").GetInt32());
+        Assert.Equal("client-xyz", root.GetProperty("client_id").GetString());
+        Assert.Equal("cid-42", root.GetProperty("correlation_id").GetString());
+
+        // Old field MUST NOT appear — server rejects with protocol_error.
+        Assert.False(root.TryGetProperty("timestamp_utc", out _));
+    }
+
+    [Fact]
+    public void PlaybackFeedback_frame_omits_correlation_id_when_unknown()
+    {
+        // When VrcLogMonitor sees an Opening for a URL not in the recent-
+        // resolves cache (e.g. wrapper served via fallback_native, or pre-
+        // existing AVPro URL from before watchdog start), correlation_id is
+        // null. Frame must OMIT the field, not serialize "null", so the
+        // server's missing-field semantics apply (skip cache lookup, fall
+        // back to URL-host extraction).
+        byte[] bytes = MeshClient.BuildPlaybackFeedbackPayload(
+            url: "https://example.com/video.m3u8",
+            kind: WireConstants.PlaybackFeedbackSilentStall,
+            msSinceOpen: 12000,
+            clientId: "client-xyz",
+            correlationId: null,
+            timestampUtc: DateTime.UtcNow);
+
+        using var doc = JsonDocument.Parse(bytes);
+        Assert.False(doc.RootElement.TryGetProperty("correlation_id", out _));
+        Assert.True(doc.RootElement.TryGetProperty("client_id", out _));
+        Assert.Equal("silent_stall", doc.RootElement.GetProperty("kind").GetString());
     }
 
     [Fact]
