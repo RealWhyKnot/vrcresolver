@@ -152,9 +152,19 @@ internal static class Program
         CrashHandler.SetStateSnapshot(SnapshotState);
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
-        Console.WriteLine($"WKVRCProxy {version}");
-
         string installDir = AppContext.BaseDirectory;
+        string stateDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "WKVRCProxy");
+        string vrcToolsDir = VrcPathLocator.Find() ?? "<not found — launch VRChat once>";
+
+        Console.WriteLine($"WKVRCProxy {version}");
+        Console.WriteLine($"  install:   {installDir}");
+        Console.WriteLine($"  vrc tools: {vrcToolsDir}");
+        Console.WriteLine($"  state:     {stateDir}");
+        Console.WriteLine($"  os:        {RuntimeInformation.OSDescription}");
+        Console.WriteLine($"  runtime:   {RuntimeInformation.FrameworkDescription}");
+        Console.WriteLine();
 
         // Patch the Tools dir FIRST so VRChat sees the patched yt-dlp within
         // ~200 ms of launch. The hosts entry only matters for public-instance
