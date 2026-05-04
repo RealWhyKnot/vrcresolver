@@ -32,6 +32,7 @@ The most recent release is at the top.
 - ux: patch first, then UAC prompt fire-and-forget (T1.6) (677cb94)
 - ux: richer startup banner with key paths + OS/runtime (T2.6) (e243a70)
 - diag: persistent rolling log file (T2.4) (bdfd60b)
+- sec: redact UserName + USERPROFILE from crash logs (T5.7) (ba6b808)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
