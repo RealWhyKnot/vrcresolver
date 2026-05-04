@@ -44,6 +44,10 @@ The most recent release is at the top.
 - ux(watchdog): show server fallback reason + suppress redundant mesh line (b78a5d9)
 - **wrapper:** AOT-publish the yt-dlp wrapper (~79 MB -> ~3 MB) (4f35e3d)
 - **wrapper:** Source-gen JSON via WrapperJsonContext (1249e43)
+- **mesh:** Pass raw response bytes through; drop JsonDocument re-encode (314a043)
+- **ipc:** Coalesce payload+newline into one WriteAsync; drop FlushAsync (f7956ac)
+- **wrapper:** Drop unused Console.OutputEncoding=UTF8 setup (98cd5d6)
+- **wrapper:** Reuse one FileStream for log writes; CreateDirectory once (6f59c49)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
