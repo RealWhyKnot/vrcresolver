@@ -203,6 +203,11 @@ internal static class Program
             catch (Exception ex) { Console.WriteLine("[hosts] background error: " + ex.Message); }
         });
 
+        // Best-effort GitHub releases check; prints one line if a newer
+        // version exists so users running the watchdog see the upgrade
+        // prompt without having to remember to run the Updater manually.
+        UpdateCheck.StartBackgroundCheck();
+
         s_quitSignal.Wait();
         Console.WriteLine("Shutting down…");
 
