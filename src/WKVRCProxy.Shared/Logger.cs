@@ -48,6 +48,16 @@ public static class Logger
         Console.SetOut(new TeeWriter(Console.Out));
     }
 
+    // Write a line to the rolling log file ONLY — bypassing the console
+    // tee. Used for verbose diagnostic streams (per-strategy mesh
+    // resolve_log frames, full per-resolve traces, etc.) that should
+    // remain available for grep / bug-report attachment but would
+    // clutter the user-facing console window.
+    public static void WriteFileOnly(string? line)
+    {
+        Tee(line);
+    }
+
     private static void Tee(string? line)
     {
         var w = _writer;
