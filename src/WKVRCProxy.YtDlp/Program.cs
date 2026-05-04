@@ -276,15 +276,23 @@ internal static class Program
         return WireConstants.PlayerAvPro;
     }
 
-    // Best-effort single-file diagnostic. VRChat's Tools dir is writable
-    // by VRChat (and therefore by us when invoked as VRChat's child).
-    // Failures are swallowed — a yt-dlp invocation that can't log shouldn't
-    // break the resolve pipeline.
+    // Best-effort single-file diagnostic. Log lands at
+    //   %LOCALAPPDATA%\WKVRCProxy\logs\yt-dlp-wrapper.log
+    // — same dir tree as the watchdog / updater / uninstaller component
+    // logs so all per-component diagnostics live under one root. Pre-fix
+    // this wrote to AppContext.BaseDirectory (VRChat's Tools dir), which
+    // violated the cleanup invariant: an exited watchdog must leave Tools
+    // dir with only vanilla yt-dlp.exe. Failures are swallowed — a yt-dlp
+    // invocation that can't log shouldn't break the resolve pipeline.
     private static void Log(string message)
     {
         try
         {
-            string logPath = Path.Combine(AppContext.BaseDirectory, "yt-dlp-wrapper.log");
+            string logDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "WKVRCProxy", "logs");
+            Directory.CreateDirectory(logDir);
+            string logPath = Path.Combine(logDir, "yt-dlp-wrapper.log");
             File.AppendAllText(logPath, "[" + DateTime.UtcNow.ToString("o") + "] " + message + "\n");
         }
         catch { /* best-effort */ }
