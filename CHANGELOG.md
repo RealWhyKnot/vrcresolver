@@ -65,6 +65,7 @@ The most recent release is at the top.
 - **patch:** File-lock probe + VRChat-running banner (crash mitigation) (3b7800e)
 - **integrity:** Relocate state to LocalLow + Low-integrity SACL on pipe (8173dc3)
 - **integrity:** Pipe label via P/Invoke; skip logs in migration (fa33565)
+- **integrity:** Create pipe with embedded SACL via CreateNamedPipe P/Invoke (cb2838f)
 
 ---
 
