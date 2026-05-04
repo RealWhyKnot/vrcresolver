@@ -39,6 +39,7 @@ The most recent release is at the top.
 - sec: redact UserName + USERPROFILE from crash logs (T5.7) (ba6b808)
 - ux: startup 'update available' line (R6) (23166cf)
 - diag(yt-dlp wrapper): comprehensive per-invocation log + correct empty-stdout-on-failure (6d5d6bb)
+- ux(watchdog): user-friendly per-resolve console summary (e5d1256)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
