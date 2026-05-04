@@ -216,6 +216,18 @@ internal sealed class LocalIpcServer : IDisposable
             {
                 outcome = WireConstants.ActionFallbackNative + "/" + failReason;
                 await WriteFallbackAsync(pipe, id, failReason, CancellationToken.None).ConfigureAwait(false);
+                ReportingService.ReportFallback(req, failReason, null);
+            }
+            else if (outcome.StartsWith(WireConstants.ActionFallbackNative))
+            {
+                // Mesh returned a fallback_native frame. Reach into the
+                // dispatched response for the reason code; ReportingService
+                // filters out transient kinds itself.
+                string reason = outcome.Length > WireConstants.ActionFallbackNative.Length + 1
+                    ? outcome[(WireConstants.ActionFallbackNative.Length + 1)..]
+                    : "";
+                if (!string.IsNullOrEmpty(reason))
+                    ReportingService.ReportFallback(req, reason, null);
             }
 
             // Per-request success log. Captures id, optional correlation_id,
