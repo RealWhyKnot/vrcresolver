@@ -117,6 +117,21 @@ public class V3ProtocolTests
         Assert.Equal(2, parsed.ProtocolVersion);
     }
 
+    [Theory]
+    [InlineData("whyknot-v3", true)]
+    [InlineData(null, false)]              // v2 server / proxy stripped header
+    [InlineData("", false)]                // server returned empty
+    [InlineData("whyknot-v2", false)]      // hypothetical older negotiation
+    [InlineData("Whyknot-V3", false)]      // case-flip drift detection (we're Ordinal, NOT OrdinalIgnoreCase)
+    [InlineData("whyknot-v3 ", false)]     // trailing space
+    public void ShouldSendClientHello_OnlyExactSubprotocolMatch(string? negotiated, bool expected)
+    {
+        // Subprotocol mismatch → client falls back to v2 path: no
+        // client_hello, just wait for plain welcome. Pure helper so the
+        // fallback decision is testable without a real ClientWebSocket.
+        Assert.Equal(expected, MeshClient.ShouldSendClientHello(negotiated));
+    }
+
     [Fact]
     public void WireConstants_v3_strings_match_server_spec()
     {

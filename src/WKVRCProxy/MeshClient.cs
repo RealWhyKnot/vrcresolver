@@ -89,6 +89,17 @@ internal sealed class MeshClient : IAsyncDisposable
     private int _reconnectAttempt;
     private bool _wasConnected;
 
+    // v3 handshake state (per-connection). _isV3Connection is set on
+    // ConnectAsync return based on the server's echoed subprotocol; if
+    // it doesn't come back as "whyknot-v3" we fall back to the v2 path
+    // (skip client_hello, wait for plain welcome). _currentNodeHost is
+    // captured per-connection so the welcome-cache lookup keys on the
+    // exact node we connected to (apex-302 routes to either node1 or
+    // node2 and their welcomes can differ).
+    private bool _isV3Connection;
+    private string _currentNodeHost = "";
+    private readonly WelcomeCache _welcomeCache = new();
+
     // Per-connection welcome state. _welcomeTcs is reset on every successful
     // ConnectAsync; the 1s fallback completes it with null if the server is
     // pre-v2 (silent) and the dispatch handler completes it with the parsed
@@ -141,6 +152,35 @@ internal sealed class MeshClient : IAsyncDisposable
             await ws.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
         }
         catch { /* best-effort — heartbeat/run-loop will catch a dead socket */ }
+    }
+
+    // Pure predicate so the subprotocol-mismatch fallback can be unit-
+    // tested without standing up a real ClientWebSocket. True iff the
+    // server echoed the v3 subprotocol literal back on the upgrade —
+    // null/empty/anything-else means the server (or an intermediate
+    // proxy stripping unrecognized headers, e.g. some Cloudflare
+    // configs) didn't accept v3, and the client must fall back to the
+    // v2 path: skip client_hello, wait for plain welcome.
+    internal static bool ShouldSendClientHello(string? negotiatedSubprotocol)
+        => string.Equals(negotiatedSubprotocol, WireConstants.SubprotocolV3, StringComparison.Ordinal);
+
+    // Send the v3 first frame. Looks up any cached welcome hash for the
+    // current node so the server can reply with a small welcome_cached
+    // frame on a match instead of resending the full welcome bytes.
+    private async Task SendClientHelloAsync(string nodeHost, CancellationToken ct)
+    {
+        var ws = _ws;
+        if (ws is not { State: System.Net.WebSockets.WebSocketState.Open }) return;
+        string? cachedHash = _welcomeCache.Get(nodeHost)?.WelcomeHash;
+        var hello = new ClientHelloFrame
+        {
+            WelcomeHash = cachedHash,
+            ClientId = _clientId,
+        };
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(hello, MeshJsonContext.Default.ClientHelloFrame);
+        await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+        Logger.WriteFileOnly("[mesh][v3] client_hello sent node=" + nodeHost
+            + " hash=" + (cachedHash ?? "null"));
     }
 
     // Frame builder split out so the wire shape can be unit-tested without
@@ -357,6 +397,8 @@ internal sealed class MeshClient : IAsyncDisposable
                 _warpActive = null;
                 _serverVersion = null;
                 _ytDlpVersion = null;
+                _isV3Connection = false;
+                _currentNodeHost = node;
                 var welcomeTcs = new TaskCompletionSource<WelcomeFrame?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _welcomeTcs = welcomeTcs;
 
@@ -365,8 +407,49 @@ internal sealed class MeshClient : IAsyncDisposable
                 // We implement our own 45 s heartbeat loop; turn off the
                 // framework's redundant 30 s background ping.
                 _ws.Options.KeepAliveInterval = TimeSpan.Zero;
+                // v3: offer the whyknot-v3 subprotocol on the upgrade. If
+                // the server (or an intermediate proxy) doesn't echo it
+                // back, _ws.SubProtocol will be null/different and we
+                // silently fall back to v2 behaviour below.
+                _ws.Options.AddSubProtocol(WireConstants.SubprotocolV3);
+                // v3: offer permessage-deflate (RFC 7692) compression on
+                // the upgrade. Microsoft named the property "Dangerous"
+                // because a hostile server can compression-amplify a
+                // malicious peer's bytes; we trust whyknot.dev so the
+                // risk is N/A here. Server still gets to refuse, in
+                // which case the connection is uncompressed but
+                // functional — same wire shape, just larger frames.
+                _ws.Options.DangerousDeflateOptions = new System.Net.WebSockets.WebSocketDeflateOptions
+                {
+                    ClientMaxWindowBits = 15,
+                    ServerMaxWindowBits = 15,
+                };
                 var wsUri = new Uri("wss://" + node + "/mesh");
                 await _ws.ConnectAsync(wsUri, ct).ConfigureAwait(false);
+
+                _isV3Connection = ShouldSendClientHello(_ws.SubProtocol);
+                Logger.WriteFileOnly("[mesh][v3] negotiated subprotocol="
+                    + (_ws.SubProtocol ?? "<none>")
+                    + " v3=" + _isV3Connection
+                    + " deflate-offered=true");
+
+                // v3: send client_hello as the FIRST outbound frame
+                // before any resolve. Fire-and-forget on send failures
+                // — the server's response to client_hello (welcome or
+                // welcome_cached) flows through the existing dispatch
+                // path, and any connection-level error tears down the
+                // socket which the run loop's catch handles.
+                if (_isV3Connection)
+                {
+                    try { await SendClientHelloAsync(node, ct).ConfigureAwait(false); }
+                    catch (Exception ex)
+                    {
+                        Logger.WriteFileOnly("[mesh][v3] client_hello send failed: "
+                            + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                        // Don't crash the connection — the server may
+                        // still send a plain welcome on its own.
+                    }
+                }
 
                 _cachedNodeHost = node;
                 _wasConnected = true;
@@ -676,8 +759,98 @@ internal sealed class MeshClient : IAsyncDisposable
                         " yt-dlp=" + (welcome.YtDlpVersion ?? "?") +
                         " warp_active=" + (welcome.WarpActive?.ToString() ?? "?") +
                         " features=" + LogUtil.SanitizeForConsole(features, 240));
+
+                    // v3: persist the welcome contents keyed by hash so
+                    // the next reconnect can offer it back in client_hello
+                    // and let the server reply with the smaller
+                    // welcome_cached frame. Only on v3 connections AND
+                    // when the server actually sent a hash — v2 servers
+                    // don't and shouldn't cache.
+                    if (_isV3Connection && !string.IsNullOrEmpty(welcome.WelcomeHash)
+                        && !string.IsNullOrEmpty(_currentNodeHost))
+                    {
+                        try { _welcomeCache.Store(_currentNodeHost, welcome, welcome.WelcomeHash!); }
+                        catch (Exception storeEx)
+                        {
+                            Logger.WriteFileOnly("[mesh][v3] cache store failed: "
+                                + storeEx.GetType().Name + ": "
+                                + LogUtil.SanitizeForConsole(storeEx.Message, 160));
+                        }
+                    }
                 }
                 _welcomeTcs?.TrySetResult(welcome);
+                doc.Dispose();
+                return;
+            }
+            case WireConstants.ActionWelcomeCached:
+            {
+                // v3: server confirmed our cached welcome_hash matched.
+                // Hydrate per-connection state from the local cache;
+                // server only sent the dynamic fields (warp_active +
+                // node label) in this small frame. Engines / features /
+                // version strings come from the cache entry.
+                if (!_isV3Connection)
+                {
+                    Console.WriteLine("[mesh][warn] welcome_cached received on non-v3 connection — protocol error, reconnecting");
+                    try { _ws?.Abort(); } catch { /* ignore */ }
+                    doc.Dispose();
+                    return;
+                }
+                WelcomeCachedFrame? cached = null;
+                try { cached = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.WelcomeCachedFrame); }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[mesh][warn] welcome_cached parse failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                    Interlocked.CompareExchange(ref _serverProtocolVersion, 1, 0);
+                    _welcomeTcs?.TrySetResult(null);
+                    doc.Dispose();
+                    return;
+                }
+
+                var entry = !string.IsNullOrEmpty(_currentNodeHost)
+                    ? _welcomeCache.Get(_currentNodeHost)
+                    : null;
+                if (entry == null)
+                {
+                    // Server claimed cache hit but we have nothing to
+                    // hydrate from — sync drift (file deleted between
+                    // client_hello send and this dispatch, or another
+                    // process clobbered the cache). Drop any stale
+                    // slot and force a clean reconnect with null hash;
+                    // the server will resend the full welcome.
+                    if (!string.IsNullOrEmpty(_currentNodeHost))
+                        _welcomeCache.Invalidate(_currentNodeHost);
+                    Console.WriteLine("[mesh][warn] welcome_cached but local entry missing — invalidating + reconnecting");
+                    try { _ws?.Abort(); } catch { /* ignore */ }
+                    doc.Dispose();
+                    return;
+                }
+
+                int negotiated = Math.Clamp(
+                    cached?.ProtocolVersion ?? entry.ProtocolVersion,
+                    1,
+                    WireConstants.ClientProtocolVersion);
+                Interlocked.Exchange(ref _serverProtocolVersion, negotiated);
+                _serverNode = cached?.Node ?? entry.Node;
+                _serverFeatures = entry.Features;
+                _warpActive = cached?.WarpActive ?? entry.WarpActive;
+                _serverVersion = entry.ServerVersion;
+                _ytDlpVersion = entry.YtDlpVersion;
+
+                Logger.WriteFileOnly("[mesh][v3] welcome_cached hit node="
+                    + (_serverNode ?? "?") + " v=" + negotiated
+                    + " features=" + (entry.Features != null
+                        ? string.Join(",", entry.Features) : "<none>"));
+                // No INFO console line — equivalent state was already
+                // cached; the user doesn't need a "still v3, still
+                // connected" reminder. The connect+welcome banner
+                // already fired the first time.
+
+                // _welcomeTcs awaits a WelcomeFrame? — null is fine
+                // here. ResolveAsync waiters key off _serverProtocolVersion
+                // and _serverFeatures, both of which are now set.
+                _welcomeTcs?.TrySetResult(null);
                 doc.Dispose();
                 return;
             }
