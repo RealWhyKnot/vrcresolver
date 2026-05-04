@@ -34,6 +34,15 @@ internal sealed class MeshClient : IAsyncDisposable
     private static readonly TimeSpan WelcomeTimeout = TimeSpan.FromSeconds(1);
     private static readonly int[] ReconnectCapsSec = { 1, 2, 4, 8, 16, 30 };
 
+    // Pre-baked control frames. Both are pure-static — `{"action":"ping"}`
+    // / `{"action":"pong"}` — so the byte[] can be cached at class-load
+    // and reused for every send. Pre-fix each heartbeat / pong-reply
+    // allocated a fresh anonymous-object DTO + ArrayPool buffer.
+    private static readonly byte[] PingFrame =
+        JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPing });
+    private static readonly byte[] PongFrame =
+        JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPong });
+
     private readonly string _userAgent;
     private readonly HttpClient _httpClient;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
@@ -212,6 +221,9 @@ internal sealed class MeshClient : IAsyncDisposable
 
                 _ws = new ClientWebSocket();
                 _ws.Options.SetRequestHeader("User-Agent", _userAgent);
+                // We implement our own 45 s heartbeat loop; turn off the
+                // framework's redundant 30 s background ping.
+                _ws.Options.KeepAliveInterval = TimeSpan.Zero;
                 var wsUri = new Uri("wss://" + node + "/mesh");
                 await _ws.ConnectAsync(wsUri, ct).ConfigureAwait(false);
 
@@ -371,8 +383,7 @@ internal sealed class MeshClient : IAsyncDisposable
             DateTime sentAt = DateTime.UtcNow;
             try
             {
-                var ping = JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPing });
-                await ws.SendAsync(ping, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                await ws.SendAsync(PingFrame, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
             }
             catch { return; }
 
@@ -507,8 +518,7 @@ internal sealed class MeshClient : IAsyncDisposable
                     var pongWs = _ws;
                     if (pongWs is { State: WebSocketState.Open })
                     {
-                        var pong = JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPong });
-                        await pongWs.SendAsync(pong, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                        await pongWs.SendAsync(PongFrame, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
                     }
                 }
                 catch { /* heartbeat will catch dead socket */ }

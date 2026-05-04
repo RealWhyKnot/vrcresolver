@@ -244,23 +244,38 @@ internal sealed class LocalIpcServer : IDisposable
     private static string CidSuffix(string? correlationId) =>
         string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
 
+    // Pre-baked single-byte newline terminator. Used twice per response
+    // (success + fallback paths). Avoids allocating a fresh byte[] per write.
+    private static readonly byte[] NewlineFrame = new byte[] { (byte)'\n' };
+
     // Returns the line, or null on empty connection. Sets `truncated` to
     // true if MaxRequestBytes was hit before a '\n' arrived — the caller
     // can then surface a "request_too_large" diagnostic instead of
     // confusing "malformed JSON" (which is what JsonSerializer would
     // report against a truncated payload).
+    //
+    // Buffered: one ReadAsync per 4 KiB chunk, then scan in-process for the
+    // newline terminator. Pre-fix this read one byte per syscall — a 100 KiB
+    // request needed 100k async syscalls.
     private static async Task<(string? Line, bool Truncated)> ReadLineAsync(Stream s, CancellationToken ct)
     {
         using var ms = new MemoryStream();
-        byte[] one = new byte[1];
+        var buf = new byte[4096];
         bool sawNewline = false;
         while (ms.Length < MaxRequestBytes)
         {
-            int n = await s.ReadAsync(one, 0, 1, ct).ConfigureAwait(false);
+            int n = await s.ReadAsync(buf.AsMemory(), ct).ConfigureAwait(false);
             if (n == 0) break;
-            if (one[0] == (byte)'\n') { sawNewline = true; break; }
-            if (one[0] == (byte)'\r') continue;
-            ms.WriteByte(one[0]);
+            int consume = n;
+            int nlIdx = Array.IndexOf(buf, (byte)'\n', 0, n);
+            if (nlIdx >= 0) { sawNewline = true; consume = nlIdx; }
+            for (int i = 0; i < consume && ms.Length < MaxRequestBytes; i++)
+            {
+                byte b = buf[i];
+                if (b == (byte)'\r') continue;
+                ms.WriteByte(b);
+            }
+            if (sawNewline) break;
         }
         if (ms.Length == 0) return (null, false);
         bool truncated = !sawNewline && ms.Length >= MaxRequestBytes;
@@ -271,7 +286,7 @@ internal sealed class LocalIpcServer : IDisposable
     {
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(doc.RootElement);
         await s.WriteAsync(payload, ct).ConfigureAwait(false);
-        await s.WriteAsync(new byte[] { (byte)'\n' }, ct).ConfigureAwait(false);
+        await s.WriteAsync(NewlineFrame, ct).ConfigureAwait(false);
         await s.FlushAsync(ct).ConfigureAwait(false);
     }
 
@@ -297,7 +312,7 @@ internal sealed class LocalIpcServer : IDisposable
         try
         {
             await s.WriteAsync(payload, ct).ConfigureAwait(false);
-            await s.WriteAsync(new byte[] { (byte)'\n' }, ct).ConfigureAwait(false);
+            await s.WriteAsync(NewlineFrame, ct).ConfigureAwait(false);
             await s.FlushAsync(ct).ConfigureAwait(false);
         }
         catch { /* peer may have hung up — we tried */ }
