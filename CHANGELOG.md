@@ -32,6 +32,8 @@ The most recent release is at the top.
 - **watchdog:** [via lh-yt] resolve tag + 30-min heartbeat with stats (b6490da)
 - **watchdog:** Periodic hosts entry tick + tightened parser + tests (0e2a1e6)
 - **logger:** Tee Console.Error too; expose Logger.Close() (4aeac2e)
+- **mesh:** V3 client_hello + welcome_cached handshake (c3ecf12)
+- **protocol:** V3 wire DTOs + WelcomeCache + MeshJsonContext (fbad93c)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
@@ -52,6 +54,7 @@ The most recent release is at the top.
 - **wrapper:** Drop unused Console.OutputEncoding=UTF8 setup (98cd5d6)
 - **wrapper:** Reuse one FileStream for log writes; CreateDirectory once (6f59c49)
 - Source-gen regexes for Updater + Shared (a2108be)
+- Persist client_id across runs + clarify v3 stamping comments (475ba2a)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
