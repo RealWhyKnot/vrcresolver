@@ -2,8 +2,8 @@ using System.Text;
 
 namespace WKVRCProxy.Shared;
 
-// Tees Console.Out to a rolling file at
-//   %LOCALAPPDATA%\WKVRCProxy\logs\<component>-<utc>.log
+// Tees Console.Out AND Console.Error to a rolling file at
+//   %LOCALAPPDATA%Low\WKVRCProxy\logs\<component>-<utc>.log
 // Console stays the primary UX; the file is the support artifact users
 // can attach to bug reports without scraping their scrollback.
 //
@@ -12,7 +12,9 @@ namespace WKVRCProxy.Shared;
 // older than 7 days (mtime) is deleted on Install().
 //
 // Each exe (watchdog, updater, uninstaller) calls Install at the top of
-// Main so its boot output is captured.
+// Main so its boot output is captured. Close() is exposed for callers that
+// need to release the file handle before deleting the log directory (the
+// uninstaller's wipe path).
 public static class Logger
 {
     private const long MaxBytes = 10L * 1024 * 1024;
@@ -44,6 +46,22 @@ public static class Logger
         }
 
         Console.SetOut(new TeeWriter(Console.Out));
+        Console.SetError(new TeeWriter(Console.Error));
+    }
+
+    // Releases the open log file handle so a caller (e.g., the uninstaller's
+    // WipeLocalAppData step) can delete the logs directory without a sharing
+    // violation. After Close, Tee() becomes a no-op — subsequent
+    // Console.WriteLine still writes to the underlying console writer.
+    // Idempotent.
+    public static void Close()
+    {
+        lock (_lock)
+        {
+            try { _writer?.Flush(); } catch { /* best-effort */ }
+            try { _writer?.Dispose(); } catch { /* best-effort */ }
+            _writer = null;
+        }
     }
 
     // Write a line to the rolling log file ONLY — bypassing the console
