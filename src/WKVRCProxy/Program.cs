@@ -20,6 +20,7 @@ internal static class Program
     private static PatchManager? s_patcher;
     private static VrcLogMonitor? s_logmon;
     private static HostsTicker? s_hostsTicker;
+    private static Heartbeat? s_heartbeat;
     private static readonly ManualResetEventSlim s_quitSignal = new(false);
     private static volatile bool s_fastShutdown;
 
@@ -234,6 +235,12 @@ internal static class Program
         s_hostsTicker = new HostsTicker();
         s_hostsTicker.Start();
 
+        // Periodic "still alive" line + aggregate stats (resolves, lh-yt
+        // count, stream bytes, reconnects). Suppresses itself when other
+        // logging is active so it doesn't spam a busy console.
+        s_heartbeat = new Heartbeat(s_mesh);
+        s_heartbeat.Start();
+
         // Best-effort GitHub releases check; prints one line if a newer
         // version exists so users running the watchdog see the upgrade
         // prompt without having to remember to run the Updater manually.
@@ -311,6 +318,16 @@ internal static class Program
         // shutdown to stay correct.
         if (!fast)
         {
+            if (s_heartbeat != null)
+            {
+                try
+                {
+                    int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                    await WithTimeout(s_heartbeat.StopAsync(), Math.Min(remain, 500), "heartbeat").ConfigureAwait(false);
+                }
+                catch (Exception ex) { Console.WriteLine("[shutdown] heartbeat: " + ex.Message); }
+            }
+
             if (s_hostsTicker != null)
             {
                 try

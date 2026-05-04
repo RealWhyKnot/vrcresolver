@@ -421,6 +421,7 @@ internal sealed class MeshClient : IAsyncDisposable
             if (ct.IsCancellationRequested) break;
 
             _reconnectAttempt++;
+            WatchdogStats.RecordReconnect();
             int capSec = ReconnectCapsSec[Math.Min(_reconnectAttempt - 1, ReconnectCapsSec.Length - 1)];
             int waitMs = _rng.Next(0, capSec * 1000 + 1);
             // Dedupe: log every attempt for the first 5, then every 10th, so a
@@ -581,6 +582,19 @@ internal sealed class MeshClient : IAsyncDisposable
                     && urlEl.ValueKind == JsonValueKind.String)
                 {
                     resolvedUrl = urlEl.GetString();
+                }
+
+                // bytes_estimate is a v2 response field (server's stream-size
+                // estimate). Sum across resolves for the heartbeat line so
+                // the operator can see aggregate "stream-bytes" served. Only
+                // counted on `resolved` (fallback_native means og takes over
+                // and the bytes don't go through us).
+                if (action == WireConstants.ActionResolved
+                    && doc.RootElement.TryGetProperty("bytes_estimate", out var beEl)
+                    && beEl.ValueKind == JsonValueKind.Number
+                    && beEl.TryGetInt64(out long bytesEstimate))
+                {
+                    WatchdogStats.RecordBytesEstimate(bytesEstimate);
                 }
 
                 if (action == WireConstants.ActionFallbackNative)
