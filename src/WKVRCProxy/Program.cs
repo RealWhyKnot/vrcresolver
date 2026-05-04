@@ -156,8 +156,12 @@ internal static class Program
 
         string installDir = AppContext.BaseDirectory;
 
-        HostsManager.EnsureBypassEntryOrPrompt();
-
+        // Patch the Tools dir FIRST so VRChat sees the patched yt-dlp within
+        // ~200 ms of launch. The hosts entry only matters for public-instance
+        // support and the UAC prompt can sit unanswered for up to a minute —
+        // pushing it after patch engagement means the watchdog is fully
+        // operational before the user gets a chance to interact with the
+        // dialog.
         s_patcher = new PatchManager(installDir);
         s_patcher.RecoverFromUncleanShutdown();
 
@@ -174,6 +178,15 @@ internal static class Program
 
         Console.WriteLine("Patch applied. Watching for VRChat overwrites — Ctrl+C to quit.");
         Console.WriteLine("To uninstall, run WKVRCProxy.Uninstaller.exe (in the same folder).");
+
+        // Hosts entry (for public-instance support) on a background task so
+        // the UAC prompt doesn't gate the watchdog. Patching is already live
+        // at this point; the prompt + elevated child are advisory.
+        _ = Task.Run(() =>
+        {
+            try { HostsManager.EnsureBypassEntryOrPrompt(); }
+            catch (Exception ex) { Console.WriteLine("[hosts] background error: " + ex.Message); }
+        });
 
         s_quitSignal.Wait();
         Console.WriteLine("Shutting down…");
