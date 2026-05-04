@@ -25,6 +25,7 @@ The most recent release is at the top.
 - **ipc:** Logging hardening + fallback frame stays v1-shape (H13+H14+H21+BC2) (1cf83da)
 - **crash:** State-snapshot delegate enriches postmortem logs (H20) (a1a9b74)
 - **yt-dlp:** Restore patched yt-dlp wrapper as 5th project (R1) (586ef85)
+- Restore silent codec auto-install (R3) (58937d9)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
