@@ -40,8 +40,63 @@ internal sealed class PatchManager : IDisposable
     private long _patchedYtDlpSize;
     private string? _patchedYtDlpHash;
 
+    // Last decision the watchdog logged. Tick logging is state-change-gated
+    // so a sustained "no action" loop doesn't fill scrollback every 3 s.
+    // Distinct values mirror TickOutcome below.
+    private TickOutcome _lastTickOutcome = TickOutcome.None;
+
+    private enum TickOutcome { None, Match, Locked, Reapplied, ReapplyFailed, BackupCreated, InitialStaged }
+
     public string? VrcToolsDir => _vrcToolsDir;
     public bool Halted => _halted;
+
+    // One-shot startup status line. If VRChat is already running, the patch
+    // tick will defer the first-rename until VRChat releases its handle —
+    // this banner makes that explicit so the operator isn't confused by the
+    // delay. PID + start time printed for correlation with the per-tick
+    // "deferring" log lines that may follow.
+    public static void LogVrcProcessState()
+    {
+        try
+        {
+            var procs = System.Diagnostics.Process.GetProcessesByName("VRChat");
+            if (procs.Length == 0)
+            {
+                Console.WriteLine("[patch] VRChat not detected — patch will apply immediately.");
+                return;
+            }
+            // Pick the oldest (most likely the actual game; auxiliary tools
+            // sometimes spawn briefly-named "VRChat" helpers).
+            var primary = procs[0];
+            DateTime started = DateTime.MinValue;
+            foreach (var p in procs)
+            {
+                try
+                {
+                    if (started == DateTime.MinValue || p.StartTime < started)
+                    {
+                        started = p.StartTime;
+                        primary = p;
+                    }
+                }
+                catch { /* StartTime can throw on access-denied; fall through */ }
+            }
+            string startedStr;
+            try { startedStr = primary.StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); }
+            catch { startedStr = "<unknown>"; }
+            Console.WriteLine(
+                "[patch] VRChat is currently running (PID " + primary.Id +
+                ", started " + startedStr + ") — patch will apply when yt-dlp.exe isn't actively in use.");
+            foreach (var p in procs) try { p.Dispose(); } catch { /* best-effort */ }
+        }
+        catch (Exception ex)
+        {
+            // Process enumeration can fail in locked-down contexts (RDP
+            // session privileges, AV interference). Don't escalate; the
+            // 3-s tick loop's lock probe handles correctness regardless.
+            Console.WriteLine("[patch] could not enumerate VRChat processes: " + ex.GetType().Name + ": " + ex.Message);
+        }
+    }
 
     public PatchManager(string installDir)
     {
@@ -226,8 +281,20 @@ internal sealed class PatchManager : IDisposable
         {
             if (File.Exists(targetPath) && !TargetEqualsPatched(targetPath))
             {
+                // First-run rename. Gate on a FileShare.None probe so we
+                // don't try to rename yt-dlp.exe out from under a VRChat
+                // CreateProcess that's currently mapping its sections —
+                // that race could land VRChat with a half-loaded image
+                // and crash it. If the file is in use, defer one tick and
+                // retry on the next pass.
+                if (IsTargetInUse(targetPath))
+                {
+                    EmitTickStateChange(TickOutcome.Locked,
+                        "[patch] tick: yt-dlp.exe locked (VRChat may be mid-CreateProcess) — deferring backup creation");
+                    return;
+                }
                 try { File.Move(targetPath, backupPath); }
-                catch (IOException) { return; } // target locked — retry next tick
+                catch (IOException) { return; } // raced — retry next tick
             }
             else if (File.Exists(_bundledFallbackPath))
             {
@@ -262,11 +329,23 @@ internal sealed class PatchManager : IDisposable
 
         if (!File.Exists(targetPath))
         {
+            // Initial stage. Target doesn't exist (we just renamed it away,
+            // or it never existed). No active CreateProcess to race with on
+            // a non-existent path. Probe is defense-in-depth in case some
+            // other process is mid-write.
+            if (IsTargetInUse(targetPath))
+            {
+                EmitTickStateChange(TickOutcome.Locked,
+                    "[patch] tick: yt-dlp.exe locked at initial-stage — deferring");
+                return;
+            }
             try
             {
                 AtomicCopy(_patchedYtDlpPath, targetPath);
                 _lastPatchTime = DateTime.UtcNow;
                 _consecutiveLockFailures = 0;
+                EmitTickStateChange(TickOutcome.InitialStaged,
+                    "[patch] tick: wrapper installed at " + targetPath);
             }
             catch (IOException ex) { ReportLockFailure("initial-stage", ex); }
             return;
@@ -275,18 +354,74 @@ internal sealed class PatchManager : IDisposable
         if (TargetEqualsPatched(targetPath))
         {
             _consecutiveLockFailures = 0;
+            EmitTickStateChange(TickOutcome.Match, "[patch] tick: target matches patched, no action");
             return;
         }
         if ((DateTime.UtcNow - _lastPatchTime).TotalSeconds < MinReapplyGapSec) return;
+
+        // Re-apply path. VRChat (or its own auto-updater) overwrote our
+        // wrapper. Gate on the same lock-probe so we don't atomic-rename
+        // over a file VRChat is currently mid-loading.
+        if (IsTargetInUse(targetPath))
+        {
+            EmitTickStateChange(TickOutcome.Locked,
+                "[patch] tick: yt-dlp.exe locked (VRChat or yt-dlp running) — deferring re-apply");
+            return;
+        }
 
         try
         {
             AtomicCopy(_patchedYtDlpPath, targetPath);
             _lastPatchTime = DateTime.UtcNow;
             _consecutiveLockFailures = 0;
-            Console.WriteLine("[patch] yt-dlp.exe was overwritten — re-applied.");
+            EmitTickStateChange(TickOutcome.Reapplied,
+                "[patch] yt-dlp.exe was overwritten — re-applied.");
         }
-        catch (IOException ex) { ReportLockFailure("re-apply", ex); }
+        catch (IOException ex)
+        {
+            ReportLockFailure("re-apply", ex);
+            EmitTickStateChange(TickOutcome.ReapplyFailed,
+                "[patch] tick: re-apply failed (sharing violation) — retry next tick");
+        }
+    }
+
+    // Probe yt-dlp.exe with FileShare.None. If we acquire exclusive read,
+    // nobody else has it open and it's safe to swap. If we get a sharing
+    // violation, VRChat is either mid-CreateProcess (kernel mapping the
+    // PE sections into a child) or its own auto-updater has the file
+    // open for write. In either case, swapping NOW could corrupt VRChat's
+    // view of the binary and crash it. Defer.
+    //
+    // Missing-file / missing-dir → return false so the caller's normal
+    // File.Exists / IOException paths handle them. UnauthorizedAccess and
+    // other non-sharing-violation IOExceptions also fall through as "not
+    // in use" — we don't want to defer indefinitely on a permissions
+    // problem. The only "true" case is a sharing-violation IOException,
+    // which Windows raises with HRESULT 0x80070020 (ERROR_SHARING_VIOLATION).
+    internal static bool IsTargetInUse(string path)
+    {
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+            return false;
+        }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+        catch (IOException ex) when ((uint)ex.HResult == 0x80070020) { return true; }
+        catch (IOException) { return true; }
+        catch { return false; }
+    }
+
+    // Emit a tick decision line only when the outcome differs from the
+    // previous tick's. Sustained "no action" stretches stay quiet; the
+    // first lock / first re-apply / first match-after-mismatch each get
+    // exactly one log line, with state recovery transitions also logged.
+    private void EmitTickStateChange(TickOutcome outcome, string message)
+    {
+        if (_lastTickOutcome == outcome) return;
+        _lastTickOutcome = outcome;
+        Console.WriteLine(message);
     }
 
     // Track consecutive IOException ticks so a sustained AV-lock or
