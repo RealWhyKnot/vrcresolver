@@ -62,6 +62,31 @@ public static class CrashHandler
         };
     }
 
+    // Strip user-identifying tokens from text the user is likely to paste
+    // into a public bug report. Replaces the literal %USERPROFILE% value
+    // (typically C:\Users\<name>) and Environment.UserName with stable
+    // placeholders. The 3-char floor on UserName avoids replacing common
+    // 2-letter substrings.
+    private static string Redact(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        try
+        {
+            string? userProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+            if (!string.IsNullOrEmpty(userProfile))
+                s = s.Replace(userProfile, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { /* best-effort */ }
+        try
+        {
+            string userName = Environment.UserName;
+            if (userName.Length >= 3)
+                s = s.Replace(userName, "<user>", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { /* best-effort */ }
+        return s;
+    }
+
     private static void WriteCrashLog(string kind, Exception? ex, bool terminating)
     {
         if (_logDir == null) return;
@@ -83,7 +108,7 @@ public static class CrashHandler
                 w.WriteLine($"terminating:  {terminating}");
                 w.WriteLine($"pid:          {Environment.ProcessId}");
                 w.WriteLine($"version:      {Assembly.GetEntryAssembly()?.GetName().Version}");
-                w.WriteLine($"basedir:      {AppContext.BaseDirectory}");
+                w.WriteLine($"basedir:      {Redact(AppContext.BaseDirectory)}");
                 w.WriteLine($"os:           {Environment.OSVersion}");
 
                 // Caller-provided state snapshot, e.g. mesh/patch/pending-
@@ -94,12 +119,12 @@ public static class CrashHandler
                 {
                     w.WriteLine();
                     w.WriteLine("--- state snapshot ---");
-                    try { w.WriteLine(snapshot()); }
+                    try { w.WriteLine(Redact(snapshot())); }
                     catch (Exception sex) { w.WriteLine("(snapshot delegate threw: " + sex.GetType().Name + ": " + sex.Message + ")"); }
                 }
 
                 w.WriteLine();
-                w.WriteLine(ex?.ToString() ?? "(no exception object)");
+                w.WriteLine(Redact(ex?.ToString() ?? "(no exception object)"));
             }
             finally
             {
