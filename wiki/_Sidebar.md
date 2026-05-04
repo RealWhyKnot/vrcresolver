@@ -9,4 +9,5 @@
 - [Update and Uninstall](Update-and-Uninstall)
 - [Troubleshooting](Troubleshooting)
 - [Logs and Diagnostics](Logs-and-Diagnostics)
+- [Mesh Protocol](Mesh-Protocol)
 - [Changelog](Changelog)
