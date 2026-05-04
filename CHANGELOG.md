@@ -64,6 +64,7 @@ The most recent release is at the top.
 - **cleanup-invariant:** Wrapper log out of VRChat Tools dir (365d99c)
 - **patch:** File-lock probe + VRChat-running banner (crash mitigation) (3b7800e)
 - **integrity:** Relocate state to LocalLow + Low-integrity SACL on pipe (8173dc3)
+- **integrity:** Pipe label via P/Invoke; skip logs in migration (fa33565)
 
 ---
 
