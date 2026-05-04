@@ -16,8 +16,8 @@ Get WKVRCProxy resolving videos for VRChat in about 60 seconds.
 
 ## First launch
 
-1. **Run `WKVRCProxy.exe` before VRChat.** UAC prompts once to add `127.0.0.1 localhost.youtube.com` to your hosts file. This is load-bearing for public-instance support — declining it leaves private/friends instances working but breaks playback on URLs that aren't on AVPro's trusted-host allowlist in public worlds.
-2. The watchdog backs up VRChat's `yt-dlp.exe` to `yt-dlp-og.exe` and swaps in the patched build. Console prints `Patch applied. Watching for VRChat overwrites — Ctrl+C to quit.`
+1. **Run `WKVRCProxy.exe` before VRChat.** UAC prompts once to add `127.0.0.1 localhost.youtube.com` to your hosts file. This entry is the public-instance trust-list bypass mechanism (VRChat's AVPro allows `*.youtube.com` URLs unconditionally); declining the prompt leaves private/friends instances working but limits coverage in public worlds with "Allow Untrusted URLs" off. The watchdog re-checks the entry every minute and re-adds it if it disappears.
+2. The watchdog backs up VRChat's `yt-dlp.exe` to `yt-dlp-og.exe` and swaps in the patched build. **If VRChat is already running and holding `yt-dlp.exe`, the watchdog waits for VRChat to exit before applying the patch.** Console prints `Patch applied. Watching for VRChat overwrites — Ctrl+C to quit.`
 3. **Start VRChat.** Watch for `[mesh] connected` in the watchdog window. Play a video in-world.
 
 ## What you'll see
@@ -25,6 +25,23 @@ Get WKVRCProxy resolving videos for VRChat in about 60 seconds.
 - `[mesh] connected` / `[mesh] disconnected — <reason>` / `[mesh] reconnect attempt N in M s` — server connection state. Disconnects fall back to vanilla yt-dlp transparently; you don't have to do anything.
 - `[patch] yt-dlp.exe was overwritten — re-applied.` — VRChat replaced the patched file (usually during launch). The watchdog restores it within 3 seconds.
 - `yt-dlp-og.exe was missing — restored from bundled fallback (vNNN).` — the fallback was restored from the bundled vanilla build so the patched yt-dlp's server-down fallback path stays functional.
+- Per-resolve summary, two lines per video play, e.g.:
+  ```
+  [14:32:10]  -> youtube.com  (AVPro 1080p)
+  [14:32:13]     OK resolved  3.0s
+  ```
+  A `[via lh-yt]` tag on the first line indicates the URL came in via the `localhost.youtube.com` trust-list bypass.
+- `[hosts] tick: …` — the periodic hosts-entry verifier (silent unless state changes).
+- `[heartbeat] up=… mesh=connected resolves=N reconnects=N` — every 30 minutes when nothing else has logged recently. Confirmation the daemon is still alive on long sessions.
+
+## Where logs live
+
+`%LOCALAPPDATA%Low\WKVRCProxy\logs\` (rolling, 10 MiB cap, 7-day retention):
+
+- `watchdog-<utc>.log` — full watchdog output, one file per process start.
+- `yt-dlp-wrapper.log` — per-invocation trace from the patched yt-dlp wrapper.
+
+Crash dumps land at `%LOCALAPPDATA%Low\WKVRCProxy\crashes\crash-<component>-<utc>.log`. All paths are user-readable; safe to attach to bug reports (paths and usernames are redacted before write).
 
 ## When the watchdog isn't running
 

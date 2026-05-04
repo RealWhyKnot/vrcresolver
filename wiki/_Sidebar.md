@@ -8,4 +8,5 @@
 - [Engineering Standards](Engineering-Standards)
 - [Update and Uninstall](Update-and-Uninstall)
 - [Troubleshooting](Troubleshooting)
+- [Logs and Diagnostics](Logs-and-Diagnostics)
 - [Changelog](Changelog)
