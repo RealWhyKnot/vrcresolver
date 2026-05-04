@@ -19,6 +19,7 @@ internal static class Program
     private static MeshClient? s_mesh;
     private static PatchManager? s_patcher;
     private static VrcLogMonitor? s_logmon;
+    private static HostsTicker? s_hostsTicker;
     private static readonly ManualResetEventSlim s_quitSignal = new(false);
     private static volatile bool s_fastShutdown;
 
@@ -220,12 +221,18 @@ internal static class Program
 
         // Hosts entry (for public-instance support) on a background task so
         // the UAC prompt doesn't gate the watchdog. Patching is already live
-        // at this point; the prompt + elevated child are advisory.
+        // at this point; the prompt + elevated child are advisory. The
+        // periodic HostsTicker takes over after this initial add — re-checks
+        // every minute and re-adds if the entry disappears (manual edit, AV
+        // rewrite, etc.).
         _ = Task.Run(() =>
         {
             try { HostsManager.EnsureBypassEntryOrPrompt(); }
             catch (Exception ex) { Console.WriteLine("[hosts] background error: " + ex.Message); }
         });
+
+        s_hostsTicker = new HostsTicker();
+        s_hostsTicker.Start();
 
         // Best-effort GitHub releases check; prints one line if a newer
         // version exists so users running the watchdog see the upgrade
@@ -304,6 +311,16 @@ internal static class Program
         // shutdown to stay correct.
         if (!fast)
         {
+            if (s_hostsTicker != null)
+            {
+                try
+                {
+                    int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                    await WithTimeout(s_hostsTicker.StopAsync(), Math.Min(remain, 500), "hosts-ticker").ConfigureAwait(false);
+                }
+                catch (Exception ex) { Console.WriteLine("[shutdown] hosts-ticker: " + ex.Message); }
+            }
+
             if (s_logmon != null)
             {
                 try
