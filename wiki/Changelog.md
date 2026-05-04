@@ -30,6 +30,7 @@ The most recent release is at the top.
 - Buffered pipe reads + pre-baked WS frames + WS keepalive off (546172c)
 - Cache patched yt-dlp hash + size precheck (T1.2) (129d864)
 - ux: patch first, then UAC prompt fire-and-forget (T1.6) (677cb94)
+- ux: richer startup banner with key paths + OS/runtime (T2.6) (e243a70)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
