@@ -86,11 +86,32 @@ Copy-Item $YtDlpVerFile  (Join-Path $BuildTools "yt-dlp-og-fallback.version.txt"
 # Publish the patched yt-dlp wrapper directly into dist/tools/. AssemblyName=yt-dlp
 # in the project produces yt-dlp.exe; PatchManager copies this over VRChat's
 # Tools/yt-dlp.exe at runtime.
+#
+# AOT publish for the wrapper specifically (csproj sets PublishAot/PublishTrimmed
+# /TrimMode=full/InvariantGlobalization). Cuts the wrapper from ~79 MB to ~3 MB
+# and removes JIT cold-start cost — VRChat invokes this binary per video player
+# so size + startup directly impact in-game stutter on world load. The watchdog
+# stays on regular self-contained .NET 10 (one-shot launch; size doesn't matter).
+#
+# Drops PublishSingleFile (AOT incompatible — produces a single native .exe
+# inherently). Adds vswhere.exe to PATH for the link.exe lookup since MSBuild's
+# AOT target invokes vswhere unqualified — VS Build Tools install it at
+# %ProgramFiles(x86)%\Microsoft Visual Studio\Installer but don't put it on PATH.
+$ProgFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+$VsInstaller = Join-Path $ProgFilesX86 'Microsoft Visual Studio\Installer'
+if (Test-Path (Join-Path $VsInstaller 'vswhere.exe')) {
+    if ($env:PATH -notlike "*$VsInstaller*") { $env:PATH = "$VsInstaller;$env:PATH" }
+} else {
+    Write-Warning "vswhere.exe not found at $VsInstaller -- AOT link step may fail. Install Visual Studio Build Tools with the Desktop C++ workload."
+}
 $YtDlpPubArgs = @("-c","Release","-r","win-x64","--self-contained","true",
-                  "/p:PublishSingleFile=true","/p:Version=$AsmVersion",
+                  "/p:Version=$AsmVersion",
                   "-o",$BuildTools,"--nologo")
 dotnet publish "src/WKVRCProxy.YtDlp/WKVRCProxy.YtDlp.csproj" @YtDlpPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.YtDlp publish failed" }
+
+# AOT publish leaves a yt-dlp.pdb (~14 MB) we don't need to ship — the .pdb
+# strip below picks it up.
 
 # --- Trim debug symbols we don't ship ---
 Get-ChildItem $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
