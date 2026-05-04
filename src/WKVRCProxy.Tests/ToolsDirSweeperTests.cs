@@ -88,4 +88,22 @@ public class ToolsDirSweeperTests : IDisposable
 
         Assert.Empty(Directory.GetFiles(_tempDir));
     }
+
+    [Fact]
+    public void Sweep_deletes_legacy_yt_dlp_wrapper_log()
+    {
+        // Earlier wrapper builds wrote yt-dlp-wrapper.log into VRChat's
+        // Tools dir. Current code writes it under %LOCALAPPDATA%, but the
+        // sweeper must still scrub the literal residue for users updating
+        // from those builds.
+        Touch("yt-dlp-wrapper.log");
+        Touch("YT-DLP-WRAPPER.LOG");
+        Touch("yt-dlp-wrapper.log.bak"); // similar but not the literal — keep
+        Touch("yt-dlp.exe");
+
+        ToolsDirSweeper.Sweep(_tempDir);
+
+        var survivors = Directory.GetFiles(_tempDir).Select(Path.GetFileName).Order().ToArray();
+        Assert.Equal(new[] { "yt-dlp-wrapper.log.bak", "yt-dlp.exe" }, survivors);
+    }
 }
