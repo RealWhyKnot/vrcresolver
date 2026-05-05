@@ -210,10 +210,16 @@ internal sealed class ResolveCache
         SaveFile(snapshot);
     }
 
-    internal int CountForTest()
+    // Current in-memory entry count. Surfaced on the periodic Heartbeat
+    // line as "cache=N" so the operator can see how many resolves are
+    // serveable from disk without going to mesh.
+    public int Count
     {
-        EnsureLoaded();
-        lock (_lock) { return _state.Entries?.Count ?? 0; }
+        get
+        {
+            EnsureLoaded();
+            lock (_lock) { return _state.Entries?.Count ?? 0; }
+        }
     }
 
     private void EnsureLoaded()

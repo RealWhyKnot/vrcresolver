@@ -5,15 +5,21 @@ using WKVRCProxy.Shared;
 namespace WKVRCProxy;
 
 // Periodic "still alive" line in the watchdog console. Fires every 30
-// minutes IF nothing else has logged in the last 5 minutes — silence is
-// preferred over noise on a busy console. Format:
+// minutes IF nothing else has logged in the last 5 minutes -- silence
+// is preferred over noise on a busy console. Format:
 //
-//   [heartbeat] up=2h13m mesh=connected resolves=47 (3 via lh-yt) stream-bytes=1.2 GB reconnects=0
+//   [heartbeat] up=2h13m mesh=connected resolves=47 (3 via lh-yt) stream-bytes=1.2 GB cache=18(11hits) reconnects=2
 //
-// Useful when the user alt-tabs back to the watchdog console after a long
-// session and wants confidence that it's still running and connected. The
-// stats also help future bug reports — "resolves=0 reconnects=12" tells a
-// very different story than "resolves=200 reconnects=0".
+// Conditional fields: `resolves`, `reconnects`, and the `cache=N(Mhits)`
+// suffix are dropped when their value is zero -- a quiet idle session
+// just shows `[heartbeat] up=2h13m mesh=connected`. Drop-when-zero
+// avoids noise; non-zero values surface load-bearing reliability info.
+//
+// Useful when the user alt-tabs back to the watchdog console after a
+// long session and wants confidence that it's still running and
+// connected. The stats also help future bug reports -- "resolves=0
+// reconnects=12" tells a very different story than "resolves=200
+// reconnects=0".
 [SupportedOSPlatform("windows")]
 internal sealed class Heartbeat : IDisposable
 {
@@ -21,12 +27,14 @@ internal sealed class Heartbeat : IDisposable
     private static readonly TimeSpan QuietWindow = TimeSpan.FromMinutes(5);
 
     private readonly MeshClient _mesh;
+    private readonly ResolveCache? _cache;
     private readonly CancellationTokenSource _cts = new();
     private Task? _runner;
 
-    public Heartbeat(MeshClient mesh)
+    public Heartbeat(MeshClient mesh, ResolveCache? cache = null)
     {
         _mesh = mesh;
+        _cache = cache;
     }
 
     public void Start()
@@ -70,18 +78,27 @@ internal sealed class Heartbeat : IDisposable
         TimeSpan up = DateTime.UtcNow - WatchdogStats.StartUtc;
         long resolves = WatchdogStats.ResolvesTotal;
         long lhYt = WatchdogStats.ResolvesViaLhYt;
+        long cacheHits = WatchdogStats.ResolvesCacheHits;
         long bytes = WatchdogStats.BytesEstimateTotal;
         long reconnects = WatchdogStats.ReconnectCount;
+        int cacheSize = _cache?.Count ?? 0;
 
         string meshState = _mesh.IsConnected ? "connected" : "disconnected";
 
         var sb = new System.Text.StringBuilder();
         sb.Append("[heartbeat] up=").Append(FormatUptime(up));
         sb.Append(" mesh=").Append(meshState);
-        sb.Append(" resolves=").Append(resolves);
-        if (lhYt > 0) sb.Append(" (").Append(lhYt).Append(" via lh-yt)");
+        // Drop-when-zero conditional fields. Quiet idle sessions show
+        // just "[heartbeat] up=2h13m mesh=connected".
+        if (resolves > 0)
+        {
+            sb.Append(" resolves=").Append(resolves);
+            if (lhYt > 0) sb.Append(" (").Append(lhYt).Append(" via lh-yt)");
+        }
         if (bytes > 0) sb.Append(" stream-bytes=").Append(FormatBytes(bytes));
-        sb.Append(" reconnects=").Append(reconnects);
+        if (cacheSize > 0 || cacheHits > 0)
+            sb.Append(" cache=").Append(cacheSize).Append('(').Append(cacheHits).Append("hits)");
+        if (reconnects > 0) sb.Append(" reconnects=").Append(reconnects);
 
         Console.WriteLine(sb.ToString());
     }

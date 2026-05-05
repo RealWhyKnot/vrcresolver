@@ -62,6 +62,22 @@ public static class WireConstants
     public const string PlaybackFeedbackLoadFailure = "load_failure";
     public const string PlaybackFeedbackSilentStall = "silent_stall";
 
+    // v3.2: wrapper -> watchdog one-shot notification. The patched yt-dlp
+    // wrapper sends one of these on a fresh pipe connection just before
+    // it execs vanilla yt-dlp-og.exe (or emits empty stdout if og is
+    // missing). Fire-and-forget on the wrapper side; the watchdog reads
+    // it, emits a single console line, and writes nothing back. Reasons
+    // mirror the wrapper's outcome vocabulary so the operator sees the
+    // same labels in the watchdog console that appear in
+    // yt-dlp-wrapper.log. NOT routed through the mesh -- this is a
+    // local-only diagnostic channel.
+    public const string ActionOgFallbackNotify = "og_fallback_notify";
+
+    public const string OgFallbackReasonPipeConnectFailed = "pipe_connect_failed";
+    public const string OgFallbackReasonPipeResolveFailed = "pipe_resolve_failed";
+    public const string OgFallbackReasonServerFallbackNative = "server_fallback_native";
+    public const string OgFallbackReasonNoUrlDiagnostic = "no_url_diagnostic";
+
     // v2 field names (snake_case, mirror server constants verbatim)
     public const string FieldProtocolVersion = "protocol_version";
     public const string FieldAcceptProtocols = "accept_protocols";
@@ -295,4 +311,25 @@ public sealed class PlaybackFeedbackFrame
     [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
     [JsonPropertyName("correlation_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CorrelationId { get; set; }
+}
+
+// Wrapper -> watchdog one-shot notification frame, sent on a fresh pipe
+// connection just before the wrapper execs vanilla yt-dlp-og.exe (or
+// emits empty stdout if og is missing). Fire-and-forget: the wrapper
+// closes the pipe immediately after sending and does not wait for an
+// ack. The watchdog reads it, emits a single console line surfacing the
+// fallback to the operator, and writes nothing back.
+//
+// NOT routed through the mesh -- this is local-only diagnostic visibility
+// so the user can tell at a glance when a resolve flopped over to og.
+// The wrapper's own yt-dlp-wrapper.log carries the full breadcrumb;
+// this DTO is the bridge that makes the same fact visible on the
+// watchdog console.
+public sealed class WrapperEventNotify
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionOgFallbackNotify;
+    [JsonPropertyName("url")] public string? Url { get; set; }
+    [JsonPropertyName("reason")] public string? Reason { get; set; }
+    [JsonPropertyName("elapsed_ms")] public long ElapsedMs { get; set; }
+    [JsonPropertyName("rid")] public string? Rid { get; set; }
 }

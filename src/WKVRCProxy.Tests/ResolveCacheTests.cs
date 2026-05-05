@@ -115,7 +115,7 @@ public class ResolveCacheTests : IDisposable
         };
         cache.Store("node1.whyknot.dev", "https://www.youtube.com/watch?v=x", "avpro", null, resp);
 
-        Assert.Equal(0, cache.CountForTest());
+        Assert.Equal(0, cache.Count);
     }
 
     [Fact]
@@ -130,7 +130,7 @@ public class ResolveCacheTests : IDisposable
         string? effective = cache.Store("node1.whyknot.dev", "https://www.youtube.com/watch?v=x", "avpro", null, resp);
 
         Assert.NotNull(effective);
-        Assert.Equal(1, cache.CountForTest());
+        Assert.Equal(1, cache.Count);
 
         // Cache hit confirms the entry is queryable.
         var hit = cache.Lookup("node1.whyknot.dev", "https://www.youtube.com/watch?v=x", "avpro", null, "r");
@@ -149,13 +149,13 @@ public class ResolveCacheTests : IDisposable
         // Even easier: rely on the 30s safety margin. Set expiry only 5s in the future.
         resp.ExpiresAt = DateTime.UtcNow.AddSeconds(5).ToString("o");
         cache.Store("node1.whyknot.dev", "https://www.youtube.com/watch?v=x", "avpro", null, resp);
-        Assert.Equal(1, cache.CountForTest());
+        Assert.Equal(1, cache.Count);
 
         // 5s < 30s safety margin -> treated as expired by Lookup.
         Assert.Null(cache.Lookup("node1.whyknot.dev", "https://www.youtube.com/watch?v=x", "avpro", null, "r"));
 
         // And evicted lazily on the same lookup pass.
-        Assert.Equal(0, cache.CountForTest());
+        Assert.Equal(0, cache.Count);
     }
 
     [Fact]
@@ -169,11 +169,11 @@ public class ResolveCacheTests : IDisposable
         cache.Store("node1.whyknot.dev", url, "avpro", "fmt-B", MakeResolved(url, future));
         cache.Store("node1.whyknot.dev", url, "unity", null, MakeResolved(url, future));
         cache.Store("node1.whyknot.dev", "https://other.example.com/x", "avpro", null, MakeResolved("other", future));
-        Assert.Equal(4, cache.CountForTest());
+        Assert.Equal(4, cache.Count);
 
         int evicted = cache.EvictByUrl(url);
         Assert.Equal(3, evicted);
-        Assert.Equal(1, cache.CountForTest());
+        Assert.Equal(1, cache.Count);
 
         Assert.Null(cache.Lookup("node1.whyknot.dev", url, "avpro", "fmt-A", "r"));
         Assert.Null(cache.Lookup("node1.whyknot.dev", url, "avpro", "fmt-B", "r"));
@@ -197,7 +197,7 @@ public class ResolveCacheTests : IDisposable
             // deterministic.
             System.Threading.Thread.Sleep(1);
         }
-        Assert.Equal(500, cache.CountForTest());
+        Assert.Equal(500, cache.Count);
 
         // Oldest two (i=0 and i=1) should be gone; newest (i=501) should be present.
         Assert.Null(cache.Lookup("node1.whyknot.dev", "https://example.com/v=0", "avpro", null, "r"));
@@ -235,7 +235,7 @@ public class ResolveCacheTests : IDisposable
         File.WriteAllText(_path, handCrafted);
 
         var cache = new ResolveCache(_path);
-        Assert.Equal(1, cache.CountForTest());
+        Assert.Equal(1, cache.Count);
     }
 
     [Fact]
@@ -243,7 +243,7 @@ public class ResolveCacheTests : IDisposable
     {
         File.WriteAllText(_path, "this is not json{[}");
         var cache = new ResolveCache(_path);
-        Assert.Equal(0, cache.CountForTest());
+        Assert.Equal(0, cache.Count);
         // And still functional after a corrupt load.
         var resp = MakeResolved("https://www.youtube.com/watch?v=x", DateTime.UtcNow.AddHours(1).ToString("o"));
         cache.Store("node1.whyknot.dev", "https://www.youtube.com/watch?v=x", "avpro", null, resp);
@@ -257,7 +257,7 @@ public class ResolveCacheTests : IDisposable
         File.WriteAllBytes(_path, new byte[ResolveCache.MaxCacheFileBytes + 1]);
 
         var cache = new ResolveCache(_path);
-        Assert.Equal(0, cache.CountForTest());
+        Assert.Equal(0, cache.Count);
 
         // Original path is gone (renamed aside); new launch is free to write.
         Assert.False(File.Exists(_path));

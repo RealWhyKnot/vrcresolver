@@ -95,7 +95,7 @@ internal static class Program
             try { mutex = new System.Threading.Mutex(false, MutexName, out _); }
             catch (UnauthorizedAccessException)
             {
-                Console.WriteLine("[warn] could not create global mutex (locked-down session?) — using session-local mutex.");
+                Console.WriteLine("[warn] could not create global mutex (locked-down session?) -- using session-local mutex.");
                 mutex = new System.Threading.Mutex(false, "Local\\WKVRCProxy.Watchdog", out _);
             }
             catch (Exception ex)
@@ -176,7 +176,7 @@ internal static class Program
         string stateDir = WkvrcPaths.StateRoot();
         string vrcToolsDir = VrcPathLocator.Find() ?? "<not found — launch VRChat once>";
 
-        Console.WriteLine($"WKVRCProxy {version}");
+        Console.WriteLine($"WKVRCProxy {version} (sha {BuildInfo.GitSha}, built {BuildInfo.BuildTime})");
         Console.WriteLine($"  install:   {installDir}");
         Console.WriteLine($"  vrc tools: {vrcToolsDir}");
         Console.WriteLine($"  state:     {stateDir}");
@@ -225,7 +225,7 @@ internal static class Program
             return 2;
         }
 
-        Console.WriteLine("Patch applied. Watching for VRChat overwrites — Ctrl+C to quit.");
+        Console.WriteLine("Patch applied. Watching for VRChat overwrites -- Ctrl+C to quit.");
         Console.WriteLine("To uninstall, run WKVRCProxy.Uninstaller.exe (in the same folder).");
 
         // Hosts entry (for public-instance support) on a background task so
@@ -237,7 +237,7 @@ internal static class Program
         _ = Task.Run(() =>
         {
             try { HostsManager.EnsureBypassEntryOrPrompt(); }
-            catch (Exception ex) { Console.WriteLine("[hosts] background error: " + ex.Message); }
+            catch (Exception ex) { Console.WriteLine("[hosts][warn] background error: " + ex.Message); }
         });
 
         s_hostsTicker = new HostsTicker();
@@ -246,7 +246,7 @@ internal static class Program
         // Periodic "still alive" line + aggregate stats (resolves, lh-yt
         // count, stream bytes, reconnects). Suppresses itself when other
         // logging is active so it doesn't spam a busy console.
-        s_heartbeat = new Heartbeat(s_mesh);
+        s_heartbeat = new Heartbeat(s_mesh, s_resolveCache);
         s_heartbeat.Start();
 
         // Best-effort GitHub releases check; prints one line if a newer
@@ -265,7 +265,7 @@ internal static class Program
         YtDlpUpdater.StartBackgroundCheck();
 
         s_quitSignal.Wait();
-        Console.WriteLine("Shutting down…");
+        Console.WriteLine("Shutting down...");
 
         RunShutdown().GetAwaiter().GetResult();
         return 0;
@@ -317,7 +317,7 @@ internal static class Program
         {
             using var cts = new CancellationTokenSource(ms);
             var done = await Task.WhenAny(t, Task.Delay(Timeout.Infinite, cts.Token)).ConfigureAwait(false);
-            if (done != t) Console.WriteLine("[shutdown] " + step + " exceeded budget — moving on");
+            if (done != t) Console.WriteLine("[shutdown][warn] " + step + " exceeded budget -- moving on");
         }
 
         // Skip ipc + mesh + logmon on the fast path so the patcher restore
@@ -333,7 +333,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_heartbeat.StopAsync(), Math.Min(remain, 500), "heartbeat").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown] heartbeat: " + ex.Message); }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] heartbeat: " + ex.Message); }
             }
 
             if (s_hostsTicker != null)
@@ -343,7 +343,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_hostsTicker.StopAsync(), Math.Min(remain, 500), "hosts-ticker").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown] hosts-ticker: " + ex.Message); }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] hosts-ticker: " + ex.Message); }
             }
 
             if (s_logmon != null)
@@ -353,7 +353,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_logmon.StopAsync(), Math.Min(remain, 1000), "logmon").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown] logmon: " + ex.Message); }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] logmon: " + ex.Message); }
             }
 
             if (s_ipc != null)
@@ -363,7 +363,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_ipc.StopAsync(), Math.Min(remain, 3000), "ipc").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown] ipc: " + ex.Message); }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] ipc: " + ex.Message); }
             }
 
             if (s_mesh != null)
@@ -373,7 +373,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_mesh.StopAsync(), Math.Min(remain, 3000), "mesh").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown] mesh: " + ex.Message); }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] mesh: " + ex.Message); }
             }
 
             // Flush the resolve cache last so any debounced writes from
@@ -383,7 +383,7 @@ internal static class Program
             if (s_resolveCache != null)
             {
                 try { s_resolveCache.FlushNow(); }
-                catch (Exception ex) { Console.WriteLine("[shutdown] resolve-cache: " + ex.Message); }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] resolve-cache: " + ex.Message); }
             }
         }
 
@@ -395,7 +395,7 @@ internal static class Program
                 int patcherBudget = fast ? Math.Max(remain, 3000) : Math.Min(remain, 5000);
                 await WithTimeout(s_patcher.StopAsync(), patcherBudget, "patcher").ConfigureAwait(false);
             }
-            catch (Exception ex) { Console.WriteLine("[shutdown] patcher: " + ex.Message); }
+            catch (Exception ex) { Console.WriteLine("[shutdown][warn] patcher: " + ex.Message); }
         }
     }
 
