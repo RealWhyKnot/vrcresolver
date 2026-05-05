@@ -37,6 +37,7 @@ The most recent release is at the top.
 - **mesh:** V3.1 msgpack hot-path decoder (7ccf4c6)
 - **protocol:** V3.1 client_hello.accept_formats + welcome.negotiated_format (85878b7)
 - **resolve-cache:** Per-(url,player,format,node) disk cache for hot resolves (3e6f0c6)
+- **relay:** Plan 1 phase 1 -- localhost.youtube.com HTTP trust gateway (b27772f)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
