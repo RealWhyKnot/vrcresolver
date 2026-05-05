@@ -28,13 +28,12 @@ namespace WKVRCProxy;
 // A `Loading failed` (whether correlated or not) cancels the stall
 // watchdog so we don't double-report. A success marker cancels too.
 [SupportedOSPlatform("windows")]
-internal sealed class VrcLogMonitor : IDisposable
+internal sealed partial class VrcLogMonitor : IDisposable
 {
     private static readonly TimeSpan AvProOpenFailCorrelationWindow = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan SilentStallWindow = TimeSpan.FromSeconds(12);
-    private static readonly Regex AvProOpeningRegex = new(
-        @"\[AVProVideo\] Opening\s+(\S+)",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    [GeneratedRegex(@"\[AVProVideo\] Opening\s+(\S+)", RegexOptions.IgnoreCase)]
+    private static partial Regex AvProOpeningRegex();
 
     private readonly MeshClient _mesh;
     private readonly CancellationTokenSource _cts = new();
@@ -147,7 +146,7 @@ internal sealed class VrcLogMonitor : IDisposable
             string line = rawLine.Trim();
             if (string.IsNullOrEmpty(line)) continue;
 
-            var openingMatch = AvProOpeningRegex.Match(line);
+            var openingMatch = AvProOpeningRegex().Match(line);
             if (openingMatch.Success)
             {
                 string opened = openingMatch.Groups[1].Value;

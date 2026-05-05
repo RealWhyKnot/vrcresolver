@@ -34,7 +34,7 @@ namespace WKVRCProxy;
 // than dropping the connection, so the patched yt-dlp.exe always gets a
 // definitive answer it can act on.
 [SupportedOSPlatform("windows")]
-internal sealed class LocalIpcServer : IDisposable
+internal sealed partial class LocalIpcServer : IDisposable
 {
     // Per-request budget. Sized so the server has room to escalate from
     // its standard tier (yt-dlp:youtube-tv-combo, ~3-8 s) to a heavier
@@ -561,7 +561,8 @@ internal sealed class LocalIpcServer : IDisposable
         return "?";
     }
 
-    private static readonly Regex HeightCapRegex = new(@"height<=(\d+)", RegexOptions.Compiled);
+    [GeneratedRegex(@"height<=(\d+)")]
+    private static partial Regex HeightCapRegex();
 
     // Player + target resolution label for the request line. The wrapper
     // doesn't populate maxHeight today (the constraint lives in the
@@ -575,7 +576,7 @@ internal sealed class LocalIpcServer : IDisposable
             return player + " " + mh + "p";
         if (!string.IsNullOrEmpty(req.VrchatFormatArg))
         {
-            var m = HeightCapRegex.Match(req.VrchatFormatArg);
+            var m = HeightCapRegex().Match(req.VrchatFormatArg);
             if (m.Success) return player + " " + m.Groups[1].Value + "p";
         }
         return player + " max";

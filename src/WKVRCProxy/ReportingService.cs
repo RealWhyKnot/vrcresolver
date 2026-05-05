@@ -31,7 +31,7 @@ namespace WKVRCProxy;
 //
 // Opt-in: set WKVRCPROXY_ANONYMOUS_REPORTING=1 at process launch.
 // Default OFF.
-internal static class ReportingService
+internal static partial class ReportingService
 {
     private const string Endpoint = "https://whyknot.dev/api/report";
     private static readonly TimeSpan MinInterval = TimeSpan.FromSeconds(30);
@@ -163,12 +163,12 @@ internal static class ReportingService
         catch { return ""; }
     }
 
-    private static readonly Regex YouTubeIdRegex =
-        new(@"(?:v=|/embed/|/v/|/live/|youtu\.be/)([A-Za-z0-9_-]{11})", RegexOptions.Compiled);
+    [GeneratedRegex(@"(?:v=|/embed/|/v/|/live/|youtu\.be/)([A-Za-z0-9_-]{11})")]
+    private static partial Regex YouTubeIdRegex();
 
     private static string? ExtractYouTubeVideoId(string url)
     {
-        var m = YouTubeIdRegex.Match(url);
+        var m = YouTubeIdRegex().Match(url);
         return m.Success ? m.Groups[1].Value : null;
     }
 
@@ -192,10 +192,14 @@ internal static class ReportingService
     // string before it's sent. The server rejects on a leak-pattern hit
     // anyway; this is the client-side first pass so we don't waste
     // round-trips on rejected payloads.
-    private static readonly Regex Ipv4 = new(@"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", RegexOptions.Compiled);
-    private static readonly Regex WindowsPath = new(@"[A-Za-z]:\\[^\s""]+", RegexOptions.Compiled);
-    private static readonly Regex UnixPath = new(@"/(?:home|Users|root)/[^\s""]+", RegexOptions.Compiled);
-    private static readonly Regex LongToken = new(@"[A-Za-z0-9+/=_\-]{20,}", RegexOptions.Compiled);
+    [GeneratedRegex(@"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")]
+    private static partial Regex Ipv4();
+    [GeneratedRegex(@"[A-Za-z]:\\[^\s""]+")]
+    private static partial Regex WindowsPath();
+    [GeneratedRegex(@"/(?:home|Users|root)/[^\s""]+")]
+    private static partial Regex UnixPath();
+    [GeneratedRegex(@"[A-Za-z0-9+/=_\-]{20,}")]
+    private static partial Regex LongToken();
 
     public static string Sanitize(string s, string? originalUrl = null)
     {
@@ -218,10 +222,10 @@ internal static class ReportingService
             s = s.Replace(originalUrl, "<url>", StringComparison.OrdinalIgnoreCase);
         try { s = Environment.MachineName is { Length: > 0 } mn ? s.Replace(mn, "<machine>", StringComparison.OrdinalIgnoreCase) : s; }
         catch { /* best-effort */ }
-        s = WindowsPath.Replace(s, "<path>");
-        s = UnixPath.Replace(s, "<path>");
-        s = Ipv4.Replace(s, "<ip>");
-        s = LongToken.Replace(s, "<token>");
+        s = WindowsPath().Replace(s, "<path>");
+        s = UnixPath().Replace(s, "<path>");
+        s = Ipv4().Replace(s, "<ip>");
+        s = LongToken().Replace(s, "<token>");
         return s;
     }
 
