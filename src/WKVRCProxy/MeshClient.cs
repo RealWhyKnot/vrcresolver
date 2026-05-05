@@ -873,6 +873,43 @@ internal sealed class MeshClient : IAsyncDisposable
                     " " + LogUtil.SanitizeForConsole(mp.Message ?? "", 240));
                 return;
             }
+            // Defense-in-depth (2026-05-05 incident): per the v3.1 spec, control
+            // frames (pong / protocol_error / rate_limited) ALWAYS go as JSON-Text,
+            // but a server-side regression at commit 2c4b432 (since fixed) routed
+            // pong through SendTo<T>, sending it as msgpack-Binary on negotiated
+            // connections. The client's binary dispatch had only the three
+            // hot-path actions and default-discarded pong -- _lastPongUtc never
+            // advanced, heartbeat watchdog aborted the WS at every PongDeadline,
+            // and the user got a ~55 s reconnect storm for hours.
+            //
+            // Now we tolerate control actions on either path so a future server
+            // regression can't reproduce the storm. We don't bother decoding the
+            // body (pong has no payload; protocol_error/rate_limited have fields
+            // but no DTOs over here for the binary shape -- their content stays
+            // file-only diagnostic).
+            case WireConstants.ActionPong:
+                _lastPongUtc = DateTime.UtcNow;
+                Logger.WriteFileOnly("[mesh] pong received via binary path (server should send as Text per v3.1 spec)");
+                return;
+            case WireConstants.ActionPing:
+            {
+                Logger.WriteFileOnly("[mesh] ping received via binary path (server should send as Text per v3.1 spec)");
+                try
+                {
+                    var pongWs = _ws;
+                    if (pongWs is { State: WebSocketState.Open })
+                    {
+                        await pongWs.SendAsync(PongFrame, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                    }
+                }
+                catch { /* heartbeat will catch dead socket */ }
+                return;
+            }
+            case "protocol_error":
+            case "rate_limited":
+                Console.WriteLine("[mesh][warn] " + action + " received via binary path "
+                    + "(server should send as Text per v3.1 spec)");
+                return;
             default:
                 Console.WriteLine("[mesh][warn] unknown binary action -- discarding: "
                     + LogUtil.SanitizeForConsole(action, 64));
