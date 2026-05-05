@@ -34,6 +34,8 @@ The most recent release is at the top.
 - **logger:** Tee Console.Error too; expose Logger.Close() (4aeac2e)
 - **mesh:** V3 client_hello + welcome_cached handshake (c3ecf12)
 - **protocol:** V3 wire DTOs + WelcomeCache + MeshJsonContext (fbad93c)
+- **mesh:** V3.1 msgpack hot-path decoder (7ccf4c6)
+- **protocol:** V3.1 client_hello.accept_formats + welcome.negotiated_format (85878b7)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
