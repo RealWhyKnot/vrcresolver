@@ -36,6 +36,7 @@ The most recent release is at the top.
 - **protocol:** V3 wire DTOs + WelcomeCache + MeshJsonContext (fbad93c)
 - **mesh:** V3.1 msgpack hot-path decoder (7ccf4c6)
 - **protocol:** V3.1 client_hello.accept_formats + welcome.negotiated_format (85878b7)
+- **resolve-cache:** Per-(url,player,format,node) disk cache for hot resolves (3e6f0c6)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
