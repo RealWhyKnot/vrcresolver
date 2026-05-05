@@ -35,6 +35,32 @@ Per-node keying: apex-302 routes between node1 and node2, and their welcome cont
 
 Atomic write via `<file>.new` → `File.Move(overwrite:true)`. A crash mid-write leaves either the old or new file intact, never half-written.
 
+## What v3.1 added (current)
+
+**Asymmetric format negotiation.** Client → server stays JSON over WebSocket Text frames; server → client *post-welcome* picks JSON-Text or MessagePack-Binary based on what the client offered. Control frames (welcome / welcome_cached / client_hello) stay JSON either way for debuggability + first-byte simplicity.
+
+The choice rides on the existing `client_hello` frame:
+
+```
+client → server (FIRST FRAME, JSON-Text):
+  {
+    "action": "client_hello",
+    "welcome_hash": "<cached or null>",
+    "client_id": "<persistent guid>",
+    "accept_formats": ["msgpack", "json"]   ← v3.1 NEW (preference-ordered)
+  }
+
+server → client (welcome, JSON-Text):
+  {
+    "action": "welcome", ...,
+    "negotiated_format": "msgpack"          ← v3.1 NEW. "json" or "msgpack".
+  }
+```
+
+Server picks the first format from `accept_formats` it supports. Older servers (v2 / v3.0) ignore the unknown field and the response defaults to `json` — universal fallback baseline. Choice is fixed for the connection's lifetime; no per-frame negotiation.
+
+After the welcome, the **hot path** (`resolved` / `fallback_native` / `resolve_log`) arrives as MessagePack Binary frames when the server picked msgpack. Wire savings measured live: 60-72% smaller than JSON, ~67% faster to decode. Wrapper still receives JSON over the local pipe — the watchdog transcodes msgpack → JSON before the pipe write so the wrapper stays simple and small.
+
 ## Backward compat (v2 fallback)
 
 When the server doesn't accept `whyknot-v3`:

@@ -21,6 +21,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- v3.1 hot-path msgpack decoder. Watchdog-only — the wrapper stays
+         JSON-on-the-pipe so it doesn't pull this dependency. Default
+         MessagePackSerializer.Deserialize<T> works fine in JIT (the
+         watchdog is regular self-contained, not AOT'd); first
+         deserialize per type pays a one-time ~5-20 ms IL emit cost,
+         then cached. Source-gen (MessagePackAnalyzer) is deferred —
+         see project_v3_1_msgpack_client.md for revisit triggers. -->
+    <PackageReference Include="MessagePack" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="WKVRCProxy.Tests" />
   </ItemGroup>
 
