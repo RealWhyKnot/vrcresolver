@@ -59,6 +59,7 @@ The most recent release is at the top.
 - Persist client_id across runs + clarify v3 stamping comments (475ba2a)
 - harden(state): cap state-file reads + clean tmp residue + clarify deflate trust (13e308b)
 - **regex:** GeneratedRegex source-gen across watchdog (92ece39)
+- **json:** Route every JsonSerializer site through source-gen contexts (e6f5df5)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
