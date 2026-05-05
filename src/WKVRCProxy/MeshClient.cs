@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Text.Json;
+using MessagePack;
+using MessagePack.Resolvers;
 using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
@@ -57,6 +59,22 @@ internal sealed class MeshClient : IAsyncDisposable
     // wire-protocol tests).
     private static readonly byte[] PingFrame = "{\"action\":\"ping\"}"u8.ToArray();
     private static readonly byte[] PongFrame = "{\"action\":\"pong\"}"u8.ToArray();
+
+    // AOT-clean MessagePack options. CompositeResolver chains the
+    // source-gen resolver (knows our [MessagePackObject] types) and
+    // BuiltinResolver (knows primitives + System.String etc.). NOT
+    // StandardResolver: its static reference to DynamicObjectResolver +
+    // DynamicGenericResolver pulls Reflection.Emit code paths that
+    // throw PlatformNotSupportedException under AOT.
+    //
+    // Probe-validated end-to-end: see project_v3_1_msgpack_client.md.
+    // Cached static so each Deserialize call in DispatchBinaryFrameAsync
+    // doesn't reconstruct the resolver chain.
+    private static readonly MessagePackSerializerOptions s_msgpackOpts =
+        MessagePackSerializerOptions.Standard.WithResolver(
+            CompositeResolver.Create(
+                MeshMsgpackResolver.Instance,
+                BuiltinResolver.Instance));
 
     private readonly string _userAgent;
     private readonly HttpClient _httpClient;
@@ -753,7 +771,7 @@ internal sealed class MeshClient : IAsyncDisposable
             case WireConstants.ActionResolved:
             {
                 MsgpackResolvedFrame? mp;
-                try { mp = MessagePack.MessagePackSerializer.Deserialize<MsgpackResolvedFrame>(payload); }
+                try { mp = MessagePackSerializer.Deserialize<MsgpackResolvedFrame>(payload, s_msgpackOpts); }
                 catch (Exception ex)
                 {
                     LogBinaryParseFailure("resolved deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
@@ -803,7 +821,7 @@ internal sealed class MeshClient : IAsyncDisposable
             case WireConstants.ActionFallbackNative:
             {
                 MsgpackFallbackNativeFrame? mp;
-                try { mp = MessagePack.MessagePackSerializer.Deserialize<MsgpackFallbackNativeFrame>(payload); }
+                try { mp = MessagePackSerializer.Deserialize<MsgpackFallbackNativeFrame>(payload, s_msgpackOpts); }
                 catch (Exception ex)
                 {
                     LogBinaryParseFailure("fallback_native deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
@@ -831,7 +849,7 @@ internal sealed class MeshClient : IAsyncDisposable
             case WireConstants.ActionResolveLog:
             {
                 MsgpackResolveLogFrame? mp;
-                try { mp = MessagePack.MessagePackSerializer.Deserialize<MsgpackResolveLogFrame>(payload); }
+                try { mp = MessagePackSerializer.Deserialize<MsgpackResolveLogFrame>(payload, s_msgpackOpts); }
                 catch (Exception ex)
                 {
                     LogBinaryParseFailure("resolve_log deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);

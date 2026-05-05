@@ -90,13 +90,14 @@ if (Test-Path (Join-Path $VsInstaller 'vswhere.exe')) {
     Write-Warning "vswhere.exe not found at $VsInstaller -- AOT link step may fail. Install Visual Studio Build Tools with the Desktop C++ workload."
 }
 
-$WatchdogPubArgs = @("-c","Release","-r","win-x64","--self-contained","true",
-                     "/p:PublishSingleFile=true","/p:Version=$AsmVersion",
-                     "-o",$BuildDir,"--nologo")
+# All four watchdog/Updater/Uninstaller/YtDlp now AOT-publish. The
+# WatchdogPubArgs profile (single-file, R2R, JIT) is no longer used --
+# AOT produces a single native exe inherently and PublishSingleFile is
+# incompatible with PublishAot. Same $AotPubArgs for all of them.
 $AotPubArgs      = @("-c","Release","-r","win-x64","--self-contained","true",
                      "/p:Version=$AsmVersion",
                      "-o",$BuildDir,"--nologo")
-dotnet publish "src/WKVRCProxy/WKVRCProxy.csproj" @WatchdogPubArgs
+dotnet publish "src/WKVRCProxy/WKVRCProxy.csproj" @AotPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy publish failed" }
 dotnet publish "src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" @AotPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Updater publish failed" }
