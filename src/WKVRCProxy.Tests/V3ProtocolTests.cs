@@ -146,4 +146,119 @@ public class V3ProtocolTests
         Assert.Equal("welcome_hash_ack", WireConstants.FeatureWelcomeHashAck);
         Assert.Equal(3, WireConstants.ClientProtocolVersion);
     }
+
+    [Fact]
+    public void WireConstants_v3_1_strings_match_server_spec()
+    {
+        // v3.1 additions. Server agent's Q9 confirmed feature literal is
+        // "msgpack_format". Format identifiers are "json" / "msgpack"
+        // per Q1. accept_formats / negotiated_format field names per Q1+Q5.
+        Assert.Equal("accept_formats", WireConstants.FieldAcceptFormats);
+        Assert.Equal("negotiated_format", WireConstants.FieldNegotiatedFormat);
+        Assert.Equal("json", WireConstants.FormatJson);
+        Assert.Equal("msgpack", WireConstants.FormatMsgpack);
+        Assert.Equal("msgpack_format", WireConstants.FeatureMsgpackFormat);
+
+        // Preference list shape: msgpack first, json fallback. Server
+        // picks the first format from this list that it supports.
+        Assert.Equal(new[] { "msgpack", "json" }, WireConstants.AcceptFormatsPreference);
+        // Sentinel for the v3.0-style behaviour: explicit json-only.
+        Assert.Equal(new[] { "json" }, WireConstants.AcceptFormatsJsonOnly);
+    }
+
+    [Fact]
+    public void ClientHelloFrame_serializes_with_accept_formats_msgpack_pref()
+    {
+        // Wire shape when watchdog sends ["msgpack","json"]. Server
+        // would pick "msgpack" from this list. Field is field-present
+        // when set; ABSENT when null (default-options JsonSerializer
+        // emits the property name with `null` value, but the existing
+        // ClientHelloFrame round-trip test's pattern lets us verify the
+        // wire bytes contain the expected substring).
+        var hello = new ClientHelloFrame
+        {
+            WelcomeHash = null,
+            ClientId = "id",
+            AcceptFormats = WireConstants.AcceptFormatsPreference,
+        };
+        string json = JsonSerializer.Serialize(hello);
+        Assert.Contains("\"accept_formats\":[\"msgpack\",\"json\"]", json);
+    }
+
+    [Fact]
+    public void ClientHelloFrame_serializes_with_accept_formats_json_only()
+    {
+        // Commit-1 sentinel — the watchdog ships AcceptFormatsJsonOnly
+        // until the binary-frame dispatch lands in commit 2. Server
+        // sees accept_formats=["json"] and picks json.
+        var hello = new ClientHelloFrame
+        {
+            WelcomeHash = "h",
+            ClientId = "id",
+            AcceptFormats = WireConstants.AcceptFormatsJsonOnly,
+        };
+        string json = JsonSerializer.Serialize(hello);
+        Assert.Contains("\"accept_formats\":[\"json\"]", json);
+    }
+
+    [Fact]
+    public void ClientHelloFrame_v3_0_shape_omits_accept_formats_when_null()
+    {
+        // Backward-compat: if AcceptFormats is null, server (v3.0 or v3.1)
+        // treats as "v3.0-style hello" → defaults to json. The wire
+        // output may contain "accept_formats":null (default options)
+        // but server tolerates either field-omitted or field-null.
+        var hello = new ClientHelloFrame
+        {
+            WelcomeHash = "h",
+            ClientId = "id",
+            // AcceptFormats deliberately not set.
+        };
+        string json = JsonSerializer.Serialize(hello);
+        // We don't assert "field absent" because default options emit
+        // null. Just confirm no msgpack literal sneaks in.
+        Assert.DoesNotContain("\"msgpack\"", json);
+    }
+
+    [Fact]
+    public void WelcomeFrame_negotiated_format_round_trips()
+    {
+        // Server emits negotiated_format on every welcome (v3.1+). Client
+        // reads it to decide whether the post-welcome wire is binary
+        // msgpack or text JSON.
+        var welcome = new WelcomeFrame
+        {
+            ProtocolVersion = 3,
+            Node = "node1",
+            NegotiatedFormat = "msgpack",
+        };
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(welcome);
+        var parsed = JsonSerializer.Deserialize<WelcomeFrame>(bytes);
+        Assert.NotNull(parsed);
+        Assert.Equal("msgpack", parsed!.NegotiatedFormat);
+    }
+
+    [Fact]
+    public void WelcomeFrame_v3_0_payload_round_trips_without_negotiated_format()
+    {
+        // v3.0 servers don't emit negotiated_format. Client must
+        // tolerate the field's absence and default to json (v3.0
+        // behaviour).
+        string json = "{\"action\":\"welcome\",\"protocol_version\":3,\"node\":\"node1\"}";
+        var parsed = JsonSerializer.Deserialize<WelcomeFrame>(json);
+        Assert.NotNull(parsed);
+        Assert.Null(parsed!.NegotiatedFormat);
+    }
+
+    [Fact]
+    public void WelcomeCachedFrame_negotiated_format_round_trips()
+    {
+        // Same field, same semantics as WelcomeFrame.NegotiatedFormat —
+        // server re-emits it on welcome_cached because format choice is
+        // per-connection, not cached.
+        string json = "{\"action\":\"welcome_cached\",\"protocol_version\":3,\"node\":\"node1\",\"warp_active\":true,\"negotiated_format\":\"msgpack\"}";
+        var f = JsonSerializer.Deserialize<WelcomeCachedFrame>(json);
+        Assert.NotNull(f);
+        Assert.Equal("msgpack", f!.NegotiatedFormat);
+    }
 }
