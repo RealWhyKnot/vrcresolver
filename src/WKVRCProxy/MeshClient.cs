@@ -152,6 +152,13 @@ internal sealed class MeshClient : IAsyncDisposable
     public bool IsConnected => _ws?.State == WebSocketState.Open;
     public int ServerProtocolVersion => _serverProtocolVersion;
     public string? ServerNode => _serverNode;
+    // Hostname of the WS endpoint we're currently connected to (e.g.
+    // "node1.whyknot.dev"). Used by ResolveCache as part of the cache
+    // key so different mesh nodes never cross-serve cached URLs.
+    // Distinct from ServerNode -- ServerNode is the server-supplied
+    // logical node label from the welcome frame; CurrentNodeHost is
+    // the DNS hostname we resolved to.
+    public string CurrentNodeHost => _currentNodeHost;
     public bool? WarpActive => _warpActive;
 
     // Fire-and-forget client → server feedback frame. Sent when VrcLogMonitor
