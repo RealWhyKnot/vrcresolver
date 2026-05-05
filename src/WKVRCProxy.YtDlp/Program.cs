@@ -104,10 +104,23 @@ internal static class Program
 
                 if (!string.IsNullOrEmpty(result.resolved))
                 {
-                    WriteUrlToStdout(result.resolved);
-                    Log("emitted resolved URL to stdout host=" + ExtractHost(result.resolved) + " bytes=" + result.resolved.Length);
+                    // Trust-gateway wrap (Phase 1, HTTP-only). If the
+                    // watchdog is running and bound the local listener
+                    // it leaves a port file on disk; we wrap the resolved
+                    // URL through localhost.youtube.com:<port>/play so
+                    // AVPro's allowlist accepts it in default-public
+                    // worlds. Missing port file = watchdog isn't running
+                    // OR the relay didn't bind; fall through to emitting
+                    // the raw URL (today's behavior; works in trust-
+                    // disabled worlds, fails in default-public).
+                    string toEmit = TryWrapForTrustGateway(result.resolved!);
+                    WriteUrlToStdout(toEmit);
+                    bool wrapped = !ReferenceEquals(toEmit, result.resolved);
+                    Log("emitted resolved URL to stdout host=" + ExtractHost(toEmit)
+                        + " bytes=" + toEmit.Length
+                        + " trust_gateway=" + (wrapped ? "wrapped" : "passthrough"));
                     exitCode = 0;
-                    outcome = "pipe-resolved";
+                    outcome = wrapped ? "pipe-resolved-wrapped" : "pipe-resolved";
                 }
                 else
                 {
@@ -416,6 +429,56 @@ internal static class Program
         using var stdout = Console.OpenStandardOutput();
         stdout.Write(bytes, 0, bytes.Length);
         stdout.Flush();
+    }
+
+    // Trust-gateway URL wrap (Phase 1, HTTP-only). The watchdog binds a
+    // local HTTP listener at 127.0.0.1:{ephemeral} and writes the port to
+    // %LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt. We rewrite the resolved
+    // URL to `http://localhost.youtube.com:{port}/play?target=<base64>` so
+    // VRChat's AVPro allowlist (which has *.youtube.com) accepts it in
+    // default-public worlds. The hosts file pins
+    // `localhost.youtube.com -> 127.0.0.1` so the request lands on the
+    // watchdog's listener which forwards bytes to the real URL.
+    //
+    // Failure modes -- ALL fall through to the raw URL (today's behavior):
+    //   - port file missing (watchdog not running OR didn't bind)
+    //   - port file unreadable / malformed
+    //   - URL is already wrapped (defensive; avoid double-wrap)
+    //   - URL is one of AVPro's natively-allowlisted hosts (googlevideo,
+    //     vimeo, etc.) where wrapping costs latency for no gain
+    private static string TryWrapForTrustGateway(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return url;
+
+        // Defensive: don't double-wrap. If the URL is already pointed at
+        // localhost.youtube.com it came from somewhere that already did
+        // the wrap (or someone manually constructed it).
+        if (url.IndexOf("localhost.youtube.com", StringComparison.OrdinalIgnoreCase) >= 0)
+            return url;
+
+        int? port = TryReadRelayPort();
+        if (!port.HasValue) return url;
+
+        string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(url))
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+        return "http://localhost.youtube.com:"
+            + port.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + "/play?target=" + b64;
+    }
+
+    private static int? TryReadRelayPort()
+    {
+        try
+        {
+            string portFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_port.txt");
+            if (!File.Exists(portFile)) return null;
+            string text = File.ReadAllText(portFile).Trim();
+            if (int.TryParse(text, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out int p)
+                && p > 1024 && p < 65536) return p;
+        }
+        catch { /* best-effort; missing port = no wrap */ }
+        return null;
     }
 
     // First arg starting with http:// or https:// is the URL to resolve.

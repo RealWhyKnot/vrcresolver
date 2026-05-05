@@ -22,6 +22,8 @@ internal static class Program
     private static HostsTicker? s_hostsTicker;
     private static Heartbeat? s_heartbeat;
     private static ResolveCache? s_resolveCache;
+    private static RelayPortManager? s_relayPort;
+    private static LocalRelayServer? s_relay;
     private static readonly ManualResetEventSlim s_quitSignal = new(false);
     private static volatile bool s_fastShutdown;
 
@@ -210,6 +212,37 @@ internal static class Program
         s_ipc.Start();
         _ = s_mesh.StartAsync();
 
+        // Local-relay HTTP listener (Phase 1 trust gateway). Binds 127.0.0.1
+        // on an ephemeral high port; the patched yt-dlp wrapper reads the
+        // port file and rewrites resolved URLs to
+        // `http://localhost.youtube.com:{port}/play?target=<base64>` so
+        // AVPro's allowlist (which has *.youtube.com) accepts them in
+        // default-public worlds. Failure to bind is non-fatal: the wrapper
+        // falls through to emitting the raw server URL on missing port file
+        // (today's behavior; works in trust-disabled worlds, fails in
+        // default-public). HTTPS + per-machine cert lifecycle is a planned
+        // follow-up.
+        s_relayPort = new RelayPortManager();
+        if (s_relayPort.Initialize())
+        {
+            try
+            {
+                s_relay = new LocalRelayServer(s_relayPort.CurrentPort);
+                s_relay.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[relay][warn] listener start failed: " + ex.Message
+                    + " -- public-instance trust gateway disabled");
+                s_relay = null;
+                s_relayPort.DeletePortFile();
+            }
+        }
+        else
+        {
+            Console.WriteLine("[relay][warn] could not allocate ephemeral port -- public-instance trust gateway disabled");
+        }
+
         // Watch VRChat's output_log_*.txt for AVPro playback failures and
         // forward as `playback_feedback` mesh frames. Server-side dispatch
         // uses these to demote whichever strategy/config produced a URL
@@ -365,6 +398,26 @@ internal static class Program
                 }
                 catch (Exception ex) { Console.WriteLine("[shutdown][warn] ipc: " + ex.Message); }
             }
+
+            // Stop the relay listener AFTER ipc but before mesh -- AVPro
+            // may still be holding open a streaming connection through us;
+            // the listener cancels its CTS on Stop which propagates to the
+            // upstream HttpClient request, unwinding the in-flight HLS
+            // segment fetch cleanly. Port file gets deleted so the wrapper
+            // (started by VRChat AFTER our shutdown) falls through to the
+            // raw-URL behavior on its next invocation.
+            if (s_relay != null)
+            {
+                try
+                {
+                    int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                    await WithTimeout(s_relay.StopAsync(), Math.Min(remain, 2000), "relay").ConfigureAwait(false);
+                    s_relay.Dispose();
+                    s_relay = null;
+                }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] relay: " + ex.Message); }
+            }
+            try { s_relayPort?.DeletePortFile(); } catch { /* best-effort */ }
 
             if (s_mesh != null)
             {
