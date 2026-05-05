@@ -186,7 +186,7 @@ internal static class CodecInstaller
         {
             if (!File.Exists(path)) return new CodecState();
             string json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<CodecState>(json) ?? new CodecState();
+            return JsonSerializer.Deserialize(json, MeshJsonContext.Default.CodecState) ?? new CodecState();
         }
         catch
         {
@@ -199,19 +199,22 @@ internal static class CodecInstaller
         try
         {
             string tmp = path + ".new";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(state, MeshJsonContext.Default.CodecState));
             File.Move(tmp, path, overwrite: true);
         }
         catch { /* best-effort */ }
     }
 
-    private sealed class CodecState
+    // AOT migration: promoted from private nested to internal nested so
+    // MeshJsonContext can reference the types via [JsonSerializable]
+    // and emit source-gen formatters.
+    internal sealed class CodecState
     {
         [JsonPropertyName("codecs")]
         public Dictionary<string, CodecEntry> Codecs { get; set; } = new();
     }
 
-    private sealed class CodecEntry
+    internal sealed class CodecEntry
     {
         [JsonPropertyName("status")] public string Status { get; set; } = "";
         [JsonPropertyName("last_attempt_utc")] public DateTime LastAttemptUtc { get; set; }

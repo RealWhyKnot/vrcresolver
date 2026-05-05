@@ -269,3 +269,30 @@ public sealed class WelcomeCachedFrame
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
+
+// Client -> server fire-and-forget telemetry frame. Emitted by
+// VrcLogMonitor when AVPro fails to load a URL the resolver returned
+// (load_failure within 10 s of Opening, or silent_stall after 12 s of
+// nothing). Server attributes the failure to the (domain, config) the
+// resolver picked so future resolves for that domain can demote the
+// failed config.
+//
+// Pre-AOT migration this was built as a Dictionary<string, object?>
+// and serialized via reflection. Replaced with a typed DTO so the
+// source-gen JsonSerializerContext can produce a static formatter for
+// it. Field names + types preserve the wire-shape exactly; server
+// parses field-by-field, tolerates correlation_id absent. The
+// JsonIgnoreCondition.WhenWritingNull on correlation_id matches the
+// previous Dictionary-based serialization which omitted the field
+// entirely when null.
+public sealed class PlaybackFeedbackFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionPlaybackFeedback;
+    [JsonPropertyName("url")] public string Url { get; set; } = "";
+    [JsonPropertyName("kind")] public string Kind { get; set; } = "";
+    [JsonPropertyName("timestamp")] public string Timestamp { get; set; } = "";
+    [JsonPropertyName("ms_since_open")] public int MsSinceOpen { get; set; }
+    [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
+    [JsonPropertyName("correlation_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CorrelationId { get; set; }
+}

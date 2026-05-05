@@ -253,7 +253,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             string? parseError = null;
             if (!string.IsNullOrWhiteSpace(line))
             {
-                try { req = JsonSerializer.Deserialize<ResolveRequest>(line); }
+                try { req = JsonSerializer.Deserialize(line, MeshJsonContext.Default.ResolveRequest); }
                 catch (Exception ex) { parseError = ex.GetType().Name + ": " + ex.Message; }
             }
 
@@ -505,10 +505,12 @@ internal sealed partial class LocalIpcServer : IDisposable
     // this, the v2 ResolveResponse fields (container, video_codec, etc.)
     // would each emit "field":null, forcing every fallback recipient to
     // tolerate keys it doesn't know.
-    private static readonly JsonSerializerOptions FallbackSerializerOptions = new()
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
+    //
+    // AOT migration: the WhenWritingNull options used to live here as
+    // FallbackSerializerOptions, now baked into MeshFallbackJsonContext
+    // via [JsonSourceGenerationOptions(DefaultIgnoreCondition = ...)].
+    // The source-gen produces a parallel formatter set for ResolveResponse
+    // with the omit-nulls behaviour applied at codegen time.
 
     private static async Task WriteFallbackAsync(Stream s, string id, string reason, CancellationToken ct)
     {
@@ -518,12 +520,13 @@ internal sealed partial class LocalIpcServer : IDisposable
             Id = id,
             Reason = reason,
         };
-        byte[] payload = AppendNewline(JsonSerializer.SerializeToUtf8Bytes(frame, FallbackSerializerOptions));
+        byte[] payload = AppendNewline(
+            JsonSerializer.SerializeToUtf8Bytes(frame, MeshFallbackJsonContext.Default.ResolveResponse));
         try
         {
             await s.WriteAsync(payload, ct).ConfigureAwait(false);
         }
-        catch { /* peer may have hung up — we tried */ }
+        catch { /* peer may have hung up -- we tried */ }
     }
 
     // True iff the URL's host is exactly `localhost.youtube.com`. Used for

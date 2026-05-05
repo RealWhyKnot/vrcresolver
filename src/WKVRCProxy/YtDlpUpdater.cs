@@ -207,7 +207,7 @@ internal static class YtDlpUpdater
         try
         {
             if (!File.Exists(path)) return new UpdateState();
-            return JsonSerializer.Deserialize<UpdateState>(File.ReadAllText(path)) ?? new UpdateState();
+            return JsonSerializer.Deserialize(File.ReadAllText(path), MeshJsonContext.Default.UpdateState) ?? new UpdateState();
         }
         catch { return new UpdateState(); }
     }
@@ -217,13 +217,15 @@ internal static class YtDlpUpdater
         try
         {
             string tmp = path + ".new";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(state, MeshJsonContext.Default.UpdateState));
             File.Move(tmp, path, overwrite: true);
         }
         catch { /* best-effort */ }
     }
 
-    private sealed class UpdateState
+    // AOT migration: promoted from private to internal so MeshJsonContext
+    // can reference via [JsonSerializable] and emit source-gen formatters.
+    internal sealed class UpdateState
     {
         [JsonPropertyName("last_check_utc")] public DateTime? LastCheckUtc { get; set; }
         [JsonPropertyName("last_local")] public string LastLocal { get; set; } = "";

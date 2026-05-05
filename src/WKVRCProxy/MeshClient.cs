@@ -42,14 +42,21 @@ internal sealed class MeshClient : IAsyncDisposable
     private static readonly TimeSpan WelcomeTimeout = TimeSpan.FromSeconds(1);
     private static readonly int[] ReconnectCapsSec = { 1, 2, 4, 8, 16, 30 };
 
-    // Pre-baked control frames. Both are pure-static — `{"action":"ping"}`
-    // / `{"action":"pong"}` — so the byte[] can be cached at class-load
+    // Pre-baked control frames. Both are pure-static -- `{"action":"ping"}`
+    // / `{"action":"pong"}` -- so the byte[] can be cached at class-load
     // and reused for every send. Pre-fix each heartbeat / pong-reply
     // allocated a fresh anonymous-object DTO + ArrayPool buffer.
-    private static readonly byte[] PingFrame =
-        JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPing });
-    private static readonly byte[] PongFrame =
-        JsonSerializer.SerializeToUtf8Bytes(new { action = WireConstants.ActionPong });
+    //
+    // AOT migration: anonymous types can't be source-genned (no class
+    // declaration to attach [JsonSerializable] to), so the original
+    // `JsonSerializer.SerializeToUtf8Bytes(new { action = "ping" })`
+    // would fall back to reflection at class-load -- which under AOT
+    // throws PlatformNotSupportedException and crashes the watchdog
+    // before Main runs. Replaced with UTF-8 string literals that
+    // produce identical wire bytes (verified byte-exact by the existing
+    // wire-protocol tests).
+    private static readonly byte[] PingFrame = "{\"action\":\"ping\"}"u8.ToArray();
+    private static readonly byte[] PongFrame = "{\"action\":\"pong\"}"u8.ToArray();
 
     private readonly string _userAgent;
     private readonly HttpClient _httpClient;
@@ -215,18 +222,22 @@ internal sealed class MeshClient : IAsyncDisposable
         string? correlationId,
         DateTime timestampUtc)
     {
-        var frame = new Dictionary<string, object?>(7)
+        // AOT migration: Dictionary<string, object?> + reflection-based
+        // SerializeToUtf8Bytes replaced with the typed PlaybackFeedbackFrame
+        // DTO routed through MeshJsonContext source-gen. Wire shape
+        // preserved byte-exact -- correlation_id still omitted (not
+        // serialized as null) when caller passes null, matched by
+        // [JsonIgnore(Condition = WhenWritingNull)] on the property.
+        var frame = new PlaybackFeedbackFrame
         {
-            ["action"] = WireConstants.ActionPlaybackFeedback,
-            ["url"] = url,
-            ["kind"] = kind,
-            ["timestamp"] = timestampUtc.ToString("o"),
-            ["ms_since_open"] = msSinceOpen,
-            ["client_id"] = clientId,
+            Url = url,
+            Kind = kind,
+            Timestamp = timestampUtc.ToString("o"),
+            MsSinceOpen = msSinceOpen,
+            ClientId = clientId,
+            CorrelationId = string.IsNullOrEmpty(correlationId) ? null : correlationId,
         };
-        if (!string.IsNullOrEmpty(correlationId))
-            frame["correlation_id"] = correlationId;
-        return JsonSerializer.SerializeToUtf8Bytes(frame);
+        return JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.PlaybackFeedbackFrame);
     }
 
     private string? LookupRecentCorrelationId(string url)
@@ -362,7 +373,7 @@ internal sealed class MeshClient : IAsyncDisposable
         byte[] payload;
         try
         {
-            payload = JsonSerializer.SerializeToUtf8Bytes(req);
+            payload = JsonSerializer.SerializeToUtf8Bytes(req, MeshJsonContext.Default.ResolveRequest);
         }
         catch (Exception ex)
         {
@@ -963,7 +974,7 @@ internal sealed class MeshClient : IAsyncDisposable
             case WireConstants.ActionWelcome:
             {
                 WelcomeFrame? welcome = null;
-                try { welcome = JsonSerializer.Deserialize<WelcomeFrame>(payload); }
+                try { welcome = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.WelcomeFrame); }
                 catch (Exception ex)
                 {
                     Console.WriteLine("[mesh] welcome parse failed — assuming v1 server: "
@@ -1296,12 +1307,20 @@ internal sealed class MeshClient : IAsyncDisposable
     // forward is wire-identical to a real server fallback.
     private static MeshResolveResult MakeFallbackResult(string id, string reason)
     {
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new
+        // AOT migration: anonymous-type SerializeToUtf8Bytes replaced
+        // with a typed ResolveResponse populated with just the three
+        // wire fields the synthetic fallback needs. Routed through the
+        // MeshFallbackJsonContext (WhenWritingNull options) so the v2
+        // nullable response fields stay omitted on the wire; v1
+        // patched-yt-dlp consumers see byte-identical bytes to the
+        // pre-migration shape.
+        var frame = new ResolveResponse
         {
-            action = WireConstants.ActionFallbackNative,
-            id,
-            reason
-        });
+            Action = WireConstants.ActionFallbackNative,
+            Id = id,
+            Reason = reason,
+        };
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshFallbackJsonContext.Default.ResolveResponse);
         return new MeshResolveResult(bytes, WireConstants.ActionFallbackNative, reason);
     }
 

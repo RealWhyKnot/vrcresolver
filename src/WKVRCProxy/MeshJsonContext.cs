@@ -3,23 +3,20 @@ using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
-// Source-generated JSON metadata for the watchdog's v3-handshake DTOs and
-// the per-node welcome cache file. Used in place of reflection-based
-// JsonSerializer.Serialize<T> / Deserialize<T> on the v3 path so:
-//   * The v3 code is AOT-clean from day one (the watchdog itself isn't
-//     AOT'd today — see project_size_optimization.md — but when the
-//     watchdog AOT audit lands, the v3 path won't need a follow-up
-//     refactor).
-//   * Trim warnings (IL2026 / IL3050) stay quiet against this set even
-//     under PublishTrimmed=true.
+// Source-generated JSON metadata for every DTO the watchdog
+// serializes or deserializes. Used in place of reflection-based
+// JsonSerializer.Serialize<T> / Deserialize<T> so the watchdog can
+// publish under PublishAot=true with TrimMode=full -- without this
+// context the trimmer + AOT compiler can't see which property
+// accessors are reachable, the JSON code path falls back to runtime
+// reflection, and AOT publish bails with IL2026/IL3050 (or worse,
+// silently produces a binary that throws PlatformNotSupportedException
+// at first deserialize).
 //
-// Scope is deliberately narrow: only DTOs the v3 wire path or the local
-// cache file touches. The existing v2 path's WelcomeFrame deserialize
-// (MeshClient.cs DispatchFrameAsync, ActionWelcome case) still uses
-// reflection — that's the watchdog AOT audit's job, not v3's. WelcomeFrame
-// IS in this context too because the v3 path stores it on welcome receipt
-// (cache hydration), but the v2 dispatch site keeps its reflection call
-// to avoid changing v2 behaviour during v3 rollout.
+// Scope after the AOT migration (commit 2/3 of project_watchdog_aot_migration.md):
+// every JsonSerializer.* site in src/WKVRCProxy is routed through here
+// or through MeshFallbackJsonContext below. The Updater / Uninstaller
+// have their own paths (UpdaterJsonContext / no JSON in Uninstaller).
 [JsonSerializable(typeof(WelcomeFrame))]
 [JsonSerializable(typeof(ClientHelloFrame))]
 [JsonSerializable(typeof(WelcomeCachedFrame))]
@@ -31,6 +28,37 @@ namespace WKVRCProxy;
 // context produces the bytes the existing MeshResolveResult.Frame
 // passthrough writes to LocalIpcServer's pipe write.
 [JsonSerializable(typeof(ResolveResponse))]
+// AOT migration (commit 2 of 3): ResolveRequest goes outbound on the
+// pipe (LocalIpcServer.HandleAsync deserialize) and on the WS
+// (MeshClient.ResolveAsync serialize). Both paths must use source-gen
+// for AOT-clean publish; reflection-based JsonSerializer.Deserialize<T>
+// throws PlatformNotSupportedException under AOT.
+[JsonSerializable(typeof(ResolveRequest))]
+// MeshClient.BuildPlaybackFeedbackPayload (R2 watchdog -> server frame).
+// Pre-AOT this serialized a Dictionary<string, object?> via reflection;
+// migrated here to a typed DTO so the source-gen path covers it.
+[JsonSerializable(typeof(PlaybackFeedbackFrame))]
+// CodecInstaller persistence (state file at LocalLow root).
+// YtDlpUpdater persistence (24h dedupe state).
+// Both are watchdog-internal state files, JSON-on-disk.
+[JsonSerializable(typeof(CodecInstaller.CodecState))]
+[JsonSerializable(typeof(YtDlpUpdater.UpdateState))]
+// ReportingService outbound /report frames (anonymous failure
+// telemetry; gated by WKVRCPROXY_ANONYMOUS_REPORTING).
+[JsonSerializable(typeof(ReportingService.ReportPayload))]
 internal sealed partial class MeshJsonContext : JsonSerializerContext
+{
+}
+
+// Companion context for the LocalIpcServer.WriteFallbackAsync path,
+// which needs DefaultIgnoreCondition.WhenWritingNull so the wire shape
+// stays v1-identical for v1 patched-yt-dlp consumers (ResolveResponse
+// has many nullable v2 fields that must be omitted, not serialized as
+// "field":null). Source-gen produces a parallel formatter set for
+// ResolveResponse with the WhenWritingNull options applied at
+// generation time.
+[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(ResolveResponse))]
+internal sealed partial class MeshFallbackJsonContext : JsonSerializerContext
 {
 }

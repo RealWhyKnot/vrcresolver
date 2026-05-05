@@ -110,7 +110,11 @@ internal static partial class ReportingService
 
         try
         {
-            using var resp = await _http.PostAsJsonAsync(Endpoint, payload).ConfigureAwait(false);
+            // AOT migration: typed PostAsJsonAsync overload routed through
+            // MeshJsonContext source-gen. Equivalent wire output to the
+            // pre-AOT reflection-based extension method; just AOT-clean.
+            using var resp = await _http.PostAsJsonAsync(
+                Endpoint, payload, MeshJsonContext.Default.ReportPayload).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
                 Console.WriteLine("[report] server rejected: " + (int)resp.StatusCode);
         }
@@ -229,7 +233,10 @@ internal static partial class ReportingService
         return s;
     }
 
-    private sealed class ReportPayload
+    // AOT migration: promoted private -> internal so MeshJsonContext can
+    // [JsonSerializable(typeof(ReportingService.ReportPayload))] and emit
+    // a source-gen formatter the typed PostAsJsonAsync overload uses.
+    internal sealed class ReportPayload
     {
         [JsonPropertyName("appVersion")] public string AppVersion { get; set; } = "";
         [JsonPropertyName("failureKind")] public string FailureKind { get; set; } = "";
