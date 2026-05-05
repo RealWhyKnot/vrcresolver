@@ -53,6 +53,11 @@ namespace WKVRCProxy;
 // file + entry types live alongside.
 [JsonSerializable(typeof(ResolveCacheFile))]
 [JsonSerializable(typeof(ResolveCacheEntry))]
+// v3.2: wrapper -> watchdog og-fallback notification. Wrapper opens a
+// fresh pipe, sends one of these, closes. Watchdog dispatches in
+// LocalIpcServer.HandleAsync and emits a single console line surfacing
+// the fallback fact to the operator.
+[JsonSerializable(typeof(WrapperEventNotify))]
 internal sealed partial class MeshJsonContext : JsonSerializerContext
 {
 }

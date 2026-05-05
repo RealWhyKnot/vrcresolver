@@ -208,7 +208,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[ipc] could not create pipe instance: " + ex.Message);
+                Console.WriteLine("[ipc][warn] could not create pipe instance: " + ex.Message);
                 try { await Task.Delay(1000, ct).ConfigureAwait(false); } catch { return; }
                 continue;
             }
@@ -224,7 +224,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[ipc] accept error: " + ex.Message);
+                Console.WriteLine("[ipc][warn] accept error: " + ex.Message);
                 pipe.Dispose();
                 continue;
             }
@@ -245,9 +245,29 @@ internal sealed partial class LocalIpcServer : IDisposable
             var (line, truncated) = await ReadLineAsync(pipe, perReqCts.Token).ConfigureAwait(false);
             if (truncated)
             {
-                Console.WriteLine("[ipc] rejecting request: payload exceeded "
+                Console.WriteLine("[ipc][warn] rejecting request: payload exceeded "
                     + MaxRequestBytes + " bytes without a newline terminator");
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
+                return;
+            }
+
+            // v3.2: peek the action field FIRST. If it's the wrapper's
+            // og-fallback notification, dispatch separately -- the wire
+            // shape is a different DTO (WrapperEventNotify) and the
+            // wrapper closes the pipe immediately after writing without
+            // waiting for a response.
+            if (!string.IsNullOrWhiteSpace(line) && LooksLikeOgFallbackNotify(line))
+            {
+                try
+                {
+                    var notify = JsonSerializer.Deserialize(line, MeshJsonContext.Default.WrapperEventNotify);
+                    if (notify != null) HandleOgFallbackNotify(notify);
+                }
+                catch (Exception ex)
+                {
+                    Logger.WriteFileOnly("[wrapper][warn] og_fallback_notify parse failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                }
                 return;
             }
 
@@ -266,17 +286,17 @@ internal sealed partial class LocalIpcServer : IDisposable
                 // Pre-fix this path was completely silent.
                 if (parseError != null)
                 {
-                    Console.WriteLine("[ipc] request parse failed: "
+                    Console.WriteLine("[ipc][warn] request parse failed: "
                         + LogUtil.SanitizeForConsole(parseError, 160)
                         + " preview=" + LogUtil.SanitizeForConsole(line, 80));
                 }
                 else if (req != null)
                 {
-                    Console.WriteLine("[ipc] request missing url");
+                    Console.WriteLine("[ipc][warn] request missing url");
                 }
                 else
                 {
-                    Console.WriteLine("[ipc] empty request received");
+                    Console.WriteLine("[ipc][warn] empty request received");
                 }
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
                 return;
@@ -292,9 +312,9 @@ internal sealed partial class LocalIpcServer : IDisposable
             // diagnostic on the watchdog side).
             if (!string.Equals(req.Action, WireConstants.ActionResolve, StringComparison.Ordinal))
             {
-                Console.WriteLine("[ipc] rejecting request id=" + id +
+                Console.WriteLine("[ipc][warn] rejecting request id=" + id +
                     " action=" + LogUtil.SanitizeForConsole(req.Action, 32) +
-                    " — only \"resolve\" is accepted on this pipe");
+                    " -- only \"resolve\" is accepted on this pipe");
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
                 return;
             }
@@ -306,30 +326,28 @@ internal sealed partial class LocalIpcServer : IDisposable
             // of silently being routed to a server that will reject.
             if (req.Player != WireConstants.PlayerAvPro && req.Player != WireConstants.PlayerUnity)
             {
-                Console.WriteLine("[ipc] rejecting request id=" + id + CidSuffix(cid) +
+                Console.WriteLine("[ipc][warn] rejecting request id=" + id + CidSuffix(cid) +
                     " player=" + LogUtil.SanitizeForConsole(req.Player ?? "<null>", 32) +
-                    " — must be \"avpro\" or \"unity\" (case-sensitive)");
+                    " -- must be \"avpro\" or \"unity\" (case-sensitive)");
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
                 return;
             }
 
-            // User-facing per-resolve summary — request line. Hostname only
-            // (no path/query — token risk), player + target resolution.
-            // Companion "response" line fires below at terminal-response
-            // time so the operator sees both halves of every resolve.
+            // Capture the host + player labels for the single per-resolve
+            // summary line that fires at terminal-response time below.
+            // The earlier two-line layout (cyan request line at arrival
+            // + colored response line at terminus) was traded for one
+            // line per resolve so busy worlds don't double-scroll.
             //
-            // The `[via lh-yt]` tag fires when the user-pasted URL host is
-            // localhost.youtube.com — the public-instance trust-list bypass
-            // path. Surfaces at-a-glance whether the public-world workaround
-            // is being exercised vs a direct-host paste. Same per-process
-            // counter goes to the heartbeat line for aggregate visibility.
+            // `[via lh-yt]` fires when the user-pasted URL host is
+            // localhost.youtube.com -- the public-instance trust-list
+            // bypass path. Surfaces at-a-glance whether the
+            // public-world workaround is being exercised. Same
+            // per-process counter goes to the heartbeat line for
+            // aggregate visibility.
             string host = ExtractHost(req.Url);
             bool viaLhYt = IsLocalhostYoutubeUrl(req.Url);
             string playerLabel = FormatPlayerLabel(req);
-            string requestLine = viaLhYt
-                ? "  -> " + host + " [via lh-yt]  (" + playerLabel + ")"
-                : "  -> " + host + "  (" + playerLabel + ")";
-            WriteUserActivity(ConsoleColor.Cyan, requestLine);
             WatchdogStats.RecordResolve(viaLhYt);
 
             string? failReason = null;
@@ -353,6 +371,7 @@ internal sealed partial class LocalIpcServer : IDisposable
                     outcome = cached.Value.Action;
                     serverReason = cached.Value.Reason;
                     viaCache = true;
+                    WatchdogStats.RecordCacheHit();
                     Logger.WriteFileOnly("[resolve-cache] hit id=" + id +
                         " host=" + ExtractHost(req.Url) +
                         " bytes=" + cached.Value.Frame.Length);
@@ -410,7 +429,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             catch (Exception ex)
             {
                 Console.WriteLine(
-                    "[ipc] mesh.ResolveAsync threw id=" + id + CidSuffix(cid) +
+                    "[ipc][warn] mesh.ResolveAsync threw id=" + id + CidSuffix(cid) +
                     ": " + ex.GetType().Name + ": " +
                     LogUtil.SanitizeForConsole(ex.Message, 160));
                 failReason = WireConstants.FallbackInternalError;
@@ -434,37 +453,44 @@ internal sealed partial class LocalIpcServer : IDisposable
                     ReportingService.ReportFallback(req, reason, null);
             }
 
-            // User-facing per-resolve summary — terminal-response line.
-            // Colour signals at-a-glance status: green = resolved, yellow =
-            // server replied with fallback_native (we'll defer to og), red =
-            // we synthesised fallback_native locally (server timeout / IPC
-            // budget tripped). Pairs visually with the "->" request line.
+            // User-facing per-resolve summary -- single line per resolve.
+            // Format:
+            //   <host> [via lh-yt] (<player>)  <status>  <elapsed>
+            // Colour signals at-a-glance status: green = resolved (mesh
+            // or cached), yellow = server replied with fallback_native
+            // (og takes over), red = we synthesised fallback_native
+            // locally (server timeout / IPC budget tripped), gray =
+            // unexpected outcome. Standing rule from
+            // feedback_no_console_spam.md: one summary line per resolve,
+            // not a START + END pair.
             swReq.Stop();
             string elapsedLabel = FormatElapsed(swReq.Elapsed.TotalSeconds);
             ConsoleColor color;
-            string symbolAndStatus;
+            string statusToken;
             if (outcome == WireConstants.ActionResolved)
             {
                 color = ConsoleColor.Green;
-                symbolAndStatus = viaCache ? "OK cached" : "OK resolved";
+                statusToken = viaCache ? "OK cached" : "OK resolved";
             }
             else if (failReason != null)
             {
                 color = ConsoleColor.Red;
-                symbolAndStatus = "XX failed (" + failReason + ")";
+                statusToken = "XX failed (" + failReason + ")";
             }
             else if (outcome == WireConstants.ActionFallbackNative)
             {
                 color = ConsoleColor.Yellow;
                 string reason = !string.IsNullOrEmpty(serverReason) ? serverReason : "?";
-                symbolAndStatus = "!! fallback (" + reason + ")";
+                statusToken = "!! fallback (" + reason + ")";
             }
             else
             {
                 color = ConsoleColor.DarkGray;
-                symbolAndStatus = "?? " + outcome;
+                statusToken = "?? " + outcome;
             }
-            WriteUserActivity(color, "     " + symbolAndStatus + "  " + elapsedLabel);
+            string lhYtTag = viaLhYt ? " [via lh-yt]" : "";
+            WriteUserActivity(color,
+                "  " + host + lhYtTag + " (" + playerLabel + ")  " + statusToken + "  " + elapsedLabel);
 
             // Detailed per-request line (id, cid, full outcome) routed to
             // the rolling watchdog log only -- kept off the user-facing
@@ -479,7 +505,7 @@ internal sealed partial class LocalIpcServer : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine(
-                "[ipc] connection error id=" + id + CidSuffix(cid) +
+                "[ipc][warn] connection error id=" + id + CidSuffix(cid) +
                 ": " + ex.GetType().Name + ": " +
                 LogUtil.SanitizeForConsole(ex.Message, 160));
         }
@@ -488,6 +514,36 @@ internal sealed partial class LocalIpcServer : IDisposable
             try { if (pipe.IsConnected) pipe.Disconnect(); } catch { /* ignore */ }
             pipe.Dispose();
         }
+    }
+
+    // Cheap pre-deserialize peek: does the request line start with the
+    // wrapper's og_fallback_notify action? Avoids parsing as
+    // ResolveRequest first (which would drop the unrecognized fields
+    // into [JsonExtensionData] instead of routing to the dispatch).
+    // Match "action":"og_fallback_notify" anywhere in the first 256
+    // bytes of the line.
+    private static bool LooksLikeOgFallbackNotify(string line)
+    {
+        int probeLen = Math.Min(line.Length, 256);
+        var head = line.AsSpan(0, probeLen);
+        return head.IndexOf("og_fallback_notify".AsSpan(), StringComparison.Ordinal) >= 0;
+    }
+
+    private static void HandleOgFallbackNotify(WrapperEventNotify notify)
+    {
+        string host = string.IsNullOrEmpty(notify.Url) ? "<no-url>" : ExtractHost(notify.Url);
+        string reason = LogUtil.SanitizeForConsole(notify.Reason ?? "?", 32);
+        // User-facing one-liner. Yellow signals "watchdog couldn't
+        // resolve, og picked up" -- pairs visually with the !! fallback
+        // colour scheme on the per-resolve summary.
+        WriteUserActivity(ConsoleColor.Yellow,
+            "  [wrapper] og fallback  " + host + "  reason=" + reason +
+            "  elapsed=" + notify.ElapsedMs + "ms");
+        Logger.WriteFileOnly(
+            "[wrapper] og_fallback_notify rid=" + LogUtil.SanitizeForConsole(notify.Rid ?? "?", 16) +
+            " host=" + host +
+            " reason=" + reason +
+            " elapsed_ms=" + notify.ElapsedMs);
     }
 
     // " cid=<id>" suffix only when correlation_id is populated.

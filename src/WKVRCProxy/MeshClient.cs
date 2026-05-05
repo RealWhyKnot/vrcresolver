@@ -404,7 +404,7 @@ internal sealed class MeshClient : IAsyncDisposable
         {
             _pending.TryRemove(req.Id, out _);
             _inflightCids.TryRemove(req.Id, out _);
-            Console.WriteLine($"[mesh] request serialization failed id={req.Id}: {ex.Message}");
+            Console.WriteLine($"[mesh][warn] request serialization failed id={req.Id}: {ex.Message}");
             return MakeFallbackResult(req.Id, WireConstants.FallbackInternalError);
         }
 
@@ -417,7 +417,7 @@ internal sealed class MeshClient : IAsyncDisposable
             _pending.TryRemove(req.Id, out _);
             _inflightCids.TryRemove(req.Id, out _);
             Console.WriteLine(
-                "[mesh] send failed id=" + req.Id +
+                "[mesh][warn] send failed id=" + req.Id +
                 CidSuffix(req.CorrelationId) +
                 ": " + ex.GetType().Name + ": " +
                 LogUtil.SanitizeForConsole(ex.Message, 160));
@@ -550,7 +550,12 @@ internal sealed class MeshClient : IAsyncDisposable
                     if (welcomeTcs.TrySetResult(null))
                     {
                         Interlocked.CompareExchange(ref _serverProtocolVersion, 1, 0);
-                        Console.WriteLine("[mesh] no welcome within 1s — assuming v1 server");
+                        // File-only: only fires against pre-v3 servers and is
+                        // silent on every modern connection. The console line
+                        // was demoted in the logging audit (production whyknot
+                        // is v3 and always responds; if this fires it's a
+                        // server regression and shows up in the rolling log).
+                        Logger.WriteFileOnly("[mesh] no welcome within 1s -- assuming v1 server");
                     }
                 }, TaskScheduler.Default);
 
@@ -641,7 +646,7 @@ internal sealed class MeshClient : IAsyncDisposable
         }
 
         FailAllPending(WireConstants.FallbackServerUnreachable);
-        Console.WriteLine("[mesh] apex discovery failed — falling back to native yt-dlp until reconnect succeeds.");
+        Console.WriteLine("[mesh][warn] apex discovery failed -- falling back to native yt-dlp until reconnect succeeds.");
         throw lastEx ?? new InvalidOperationException("apex discovery failed");
     }
 
@@ -684,7 +689,7 @@ internal sealed class MeshClient : IAsyncDisposable
                             // MITM on the upgraded WS. Tear down + let
                             // the run loop reconnect with a fresh
                             // negotiation.
-                            Console.WriteLine("[mesh][warn] unexpected Binary frame on json-negotiated connection — aborting + reconnecting");
+                            Console.WriteLine("[mesh][warn] unexpected Binary frame on json-negotiated connection -- aborting + reconnecting");
                             try { _ws?.Abort(); } catch { /* ignore */ }
                             return;
                         }
@@ -869,7 +874,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 return;
             }
             default:
-                Console.WriteLine("[mesh][warn] unknown binary action — discarding: "
+                Console.WriteLine("[mesh][warn] unknown binary action -- discarding: "
                     + LogUtil.SanitizeForConsole(action, 64));
                 return;
         }
@@ -1002,7 +1007,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 try { welcome = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.WelcomeFrame); }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("[mesh] welcome parse failed — assuming v1 server: "
+                    Console.WriteLine("[mesh][warn] welcome parse failed -- assuming v1 server: "
                         + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
                     // Pin protocol version to v1 so subsequent ResolveAsync calls
                     // don't get stuck waiting for a welcome that never arrives in
@@ -1088,7 +1093,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 // version strings come from the cache entry.
                 if (!_isV3Connection)
                 {
-                    Console.WriteLine("[mesh][warn] welcome_cached received on non-v3 connection — protocol error, reconnecting");
+                    Console.WriteLine("[mesh][warn] welcome_cached received on non-v3 connection -- protocol error, reconnecting");
                     try { _ws?.Abort(); } catch { /* ignore */ }
                     doc.Dispose();
                     return;
@@ -1118,7 +1123,7 @@ internal sealed class MeshClient : IAsyncDisposable
                     // the server will resend the full welcome.
                     if (!string.IsNullOrEmpty(_currentNodeHost))
                         _welcomeCache.Invalidate(_currentNodeHost);
-                    Console.WriteLine("[mesh][warn] welcome_cached but local entry missing — invalidating + reconnecting");
+                    Console.WriteLine("[mesh][warn] welcome_cached but local entry missing -- invalidating + reconnecting");
                     try { _ws?.Abort(); } catch { /* ignore */ }
                     doc.Dispose();
                     return;
@@ -1186,7 +1191,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 // Server-supplied string — strip control chars + truncate so a
                 // hostile or buggy server can't inject ANSI escapes into the
                 // user's console window.
-                Console.WriteLine("[mesh] unknown action — discarding: "
+                Console.WriteLine("[mesh][warn] unknown action -- discarding: "
                     + LogUtil.SanitizeForConsole(action, 64));
                 doc.Dispose();
                 return;
@@ -1248,7 +1253,7 @@ internal sealed class MeshClient : IAsyncDisposable
         if (emit)
         {
             Console.WriteLine(
-                "[mesh] frame parse failed (" + key + " x" + count + " in last min): " +
+                "[mesh][warn] frame parse failed (" + key + " x" + count + " in last min): " +
                 LogUtil.SanitizeForConsole(ex.Message, 80) +
                 " — preview=" + LogUtil.PayloadPreview(payload, 120));
         }
@@ -1319,7 +1324,7 @@ internal sealed class MeshClient : IAsyncDisposable
         const int MaxIdsInLine = 8;
         string idList = failedIds.Count <= MaxIdsInLine
             ? string.Join(",", failedIds)
-            : string.Join(",", failedIds.GetRange(0, MaxIdsInLine)) + ",…(+" + (failedIds.Count - MaxIdsInLine) + ")";
+            : string.Join(",", failedIds.GetRange(0, MaxIdsInLine)) + ",...(+" + (failedIds.Count - MaxIdsInLine) + ")";
         Console.WriteLine(
             "[mesh] failing " + failedIds.Count + " pending requests reason=" + reason +
             " ids=" + idList);

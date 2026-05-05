@@ -93,12 +93,12 @@ internal static class HostsManager
     public static void EnsureBypassEntryOrPrompt()
     {
         if (IsBypassActive()) return;
-        Console.WriteLine("Adding hosts entry for public-instance support — UAC prompt incoming.");
+        Console.WriteLine("[hosts] adding entry for public-instance support -- UAC prompt incoming.");
         if (!ReexecElevated(AddArg)) return;
         if (IsBypassActive())
-            Console.WriteLine("Hosts entry added.");
+            Console.WriteLine("[hosts] added " + MarkerIp + " " + MarkerHost);
         else
-            Console.WriteLine("Hosts entry not present after elevation — public-instance support may not work.");
+            Console.WriteLine("[hosts][warn] entry not present after elevation -- public-instance support may not work.");
     }
 
     public static void RemoveBypassEntryIfPresent()
@@ -117,7 +117,7 @@ internal static class HostsManager
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine("hosts add failed: " + ex.Message);
+            Console.Error.WriteLine("[hosts][err] add failed: " + ex.Message);
             return 1;
         }
     }
@@ -144,7 +144,7 @@ internal static class HostsManager
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine("hosts remove failed: " + ex.Message);
+            Console.Error.WriteLine("[hosts][err] remove failed: " + ex.Message);
             return 1;
         }
     }
@@ -169,18 +169,18 @@ internal static class HostsManager
             proc?.WaitForExit(60000);
             if (proc != null && !proc.HasExited)
             {
-                Console.WriteLine("[hosts] elevation child still running after 60s — continuing without hosts entry.");
+                Console.WriteLine("[hosts][warn] elevation child still running after 60s -- continuing without hosts entry.");
             }
             return true;
         }
         catch (Win32Exception)
         {
-            Console.WriteLine("UAC declined — hosts entry not modified.");
+            Console.WriteLine("[hosts] UAC declined -- entry not modified.");
             return false;
         }
         catch (Exception ex)
         {
-            Console.WriteLine("hosts elevation error: " + ex.Message);
+            Console.WriteLine("[hosts][warn] elevation error: " + ex.Message);
             return false;
         }
     }

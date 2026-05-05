@@ -65,7 +65,7 @@ internal sealed class HostsTicker : IDisposable
             // condition we can't verify. Log once per state change.
             if (_lastPresent != null)
             {
-                Console.WriteLine("[hosts] tick: hosts file unreadable (" + error + ") — skipping check");
+                Console.WriteLine("[hosts][warn] tick: hosts file unreadable (" + error + ") -- skipping check");
                 _lastPresent = null;
             }
             return;
@@ -85,7 +85,7 @@ internal sealed class HostsTicker : IDisposable
         // backoff so user-declined-prompt doesn't loop every minute.
         if (_lastPresent != false)
         {
-            Console.WriteLine("[hosts] tick: " + HostsManager.MarkerHost + " missing — re-adding");
+            Console.WriteLine("[hosts] tick: " + HostsManager.MarkerHost + " missing -- re-adding");
             _lastPresent = false;
         }
 
@@ -111,7 +111,7 @@ internal sealed class HostsTicker : IDisposable
             }
             else
             {
-                Console.WriteLine("[hosts] tick: re-add failed (UAC declined or write blocked) — next attempt in " + (int)ReAddBackoff.TotalMinutes + " min");
+                Console.WriteLine("[hosts][warn] tick: re-add failed (UAC declined or write blocked) -- next attempt in " + (int)ReAddBackoff.TotalMinutes + " min");
             }
         }
         catch (Exception ex)

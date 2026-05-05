@@ -63,4 +63,27 @@
     <InternalsVisibleTo Include="WKVRCProxy.Tests" />
   </ItemGroup>
 
+  <!-- Build-time stamp file. build.ps1 writes the real git SHA + UTC
+       timestamp into Generated/BuildInfo.cs before publish. For builds
+       that bypass build.ps1 (dotnet test, dotnet build during dev), the
+       target below generates a placeholder so the compiler always finds
+       the BuildInfo class. Generated/ is gitignored so working-tree
+       stays clean across builds. -->
+  <Target Name="EnsureBuildInfo" BeforeTargets="CoreCompile"
+          Condition="!Exists('$(MSBuildThisFileDirectory)Generated\BuildInfo.cs')">
+    <MakeDir Directories="$(MSBuildThisFileDirectory)Generated" />
+    <ItemGroup>
+      <_BuildInfoLines Include="// AUTO-GENERATED placeholder for builds that bypass build.ps1." />
+      <_BuildInfoLines Include="// build.ps1 overwrites this with the real git short-SHA + build time." />
+      <_BuildInfoLines Include="namespace WKVRCProxy%3B" />
+      <_BuildInfoLines Include="internal static class BuildInfo" />
+      <_BuildInfoLines Include="{" />
+      <_BuildInfoLines Include="    public const string GitSha = &quot;&lt;unknown&gt;&quot;%3B" />
+      <_BuildInfoLines Include="    public const string BuildTime = &quot;&lt;unknown&gt;&quot;%3B" />
+      <_BuildInfoLines Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(MSBuildThisFileDirectory)Generated\BuildInfo.cs"
+                      Lines="@(_BuildInfoLines)" Overwrite="true" />
+  </Target>
+
 </Project>

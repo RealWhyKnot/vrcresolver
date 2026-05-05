@@ -62,7 +62,7 @@ internal sealed class PatchManager : IDisposable
             var procs = System.Diagnostics.Process.GetProcessesByName("VRChat");
             if (procs.Length == 0)
             {
-                Console.WriteLine("[patch] VRChat not detected — patch will apply immediately.");
+                Console.WriteLine("[patch] VRChat not detected -- patch will apply immediately.");
                 return;
             }
             // Pick the oldest (most likely the actual game; auxiliary tools
@@ -86,7 +86,7 @@ internal sealed class PatchManager : IDisposable
             catch { startedStr = "<unknown>"; }
             Console.WriteLine(
                 "[patch] VRChat is currently running (PID " + primary.Id +
-                ", started " + startedStr + ") — patch will apply when yt-dlp.exe isn't actively in use.");
+                ", started " + startedStr + ") -- patch will apply when yt-dlp.exe isn't actively in use.");
             foreach (var p in procs) try { p.Dispose(); } catch { /* best-effort */ }
         }
         catch (Exception ex)
@@ -94,7 +94,7 @@ internal sealed class PatchManager : IDisposable
             // Process enumeration can fail in locked-down contexts (RDP
             // session privileges, AV interference). Don't escalate; the
             // 3-s tick loop's lock probe handles correctness regardless.
-            Console.WriteLine("[patch] could not enumerate VRChat processes: " + ex.GetType().Name + ": " + ex.Message);
+            Console.WriteLine("[patch][warn] could not enumerate VRChat processes: " + ex.GetType().Name + ": " + ex.Message);
         }
     }
 
@@ -136,7 +136,7 @@ internal sealed class PatchManager : IDisposable
 
         if (File.Exists(backupPath))
         {
-            Console.WriteLine("[warn] Recovery: previous run exited uncleanly — restoring vanilla yt-dlp from yt-dlp-og.exe.");
+            Console.WriteLine("[patch][warn] Recovery: previous run exited uncleanly -- restoring vanilla yt-dlp from yt-dlp-og.exe.");
             RestoreYtDlpInTools(_vrcToolsDir);
             return;
         }
@@ -181,13 +181,13 @@ internal sealed class PatchManager : IDisposable
 
         if (string.IsNullOrEmpty(_vrcToolsDir))
         {
-            Console.WriteLine("Cannot apply patch — VRChat Tools folder not found. Launch VRChat once first, then re-run.");
+            Console.WriteLine("[patch][err] Cannot apply patch -- VRChat Tools folder not found. Launch VRChat once first, then re-run.");
             Interlocked.Exchange(ref _started, 0);
             return false;
         }
         if (!File.Exists(_patchedYtDlpPath))
         {
-            Console.WriteLine("Cannot apply patch — patched yt-dlp.exe is missing from this install. Reinstall WKVRCProxy.");
+            Console.WriteLine("[patch][err] Cannot apply patch -- patched yt-dlp.exe is missing from this install. Reinstall WKVRCProxy.");
             Interlocked.Exchange(ref _started, 0);
             return false;
         }
@@ -196,7 +196,7 @@ internal sealed class PatchManager : IDisposable
         string backupPath = Path.Combine(_vrcToolsDir, "yt-dlp-og.exe");
         if (!File.Exists(targetPath) && !File.Exists(backupPath))
         {
-            Console.WriteLine("Cannot apply patch — VRChat hasn't shipped its own yt-dlp.exe yet, and we have no original to preserve as fallback. Launch VRChat once first, then re-run.");
+            Console.WriteLine("[patch][err] Cannot apply patch -- VRChat hasn't shipped its own yt-dlp.exe yet, and we have no original to preserve as fallback. Launch VRChat once first, then re-run.");
             Interlocked.Exchange(ref _started, 0);
             return false;
         }
@@ -261,7 +261,7 @@ internal sealed class PatchManager : IDisposable
         while (!_cts.IsCancellationRequested)
         {
             try { TickOnce(); }
-            catch (Exception ex) { Console.WriteLine("[patch] tick error: " + ex.Message); }
+            catch (Exception ex) { Console.WriteLine("[patch][warn] tick error: " + ex.Message); }
             try { await Task.Delay(TickDelayMs, _cts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
@@ -299,7 +299,7 @@ internal sealed class PatchManager : IDisposable
                 try
                 {
                     AtomicCopy(_bundledFallbackPath, backupPath);
-                    Console.WriteLine("yt-dlp-og.exe was missing — restored from bundled fallback (" + ReadBundledFallbackVersion() + "). Server-side fallback path is now functional again.");
+                    Console.WriteLine("[patch] yt-dlp-og.exe was missing -- restored from bundled fallback (" + ReadBundledFallbackVersion() + "). Server-side fallback path is now functional again.");
                 }
                 catch (IOException) { return; } // disk-full / locked — retry next tick
             }
@@ -352,7 +352,10 @@ internal sealed class PatchManager : IDisposable
         if (TargetEqualsPatched(targetPath))
         {
             _consecutiveLockFailures = 0;
-            EmitTickStateChange(TickOutcome.Match, "[patch] tick: target matches patched, no action");
+            // File-only: redundant with the "wrapper installed at <path>"
+            // line that fires on the first tick after install. Sustained
+            // "no action" stretches now stay completely silent on console.
+            EmitTickStateChangeFileOnly(TickOutcome.Match, "[patch] tick: target matches patched, no action");
             return;
         }
         if ((DateTime.UtcNow - _lastPatchTime).TotalSeconds < MinReapplyGapSec) return;
@@ -422,6 +425,17 @@ internal sealed class PatchManager : IDisposable
         Console.WriteLine(message);
     }
 
+    // File-only variant for the steady-state Match outcome. Demoted in
+    // the logging audit (redundant with the "wrapper installed at <path>"
+    // line that fires when the patch first goes in). Same gating: only
+    // emits on outcome transition, not every tick.
+    private void EmitTickStateChangeFileOnly(TickOutcome outcome, string message)
+    {
+        if (_lastTickOutcome == outcome) return;
+        _lastTickOutcome = outcome;
+        Logger.WriteFileOnly(message);
+    }
+
     // Track consecutive IOException ticks so a sustained AV-lock or
     // permission-flip is visible in the console (pre-fix it was completely
     // silent — the watchdog appeared to be running but wasn't actually
@@ -435,7 +449,7 @@ internal sealed class PatchManager : IDisposable
         // is visible without filling the scrollback.
         if (_consecutiveLockFailures == 3)
         {
-            Console.WriteLine("[patch][warn] " + stage + " has failed 3 times in a row — possible antivirus interference or permissions issue. Last error: "
+            Console.WriteLine("[patch][warn] " + stage + " has failed 3 times in a row -- possible antivirus interference or permissions issue. Last error: "
                 + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 120));
         }
         else if (_consecutiveLockFailures > 3 && _consecutiveLockFailures % 20 == 0)
@@ -468,11 +482,11 @@ internal sealed class PatchManager : IDisposable
         // even after the message has scrolled off.
         Console.WriteLine("");
         Console.WriteLine("============================================================");
-        Console.WriteLine("[FATAL] WKVRCProxy halted — Reinstall WKVRCProxy");
+        Console.WriteLine("[FATAL] WKVRCProxy halted -- Reinstall WKVRCProxy");
         Console.WriteLine("[halt]  reason=" + reason + " restored=" + restored);
         Console.WriteLine("============================================================");
         Console.WriteLine("");
-        try { Console.Title = "WKVRCProxy — HALTED (" + reason + ")"; } catch { /* best-effort */ }
+        try { Console.Title = "WKVRCProxy -- HALTED (" + reason + ")"; } catch { /* best-effort */ }
 
         try { File.WriteAllText(_haltFlagPath, DateTime.UtcNow.ToString("o") + " " + reason); }
         catch (Exception ex) { Console.WriteLine("[halt] could not write halt.flag: " + ex.Message); }
@@ -529,7 +543,7 @@ internal sealed class PatchManager : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[patch] restore error: " + ex.Message);
+            Console.WriteLine("[patch][warn] restore error: " + ex.Message);
             return false;
         }
     }

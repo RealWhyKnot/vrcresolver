@@ -81,35 +81,44 @@ internal static class Program
 
             if (string.IsNullOrEmpty(url))
             {
-                // No URL in argv → not a resolve invocation (e.g.,
+                // No URL in argv -- not a resolve invocation (e.g.,
                 // `yt-dlp --version`, `--help`, or a probe). Forward
                 // straight to vanilla so diagnostic invocations work.
-                Log("no URL in argv → exec og fallback (diagnostic invocation)");
+                Log("no URL in argv -- exec og fallback (diagnostic invocation)");
+                await TrySendOgFallbackNotifyAsync(null, WireConstants.OgFallbackReasonNoUrlDiagnostic, swTotal.ElapsedMilliseconds).ConfigureAwait(false);
                 exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
                 outcome = "no-url-fallback";
             }
             else
             {
-                string? resolved;
+                (string? resolved, string? fallbackReason) result;
                 try
                 {
-                    resolved = await ResolveOverPipeAsync(url, player, formatArg).ConfigureAwait(false);
+                    result = await ResolveOverPipeAsync(url, player, formatArg).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
                     Log("UNHANDLED in pipe path: " + ex.GetType().Name + ": " + ex.Message);
-                    resolved = null;
+                    result = (null, WireConstants.OgFallbackReasonPipeResolveFailed);
                 }
 
-                if (!string.IsNullOrEmpty(resolved))
+                if (!string.IsNullOrEmpty(result.resolved))
                 {
-                    WriteUrlToStdout(resolved);
-                    Log("emitted resolved URL to stdout host=" + ExtractHost(resolved) + " bytes=" + resolved.Length);
+                    WriteUrlToStdout(result.resolved);
+                    Log("emitted resolved URL to stdout host=" + ExtractHost(result.resolved) + " bytes=" + result.resolved.Length);
                     exitCode = 0;
                     outcome = "pipe-resolved";
                 }
                 else
                 {
+                    // Notify the watchdog about the og fallback before
+                    // invoking og so the watchdog console surfaces the
+                    // fallback fact in real time. Fire-and-forget; the
+                    // notify uses a fresh pipe connection that closes
+                    // immediately, then we exec og normally.
+                    string reason = result.fallbackReason ?? WireConstants.OgFallbackReasonPipeResolveFailed;
+                    await TrySendOgFallbackNotifyAsync(url, reason, swTotal.ElapsedMilliseconds).ConfigureAwait(false);
+
                     exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
                     outcome = "pipe-failed-og-fallback";
                 }
@@ -125,9 +134,10 @@ internal static class Program
         }
     }
 
-    // Returns the resolved stream URL on success, null on any failure
-    // (caller falls back to yt-dlp-og.exe). Every exit branch logs.
-    private static async Task<string?> ResolveOverPipeAsync(string url, string player, string? formatArg)
+    // Returns (resolvedUrl, null) on success, (null, reason) on any
+    // failure (caller falls back to yt-dlp-og.exe and uses `reason` to
+    // notify the watchdog). Every exit branch logs.
+    private static async Task<(string? Url, string? FallbackReason)> ResolveOverPipeAsync(string url, string player, string? formatArg)
     {
         var swPipe = Stopwatch.StartNew();
         using var ctsConnect = new CancellationTokenSource(PipeConnectTimeout);
@@ -144,17 +154,17 @@ internal static class Program
         catch (OperationCanceledException)
         {
             Log("pipe connect TIMED OUT after " + swPipe.ElapsedMilliseconds + " ms (watchdog not running?)");
-            return null;
+            return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
         }
         catch (System.IO.FileNotFoundException)
         {
             Log("pipe connect ENOENT (watchdog not running)");
-            return null;
+            return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
         }
         catch (Exception ex)
         {
             Log("pipe connect failed: " + ex.GetType().Name + ": " + ex.Message);
-            return null;
+            return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
         }
 
         using var ctsResolve = new CancellationTokenSource(ResolveDeadline);
@@ -181,7 +191,7 @@ internal static class Program
 
         byte[] payload;
         try { payload = SerializeWithTrailingNewline(req); }
-        catch (Exception ex) { Log("request serialize failed: " + ex.Message); return null; }
+        catch (Exception ex) { Log("request serialize failed: " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
 
         var swSend = Stopwatch.StartNew();
         try
@@ -198,36 +208,36 @@ internal static class Program
             // payload length and stays comparable across the change.
             Log("request sent id=" + requestId[..8] + " bytes=" + (payload.Length - 1) + " player=" + player + " elapsed_ms=" + swSend.ElapsedMilliseconds);
         }
-        catch (Exception ex) { Log("pipe write failed: " + ex.GetType().Name + ": " + ex.Message); return null; }
+        catch (Exception ex) { Log("pipe write failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
 
         var swRead = Stopwatch.StartNew();
         string? line;
         try { line = await ReadLineAsync(pipe, ctsResolve.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) { Log("pipe read TIMED OUT after " + swRead.ElapsedMilliseconds + " ms (no terminal frame within " + (int)ResolveDeadline.TotalSeconds + " s)"); return null; }
-        catch (Exception ex) { Log("pipe read failed: " + ex.GetType().Name + ": " + ex.Message); return null; }
-        if (string.IsNullOrEmpty(line)) { Log("pipe returned empty response after " + swRead.ElapsedMilliseconds + " ms"); return null; }
+        catch (OperationCanceledException) { Log("pipe read TIMED OUT after " + swRead.ElapsedMilliseconds + " ms (no terminal frame within " + (int)ResolveDeadline.TotalSeconds + " s)"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+        catch (Exception ex) { Log("pipe read failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+        if (string.IsNullOrEmpty(line)) { Log("pipe returned empty response after " + swRead.ElapsedMilliseconds + " ms"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
 
         Log("response received bytes=" + line.Length + " elapsed_ms=" + swRead.ElapsedMilliseconds);
 
         ResolveResponse? resp;
         try { resp = JsonSerializer.Deserialize(line, WrapperJsonContext.Default.ResolveResponse); }
-        catch (Exception ex) { Log("response parse failed: " + ex.GetType().Name + ": " + ex.Message); return null; }
-        if (resp == null) { Log("response was null after deserialize"); return null; }
+        catch (Exception ex) { Log("response parse failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+        if (resp == null) { Log("response was null after deserialize"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
 
         if (resp.Action == WireConstants.ActionResolved && !string.IsNullOrEmpty(resp.Url))
         {
             Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] + " url-host=" + ExtractHost(resp.Url));
-            return resp.Url;
+            return (resp.Url, null);
         }
 
         if (resp.Action == WireConstants.ActionFallbackNative)
         {
             Log("response action=fallback_native id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] + " reason=" + (resp.Reason ?? "?"));
-            return null;
+            return (null, WireConstants.OgFallbackReasonServerFallbackNative);
         }
 
         Log("response action UNKNOWN: " + resp.Action);
-        return null;
+        return (null, WireConstants.OgFallbackReasonPipeResolveFailed);
     }
 
     // Serialize the request DTO with a trailing '\n' framing byte appended
@@ -241,6 +251,43 @@ internal static class Program
         Buffer.BlockCopy(body, 0, framed, 0, body.Length);
         framed[body.Length] = (byte)'\n';
         return framed;
+    }
+
+    // v3.2: notify the watchdog that we're falling back to og.exe so it
+    // can surface a single console line in real time. Fire-and-forget --
+    // open a fresh pipe, write one JSON-NDJSON line, close. Any failure
+    // (watchdog not running, pipe busy, etc.) is silently swallowed: og
+    // fallback must never fail because diagnostic IPC failed. Tight
+    // timeout (1.5 s) so a hung watchdog can't delay the og exec.
+    private static async Task TrySendOgFallbackNotifyAsync(string? url, string reason, long elapsedMs)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(1500));
+            using var pipe = new NamedPipeClientStream(
+                ".",
+                WireConstants.PipeName,
+                PipeDirection.InOut,
+                PipeOptions.Asynchronous);
+            try { await pipe.ConnectAsync(cts.Token).ConfigureAwait(false); }
+            catch { return; /* watchdog not running -- og still runs, no diagnostic line */ }
+
+            var notify = new WrapperEventNotify
+            {
+                Action = WireConstants.ActionOgFallbackNotify,
+                Url = url,
+                Reason = reason,
+                ElapsedMs = elapsedMs,
+                Rid = s_rid,
+            };
+            byte[] body = JsonSerializer.SerializeToUtf8Bytes(notify, WrapperJsonContext.Default.WrapperEventNotify);
+            byte[] framed = new byte[body.Length + 1];
+            Buffer.BlockCopy(body, 0, framed, 0, body.Length);
+            framed[body.Length] = (byte)'\n';
+            try { await pipe.WriteAsync(framed, cts.Token).ConfigureAwait(false); }
+            catch { /* fire-and-forget */ }
+        }
+        catch { /* fire-and-forget */ }
     }
 
     // Buffered NDJSON read. Mirrors LocalIpcServer's read loop so a single

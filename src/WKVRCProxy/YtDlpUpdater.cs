@@ -80,7 +80,7 @@ internal static class YtDlpUpdater
 
             if (string.IsNullOrEmpty(remoteVersion))
             {
-                Console.WriteLine("[yt-dlp] update check failed (could not reach GitHub)");
+                Console.WriteLine("[yt-dlp][warn] update check failed (could not reach GitHub)");
                 SaveState(statePath, state);
                 return;
             }
@@ -91,14 +91,16 @@ internal static class YtDlpUpdater
             if (!string.IsNullOrEmpty(localVersion)
                 && string.CompareOrdinal(localVersion, remoteVersion) >= 0)
             {
-                Console.WriteLine("[yt-dlp] bundled fallback up-to-date (" + localVersion + ")");
+                // File-only: silence-on-success. Only the out-of-date /
+                // updating / failed branches stay on console.
+                Logger.WriteFileOnly("[yt-dlp] bundled fallback up-to-date (" + localVersion + ")");
                 SaveState(statePath, state);
                 return;
             }
 
             Console.WriteLine("[yt-dlp] updating bundled fallback "
                 + (string.IsNullOrEmpty(localVersion) ? "<unknown>" : localVersion)
-                + " → " + remoteVersion);
+                + " -> " + remoteVersion);
 
             bool ok = await DownloadAndSwapAsync(fallbackPath, versionFile, remoteVersion).ConfigureAwait(false);
             if (ok)
@@ -108,15 +110,15 @@ internal static class YtDlpUpdater
             }
             else
             {
-                Console.WriteLine("[yt-dlp] update failed — bundled fallback left at " + (localVersion ?? "<unknown>"));
+                Console.WriteLine("[yt-dlp][warn] update failed -- bundled fallback left at " + (localVersion ?? "<unknown>"));
             }
             SaveState(statePath, state);
         }
         catch (Exception ex)
         {
-            // Last-ditch — never let a yt-dlp updater failure bubble up
+            // Last-ditch -- never let a yt-dlp updater failure bubble up
             // to the user as a stack trace. The watchdog is more important.
-            Console.WriteLine("[yt-dlp] background error: " + ex.Message);
+            Console.WriteLine("[yt-dlp][warn] background error: " + ex.Message);
         }
     }
 
