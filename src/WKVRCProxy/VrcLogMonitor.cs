@@ -201,6 +201,14 @@ internal sealed partial class VrcLogMonitor : IDisposable
         {
             try { await Task.Delay(SilentStallWindow, newCts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
+            // Race: a concurrent CancelStallWatchdog / supersession may
+            // Cancel + Dispose this CTS while Task.Delay's awaiter is
+            // mid-flight. Cancel fires the registered callback synchronously
+            // and queues the OCE continuation, but Dispose runs immediately
+            // after — by the time the continuation pulls newCts.Token it
+            // can hit a disposed source and throw ObjectDisposedException
+            // instead of OCE. Treat both as "task superseded, exit quietly".
+            catch (ObjectDisposedException) { return; }
 
             string? activeUrl;
             DateTime activeAt;

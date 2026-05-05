@@ -38,7 +38,7 @@ namespace WKVRCProxy;
 // ResolveResponse) are NOT on this DTO because server emits them only
 // on fallback_native via MsgpackFallbackNativeFrame.
 [MessagePackObject(AllowPrivate = true)]
-internal sealed class MsgpackResolvedFrame
+internal sealed partial class MsgpackResolvedFrame
 {
     [Key(0)] public string? Action { get; set; }
     [Key(1)] public string? Id { get; set; }
@@ -57,7 +57,7 @@ internal sealed class MsgpackResolvedFrame
 // "fallback_native" frame. Field order:
 //   0:Action 1:Id 2:Reason
 [MessagePackObject(AllowPrivate = true)]
-internal sealed class MsgpackFallbackNativeFrame
+internal sealed partial class MsgpackFallbackNativeFrame
 {
     [Key(0)] public string? Action { get; set; }
     [Key(1)] public string? Id { get; set; }
@@ -73,7 +73,7 @@ internal sealed class MsgpackFallbackNativeFrame
 // Client's resolve_log dispatch has always been file-only verbose; the
 // missing level just means we can't level-filter on the watchdog log.
 [MessagePackObject(AllowPrivate = true)]
-internal sealed class MsgpackResolveLogFrame
+internal sealed partial class MsgpackResolveLogFrame
 {
     [Key(0)] public string? Action { get; set; }
     [Key(1)] public string? Id { get; set; }

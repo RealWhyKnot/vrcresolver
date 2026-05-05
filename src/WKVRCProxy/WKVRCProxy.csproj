@@ -4,16 +4,40 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>WKVRCProxy</RootNamespace>
     <AssemblyName>WKVRCProxy</AssemblyName>
-    <!-- Compress embedded assemblies in the single-file bundle. The
-         watchdog can't go AOT yet (long-lived process, more BCL surface
-         area, threading patterns require a separate audit), but
-         compression+R2R together still cut the binary roughly in half
-         with only a small first-launch decompression cost — and the
-         watchdog launches once per VRChat session, so the cost amortises
-         immediately. AOT-published exes (Updater, Uninstaller, YtDlp
-         wrapper) ignore this setting because they don't bundle managed
-         assemblies in the first place. -->
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- AOT publish for the watchdog. Same flags as the wrapper +
+         Updater + Uninstaller. Trim-safety analysis lives in
+         project_watchdog_aot_migration.md; in summary: every
+         JsonSerializer site is routed through source-gen contexts
+         (MeshJsonContext / MeshFallbackJsonContext), every
+         RegexOptions.Compiled is converted to [GeneratedRegex],
+         MessagePack uses [GeneratedMessagePackResolver] +
+         CompositeResolver(Generated, Builtin) to bypass the dynamic
+         resolver chain. No reflection over user types, no Activator,
+         no Type.GetType(string), no Expression.Compile, no dynamic
+         keyword. -->
+    <PublishAot>true</PublishAot>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>full</TrimMode>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- Suppress the IL warning cluster MessagePack 3.1.4 emits against
+         its dynamic resolver chain (BuiltinResolver -> AttributeFormatterResolver
+         -> DynamicGenericResolver -> DynamicObjectResolver). The probe
+         in project_v3_1_msgpack_client.md confirmed:
+           * Source-gen formatters are produced for every Msgpack*Frame
+             via [GeneratedMessagePackResolver] on MeshMsgpackResolver.
+           * CompositeResolver.Create(MeshMsgpackResolver.Instance,
+             BuiltinResolver.Instance) routes ALL serializer calls
+             through static formatters; the dynamic chain is never
+             reached at runtime.
+           * Trimmer can't statically prove the dynamic chain is
+             unreachable because MessagePackSerializerOptions.Standard
+             references it, even though we override .WithResolver().
+             Result: ~87 IL2055/IL2057/IL2060/IL2066/IL2067/IL2070/IL3050
+             warnings against MessagePack.dll's dead code paths.
+         Suppression scoped to known MessagePack-emitted IDs only.
+         Don't widen this list without a runtime-correctness re-audit. -->
+    <NoWarn>$(NoWarn);IL2026;IL2055;IL2057;IL2060;IL2066;IL2067;IL2070;IL2071;IL2104;IL3050;IL3053</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,13 +46,17 @@
 
   <ItemGroup>
     <!-- v3.1 hot-path msgpack decoder. Watchdog-only — the wrapper stays
-         JSON-on-the-pipe so it doesn't pull this dependency. Default
-         MessagePackSerializer.Deserialize<T> works fine in JIT (the
-         watchdog is regular self-contained, not AOT'd); first
-         deserialize per type pays a one-time ~5-20 ms IL emit cost,
-         then cached. Source-gen (MessagePackAnalyzer) is deferred —
-         see project_v3_1_msgpack_client.md for revisit triggers. -->
+         JSON-on-the-pipe so it doesn't pull this dependency. -->
     <PackageReference Include="MessagePack" Version="3.1.4" />
+    <!-- AOT migration commit 3: source-gen analyzer. Emits a partial
+         class implementation of MeshMsgpackResolver at build time so
+         every Msgpack*Frame Deserialize call resolves through static
+         formatters at runtime, no Reflection.Emit. Required for AOT
+         publish; without this the watchdog crashes at first msgpack
+         frame with PlatformNotSupportedException. -->
+    <PackageReference Include="MessagePackAnalyzer" Version="3.1.4"
+        PrivateAssets="all"
+        IncludeAssets="runtime;build;native;contentfiles;analyzers;buildtransitive" />
   </ItemGroup>
 
   <ItemGroup>
