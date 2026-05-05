@@ -46,6 +46,13 @@ namespace WKVRCProxy;
 // ReportingService outbound /report frames (anonymous failure
 // telemetry; gated by WKVRCPROXY_ANONYMOUS_REPORTING).
 [JsonSerializable(typeof(ReportingService.ReportPayload))]
+// v3.2: ResolveCache persistent state at LocalLow root.
+// resolve_cache.json -- per-(url, player, format, node) fingerprint
+// keyed dict of cached `resolved` ResolveResponse + server-issued
+// expires_at timestamp. ResolveResponse is already covered above; the
+// file + entry types live alongside.
+[JsonSerializable(typeof(ResolveCacheFile))]
+[JsonSerializable(typeof(ResolveCacheEntry))]
 internal sealed partial class MeshJsonContext : JsonSerializerContext
 {
 }

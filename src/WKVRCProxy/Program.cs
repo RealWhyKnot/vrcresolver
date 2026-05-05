@@ -21,6 +21,7 @@ internal static class Program
     private static VrcLogMonitor? s_logmon;
     private static HostsTicker? s_hostsTicker;
     private static Heartbeat? s_heartbeat;
+    private static ResolveCache? s_resolveCache;
     private static readonly ManualResetEventSlim s_quitSignal = new(false);
     private static volatile bool s_fastShutdown;
 
@@ -200,15 +201,22 @@ internal static class Program
         s_patcher.RecoverFromUncleanShutdown();
 
         s_mesh = new MeshClient();
-        s_ipc = new LocalIpcServer(s_mesh);
+        // v3.2: persistent resolve cache. ResolveCache loads lazily on
+        // first Lookup/Store; passing the same instance to LocalIpcServer
+        // (writer + reader) and VrcLogMonitor (evict-on-stall) keeps the
+        // in-memory dict authoritative.
+        s_resolveCache = new ResolveCache();
+        s_ipc = new LocalIpcServer(s_mesh, s_resolveCache);
         s_ipc.Start();
         _ = s_mesh.StartAsync();
 
         // Watch VRChat's output_log_*.txt for AVPro playback failures and
         // forward as `playback_feedback` mesh frames. Server-side dispatch
         // uses these to demote whichever strategy/config produced a URL
-        // AVPro couldn't actually load.
-        s_logmon = new VrcLogMonitor(s_mesh);
+        // AVPro couldn't actually load. Also wired to ResolveCache so a
+        // load_failure / silent_stall on a cached URL evicts the cached
+        // entry, closing the staleness-detection loop without server help.
+        s_logmon = new VrcLogMonitor(s_mesh, s_resolveCache);
         s_logmon.Start();
 
         if (!s_patcher.Start())
@@ -366,6 +374,16 @@ internal static class Program
                     await WithTimeout(s_mesh.StopAsync(), Math.Min(remain, 3000), "mesh").ConfigureAwait(false);
                 }
                 catch (Exception ex) { Console.WriteLine("[shutdown] mesh: " + ex.Message); }
+            }
+
+            // Flush the resolve cache last so any debounced writes from
+            // the final pre-shutdown resolves land on disk. Synchronous +
+            // best-effort -- if the file system is misbehaving we lose
+            // the most recent entries; the next launch rebuilds them.
+            if (s_resolveCache != null)
+            {
+                try { s_resolveCache.FlushNow(); }
+                catch (Exception ex) { Console.WriteLine("[shutdown] resolve-cache: " + ex.Message); }
             }
         }
 

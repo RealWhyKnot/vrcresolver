@@ -36,6 +36,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
     private static partial Regex AvProOpeningRegex();
 
     private readonly MeshClient _mesh;
+    private readonly ResolveCache? _cache;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
 
@@ -50,7 +51,11 @@ internal sealed partial class VrcLogMonitor : IDisposable
     private DateTime _stallAt;
     private readonly object _stallLock = new();
 
-    public VrcLogMonitor(MeshClient mesh) { _mesh = mesh; }
+    public VrcLogMonitor(MeshClient mesh, ResolveCache? cache = null)
+    {
+        _mesh = mesh;
+        _cache = cache;
+    }
 
     public void Start()
     {
@@ -165,7 +170,13 @@ internal sealed partial class VrcLogMonitor : IDisposable
                     int ms = (int)(DateTime.UtcNow - _lastOpeningAt).TotalMilliseconds;
                     _lastOpeningUrl = null; // consume
                     _ = _mesh.SendPlaybackFeedbackAsync(failed, WireConstants.PlaybackFeedbackLoadFailure, ms);
-                    Console.WriteLine("[vrclog] load_failure ms=" + ms + " url=" + LogUtil.SanitizeForConsole(failed, 96));
+                    // v3.2: AVPro hard-failed on a URL we just served.
+                    // If it was cached, the cached entry is poison --
+                    // evict so the next resolve goes back to mesh and
+                    // gets a fresh URL.
+                    int evicted = _cache?.EvictByUrl(failed) ?? 0;
+                    Console.WriteLine("[vrclog] load_failure ms=" + ms + " url=" + LogUtil.SanitizeForConsole(failed, 96)
+                        + (evicted > 0 ? " evicted=" + evicted : ""));
                 }
                 CancelStallWatchdog();
                 continue;
@@ -225,7 +236,12 @@ internal sealed partial class VrcLogMonitor : IDisposable
 
             int ms = (int)(DateTime.UtcNow - activeAt).TotalMilliseconds;
             _ = _mesh.SendPlaybackFeedbackAsync(activeUrl, WireConstants.PlaybackFeedbackSilentStall, ms);
-            Console.WriteLine("[vrclog] silent_stall ms=" + ms + " url=" + LogUtil.SanitizeForConsole(activeUrl, 96));
+            // v3.2: AVPro fell silent on a URL we just served. If it was
+            // cached, the cached entry is poison -- evict so the next
+            // resolve goes back to mesh and gets a fresh URL.
+            int evicted = _cache?.EvictByUrl(activeUrl) ?? 0;
+            Console.WriteLine("[vrclog] silent_stall ms=" + ms + " url=" + LogUtil.SanitizeForConsole(activeUrl, 96)
+                + (evicted > 0 ? " evicted=" + evicted : ""));
         });
     }
 

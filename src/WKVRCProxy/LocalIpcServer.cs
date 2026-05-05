@@ -51,12 +51,14 @@ internal sealed partial class LocalIpcServer : IDisposable
     private const int MaxRequestBytes = 4 * 1024 * 1024;
 
     private readonly MeshClient _mesh;
+    private readonly ResolveCache? _cache;
     private readonly CancellationTokenSource _cts = new();
     private Task? _accepter;
 
-    public LocalIpcServer(MeshClient mesh)
+    public LocalIpcServer(MeshClient mesh, ResolveCache? cache = null)
     {
         _mesh = mesh;
+        _cache = cache;
     }
 
     public void Start()
@@ -333,24 +335,73 @@ internal sealed partial class LocalIpcServer : IDisposable
             string? failReason = null;
             string outcome = "?";
             string? serverReason = null;
+            bool viaCache = false;
+            string nodeHost = _mesh.CurrentNodeHost;
             try
             {
-                // Lossless forward: hand the whole DTO to MeshClient so v2 fields
-                // (protocol_version / accept_protocols / accept_codecs / etc.)
-                // and any unknown fields populated by the patched yt-dlp pass
-                // through to the mesh server unchanged. The DTO's
-                // [JsonExtensionData] bag preserves anything we don't statically
-                // know about.
-                //
-                // ResolveAsync returns the verified raw response bytes plus
-                // the pre-extracted action and server-supplied reason. We
-                // write the bytes straight to the pipe — no JsonDocument
-                // re-encode on the hot path — and use the extracted strings
-                // for the user-facing console summary.
-                MeshResolveResult result = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
-                await WriteFrameAsync(pipe, result.Frame, perReqCts.Token).ConfigureAwait(false);
-                outcome = result.Action;
-                serverReason = result.Reason;
+                // v3.2: resolve disk-cache lookup. If we have a cached
+                // `resolved` frame for (nodeHost, url, player, format)
+                // whose server-issued expires_at is still > now + 30s,
+                // replay it directly to the wrapper -- skip the WS
+                // round-trip + server-side lookup. Cache cap = 500
+                // entries; staleness is closed via VrcLogMonitor's
+                // silent_stall hook calling EvictByUrl.
+                CachedResolve? cached = _cache?.Lookup(nodeHost, req.Url, req.Player, req.VrchatFormatArg, req.Id ?? "");
+                if (cached.HasValue)
+                {
+                    await WriteFrameAsync(pipe, cached.Value.Frame, perReqCts.Token).ConfigureAwait(false);
+                    outcome = cached.Value.Action;
+                    serverReason = cached.Value.Reason;
+                    viaCache = true;
+                    Logger.WriteFileOnly("[resolve-cache] hit id=" + id +
+                        " host=" + ExtractHost(req.Url) +
+                        " bytes=" + cached.Value.Frame.Length);
+                }
+                else
+                {
+                    // Lossless forward: hand the whole DTO to MeshClient so v2 fields
+                    // (protocol_version / accept_protocols / accept_codecs / etc.)
+                    // and any unknown fields populated by the patched yt-dlp pass
+                    // through to the mesh server unchanged. The DTO's
+                    // [JsonExtensionData] bag preserves anything we don't statically
+                    // know about.
+                    //
+                    // ResolveAsync returns the verified raw response bytes plus
+                    // the pre-extracted action and server-supplied reason. We
+                    // write the bytes straight to the pipe -- no JsonDocument
+                    // re-encode on the hot path -- and use the extracted strings
+                    // for the user-facing console summary.
+                    MeshResolveResult result = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
+                    await WriteFrameAsync(pipe, result.Frame, perReqCts.Token).ConfigureAwait(false);
+                    outcome = result.Action;
+                    serverReason = result.Reason;
+
+                    // Cache the response on terminal `resolved` with a
+                    // non-null expires_at. ResolveCache.Store gates these
+                    // conditions itself; we still parse the frame here so
+                    // the typed ResolveResponse round-trips cleanly through
+                    // the source-gen path on subsequent hits.
+                    if (_cache != null && outcome == WireConstants.ActionResolved && !string.IsNullOrEmpty(nodeHost))
+                    {
+                        try
+                        {
+                            var parsed = JsonSerializer.Deserialize(result.Frame, MeshJsonContext.Default.ResolveResponse);
+                            if (parsed != null)
+                            {
+                                bool defaultTtl = string.IsNullOrEmpty(parsed.ExpiresAt);
+                                _cache.Store(nodeHost, req.Url, req.Player, req.VrchatFormatArg, parsed);
+                                Logger.WriteFileOnly("[resolve-cache] stored id=" + id +
+                                    " host=" + ExtractHost(req.Url) +
+                                    (defaultTtl ? " ttl=default" : " ttl=server"));
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.WriteFileOnly("[resolve-cache] store failed id=" + id +
+                                ": " + ex.GetType().Name + ": " + ex.Message);
+                        }
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -395,7 +446,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             if (outcome == WireConstants.ActionResolved)
             {
                 color = ConsoleColor.Green;
-                symbolAndStatus = "OK resolved";
+                symbolAndStatus = viaCache ? "OK cached" : "OK resolved";
             }
             else if (failReason != null)
             {
@@ -416,12 +467,13 @@ internal sealed partial class LocalIpcServer : IDisposable
             WriteUserActivity(color, "     " + symbolAndStatus + "  " + elapsedLabel);
 
             // Detailed per-request line (id, cid, full outcome) routed to
-            // the rolling watchdog log only — kept off the user-facing
+            // the rolling watchdog log only -- kept off the user-facing
             // console window so the friendly summary above stays scannable.
             Logger.WriteFileOnly(
                 "[ipc] resolve id=" + id + CidSuffix(cid) +
                 " player=" + LogUtil.SanitizeForConsole(req.Player ?? WireConstants.PlayerUnknown, 16) +
                 " outcome=" + LogUtil.SanitizeForConsole(outcome, 48) +
+                (viaCache ? " via=cache" : "") +
                 " elapsed_ms=" + (long)swReq.Elapsed.TotalMilliseconds);
         }
         catch (Exception ex)
