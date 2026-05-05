@@ -25,6 +25,12 @@ namespace WKVRCProxy;
 [JsonSerializable(typeof(WelcomeCachedFrame))]
 [JsonSerializable(typeof(WelcomeCacheFile))]
 [JsonSerializable(typeof(WelcomeCacheEntry))]
+// v3.1: ResolveResponse is the JSON shape we transcode TO when the
+// server sent a msgpack-Binary frame on the hot path. Wrapper consumes
+// JSON-on-pipe regardless of WS-side wire format; this serializer
+// context produces the bytes the existing MeshResolveResult.Frame
+// passthrough writes to LocalIpcServer's pipe write.
+[JsonSerializable(typeof(ResolveResponse))]
 internal sealed partial class MeshJsonContext : JsonSerializerContext
 {
 }

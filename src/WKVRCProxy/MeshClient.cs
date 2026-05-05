@@ -187,13 +187,15 @@ internal sealed class MeshClient : IAsyncDisposable
         {
             WelcomeHash = cachedHash,
             ClientId = _clientId,
-            // v3.1 staged rollout: this commit ships the field with an
-            // explicit json-only opt-out so the receive loop (which
-            // doesn't yet know how to decode Binary) never sees one.
-            // The next commit flips this to AcceptFormatsPreference
-            // (msgpack, json) simultaneously with the binary-frame
-            // dispatch implementation.
-            AcceptFormats = WireConstants.AcceptFormatsJsonOnly,
+            // v3.1: prefer msgpack on the post-welcome hot path,
+            // fall back to json. Server picks the first format from
+            // this list that it supports — v3.0 servers (or v3.1
+            // servers that fail to advertise msgpack_format) just
+            // pick "json" and the connection runs as v3.0. Binary
+            // frame dispatch is gated on _isMsgpackFormat, set on
+            // welcome / welcome_cached receipt from the
+            // negotiated_format field.
+            AcceptFormats = WireConstants.AcceptFormatsPreference,
         };
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(hello, MeshJsonContext.Default.ClientHelloFrame);
         await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
@@ -628,8 +630,33 @@ internal sealed class MeshClient : IAsyncDisposable
                     if (ms.Length > 4 * 1024 * 1024) throw new InvalidOperationException("frame too large");
                 } while (!r.EndOfMessage);
 
-                if (r.MessageType != WebSocketMessageType.Text) continue;
-                await DispatchFrameAsync(ms.ToArray(), pumpCts.Token).ConfigureAwait(false);
+                switch (r.MessageType)
+                {
+                    case WebSocketMessageType.Text:
+                        await DispatchFrameAsync(ms.ToArray(), pumpCts.Token).ConfigureAwait(false);
+                        break;
+                    case WebSocketMessageType.Binary:
+                        if (_isMsgpackFormat)
+                        {
+                            await DispatchBinaryFrameAsync(ms.ToArray(), pumpCts.Token).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            // Defense-in-depth: server should NEVER send
+                            // Binary on a connection it negotiated as
+                            // json. Either a server bug or a hostile
+                            // MITM on the upgraded WS. Tear down + let
+                            // the run loop reconnect with a fresh
+                            // negotiation.
+                            Console.WriteLine("[mesh][warn] unexpected Binary frame on json-negotiated connection — aborting + reconnecting");
+                            try { _ws?.Abort(); } catch { /* ignore */ }
+                            return;
+                        }
+                        break;
+                    // Close handled above. Other types (Ping/Pong are
+                    // handled by the framework, not surfaced through
+                    // ReceiveAsync) ignored.
+                }
             }
         }
         finally
@@ -666,6 +693,185 @@ internal sealed class MeshClient : IAsyncDisposable
                 try { ws.Abort(); } catch { /* ignore */ }
                 return;
             }
+        }
+    }
+
+    // v3.1: dispatch a server-sent Binary frame. Decodes the msgpack
+    // payload via per-action DTO, transcodes to the JSON shape the
+    // wrapper-side pipe expects, and routes through the same _pending
+    // TCS map that DispatchFrameAsync's text-frame path uses. Wrapper
+    // sees identical JSON regardless of which wire format the watchdog
+    // negotiated; only the WS hop changes.
+    //
+    // Action discriminant lives at [Key(0)]. Peeking it via
+    // MessagePackReader avoids a full deserialize of the trailing
+    // fields when we can't route the frame anyway. Per-DTO deserialize
+    // happens once we know the action.
+    //
+    // Decoder cold-start: first deserialize per type pays a one-time
+    // ~5-20 ms IL emit cost (MessagePackSerializer's runtime resolver
+    // builds a formatter on first use, caches forever). Subsequent
+    // calls run at near-source-gen speed. Acceptable for the
+    // watchdog's hours-long lifetime — see project_v3_1_msgpack_client.md
+    // for the source-gen deferral rationale.
+    private async Task DispatchBinaryFrameAsync(byte[] payload, CancellationToken ct)
+    {
+        // Peek action without consuming the array — MessagePackReader
+        // is a ref-struct over a ReadOnlySequence<byte> view.
+        string action;
+        try
+        {
+            var reader = new MessagePack.MessagePackReader(payload);
+            // Frame is a fixed-length array; first element is action string.
+            int count = reader.ReadArrayHeader();
+            if (count < 1)
+            {
+                LogBinaryParseFailure("empty msgpack array (count=0)", payload);
+                return;
+            }
+            action = reader.ReadString() ?? "";
+        }
+        catch (Exception ex)
+        {
+            LogBinaryParseFailure("action peek: " + ex.GetType().Name + ": " + ex.Message, payload);
+            return;
+        }
+
+        switch (action)
+        {
+            case WireConstants.ActionResolved:
+            {
+                MsgpackResolvedFrame? mp;
+                try { mp = MessagePack.MessagePackSerializer.Deserialize<MsgpackResolvedFrame>(payload); }
+                catch (Exception ex)
+                {
+                    LogBinaryParseFailure("resolved deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                    return;
+                }
+                if (mp == null || string.IsNullOrEmpty(mp.Id)) return;
+
+                // Transcode to the JSON ResolveResponse shape the
+                // wrapper expects. Field-by-field copy — server's
+                // msgpack tag list omits Reason/Message on resolved
+                // frames so we just don't populate them.
+                var resp = new ResolveResponse
+                {
+                    Action = WireConstants.ActionResolved,
+                    Id = mp.Id ?? "",
+                    Url = mp.Url,
+                    Engine = mp.Engine,
+                    Config = mp.Config,
+                    Container = mp.Container,
+                    VideoCodec = mp.VideoCodec,
+                    AudioCodec = mp.AudioCodec,
+                    Protocol = mp.Protocol,
+                    AudioChannels = mp.AudioChannels,
+                    BytesEstimate = mp.BytesEstimate,
+                    ExpiresAt = mp.ExpiresAt,
+                };
+                byte[] jsonFrame = JsonSerializer.SerializeToUtf8Bytes(resp, MeshJsonContext.Default.ResolveResponse);
+
+                // Same downstream routing as the text-path: stats
+                // recording (bytes_estimate accumulator), recent-cid
+                // map (resolved URL → cid for VrcLogMonitor), pending
+                // TCS resolve.
+                if (mp.BytesEstimate.HasValue)
+                    WatchdogStats.RecordBytesEstimate(mp.BytesEstimate.Value);
+
+                _inflightCids.TryRemove(mp.Id!, out var cid);
+                if (!string.IsNullOrEmpty(cid) && !string.IsNullOrEmpty(mp.Url))
+                    RememberResolvedUrlCid(mp.Url!, cid);
+
+                if (_pending.TryRemove(mp.Id!, out var tcs))
+                {
+                    _reconnectAttempt = 0;
+                    tcs.TrySetResult(new MeshResolveResult(jsonFrame, WireConstants.ActionResolved, null));
+                }
+                return;
+            }
+            case WireConstants.ActionFallbackNative:
+            {
+                MsgpackFallbackNativeFrame? mp;
+                try { mp = MessagePack.MessagePackSerializer.Deserialize<MsgpackFallbackNativeFrame>(payload); }
+                catch (Exception ex)
+                {
+                    LogBinaryParseFailure("fallback_native deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                    return;
+                }
+                if (mp == null || string.IsNullOrEmpty(mp.Id)) return;
+
+                LogFallbackNative(mp.Id!, mp.Reason);
+
+                var resp = new ResolveResponse
+                {
+                    Action = WireConstants.ActionFallbackNative,
+                    Id = mp.Id ?? "",
+                    Reason = mp.Reason,
+                };
+                byte[] jsonFrame = JsonSerializer.SerializeToUtf8Bytes(resp, MeshJsonContext.Default.ResolveResponse);
+
+                _inflightCids.TryRemove(mp.Id!, out _);
+                if (_pending.TryRemove(mp.Id!, out var tcs))
+                {
+                    tcs.TrySetResult(new MeshResolveResult(jsonFrame, WireConstants.ActionFallbackNative, mp.Reason));
+                }
+                return;
+            }
+            case WireConstants.ActionResolveLog:
+            {
+                MsgpackResolveLogFrame? mp;
+                try { mp = MessagePack.MessagePackSerializer.Deserialize<MsgpackResolveLogFrame>(payload); }
+                catch (Exception ex)
+                {
+                    LogBinaryParseFailure("resolve_log deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                    return;
+                }
+                if (mp == null) return;
+                Logger.WriteFileOnly(
+                    "[mesh][resolve_log] id=" + LogUtil.SanitizeForConsole(mp.Id ?? "", 32) +
+                    " " + LogUtil.SanitizeForConsole(mp.Message ?? "", 240));
+                return;
+            }
+            default:
+                Console.WriteLine("[mesh][warn] unknown binary action — discarding: "
+                    + LogUtil.SanitizeForConsole(action, 64));
+                return;
+        }
+    }
+
+    // Dedupe binary parse failures by message prefix so a flapping
+    // server can't flood scrollback. One log per (prefix) per minute.
+    // Uses the existing _parseFailDedupe dict scheme keyed on the
+    // exception message rather than type name (binary errors come
+    // through with rich messages, not type-name distinctions).
+    private void LogBinaryParseFailure(string detail, byte[] payload)
+    {
+        string key = "binary:" + detail.Split(':')[0];
+        var now = DateTime.UtcNow;
+        bool emit;
+        int count;
+        lock (_parseFailDedupe)
+        {
+            if (!_parseFailDedupe.TryGetValue(key, out var entry)
+                || (now - entry.LastEmit).TotalMinutes >= 1)
+            {
+                count = entry.Count + 1;
+                _parseFailDedupe[key] = (now, count);
+                emit = true;
+            }
+            else
+            {
+                count = entry.Count + 1;
+                _parseFailDedupe[key] = (entry.LastEmit, count);
+                emit = false;
+            }
+        }
+        if (emit)
+        {
+            Console.WriteLine(
+                "[mesh][warn] binary frame parse failed (" + key + " x" + count + " in last min): " +
+                LogUtil.SanitizeForConsole(detail, 200) +
+                " — preview=" + LogUtil.PayloadPreview(payload, 60));
         }
     }
 
