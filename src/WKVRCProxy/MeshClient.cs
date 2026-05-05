@@ -103,6 +103,14 @@ internal sealed class MeshClient : IAsyncDisposable
     private string _currentNodeHost = "";
     private readonly WelcomeCache _welcomeCache = new();
 
+    // v3.1: post-welcome wire format the server selected for THIS
+    // connection. Set on welcome / welcome_cached receipt from the
+    // negotiated_format field; null/missing field defaults to
+    // FormatJson (v3.0 behaviour). Drives the receive-loop branch on
+    // WebSocketMessageType.Binary — only honoured when this is "msgpack".
+    private string _negotiatedFormat = WireConstants.FormatJson;
+    private bool _isMsgpackFormat;
+
     // Per-connection welcome state. _welcomeTcs is reset on every successful
     // ConnectAsync; the 1s fallback completes it with null if the server is
     // pre-v2 (silent) and the dispatch handler completes it with the parsed
@@ -179,6 +187,13 @@ internal sealed class MeshClient : IAsyncDisposable
         {
             WelcomeHash = cachedHash,
             ClientId = _clientId,
+            // v3.1 staged rollout: this commit ships the field with an
+            // explicit json-only opt-out so the receive loop (which
+            // doesn't yet know how to decode Binary) never sees one.
+            // The next commit flips this to AcceptFormatsPreference
+            // (msgpack, json) simultaneously with the binary-frame
+            // dispatch implementation.
+            AcceptFormats = WireConstants.AcceptFormatsJsonOnly,
         };
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(hello, MeshJsonContext.Default.ClientHelloFrame);
         await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
@@ -408,6 +423,8 @@ internal sealed class MeshClient : IAsyncDisposable
                 _serverVersion = null;
                 _ytDlpVersion = null;
                 _isV3Connection = false;
+                _negotiatedFormat = WireConstants.FormatJson;
+                _isMsgpackFormat = false;
                 _currentNodeHost = node;
                 var welcomeTcs = new TaskCompletionSource<WelcomeFrame?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _welcomeTcs = welcomeTcs;
@@ -770,6 +787,15 @@ internal sealed class MeshClient : IAsyncDisposable
                     _serverVersion = welcome.ServerVersion;
                     _ytDlpVersion = welcome.YtDlpVersion;
 
+                    // v3.1: capture the post-welcome wire format the
+                    // server picked from our accept_formats list. Null
+                    // / missing field = "json" (v3.0 server, or v3.1
+                    // server we sent json-only opt-out to).
+                    _negotiatedFormat = welcome.NegotiatedFormat ?? WireConstants.FormatJson;
+                    _isMsgpackFormat = string.Equals(_negotiatedFormat, WireConstants.FormatMsgpack, StringComparison.Ordinal);
+                    Logger.WriteFileOnly("[mesh][v3.1] negotiated_format=" + _negotiatedFormat
+                        + " isMsgpack=" + _isMsgpackFormat);
+
                     // Spec marks engines + features required on welcome.
                     // Surface a warning if either is null so a server-side
                     // regression that drops the field is diagnosable.
@@ -867,8 +893,17 @@ internal sealed class MeshClient : IAsyncDisposable
                 _serverVersion = entry.ServerVersion;
                 _ytDlpVersion = entry.YtDlpVersion;
 
+                // v3.1: server's negotiated format is per-connection,
+                // never cached — read from the dynamic fields the
+                // welcome_cached frame carries. Null / missing field
+                // means json (v3.0 server, or v3.1 server we sent
+                // json-only opt-out to).
+                _negotiatedFormat = cached?.NegotiatedFormat ?? WireConstants.FormatJson;
+                _isMsgpackFormat = string.Equals(_negotiatedFormat, WireConstants.FormatMsgpack, StringComparison.Ordinal);
+
                 Logger.WriteFileOnly("[mesh][v3] welcome_cached hit node="
                     + (_serverNode ?? "?") + " v=" + negotiated
+                    + " negotiated_format=" + _negotiatedFormat
                     + " features=" + (entry.Features != null
                         ? string.Join(",", entry.Features) : "<none>"));
                 // No INFO console line — equivalent state was already

@@ -72,11 +72,49 @@ public static class WireConstants
     // v3 field on welcome / client_hello.
     public const string FieldWelcomeHash = "welcome_hash";
 
+    // v3.1 fields. accept_formats on client_hello is the client's
+    // preference-ordered list of post-welcome wire formats the server may
+    // pick from. negotiated_format on welcome / welcome_cached is the
+    // server's choice for THIS connection — fixed at handshake time, not
+    // per-frame. Control frames (welcome / welcome_cached / client_hello)
+    // are always JSON-Text regardless of the negotiated format; only the
+    // hot-path frames (resolved / fallback_native / resolve_log) honour
+    // the negotiation.
+    public const string FieldAcceptFormats = "accept_formats";
+    public const string FieldNegotiatedFormat = "negotiated_format";
+    public const string FormatJson = "json";
+    public const string FormatMsgpack = "msgpack";
+
     // v3 advisory feature strings that may appear in welcome.features. The
     // client doesn't gate on them — feature presence reflects what the
     // server promises, not what the client must verify.
     public const string FeatureV3Compression = "v3_compression";
     public const string FeatureWelcomeHashAck = "welcome_hash_ack";
+    // v3.1: server advertises this when it can speak msgpack on the hot
+    // path. Client gates the binary-frame dispatch on the welcome's
+    // negotiated_format == "msgpack" (server picks per-connection from
+    // our accept_formats list); the feature string is informational.
+    public const string FeatureMsgpackFormat = "msgpack_format";
+
+    // v3.1 client preference order for post-welcome wire format. Sent
+    // verbatim as the client_hello.accept_formats field. The first
+    // element is the most-preferred format; server picks the first
+    // element from this list that it supports. msgpack is preferred for
+    // its measured 60% wire-size and 67% decode-time win on the hot
+    // path (commit-2 benchmark below); json is the universal fallback
+    // so a v2 server (or a v3.0 server that doesn't know the field)
+    // still resolves cleanly.
+    public static readonly string[] AcceptFormatsPreference = { FormatMsgpack, FormatJson };
+
+    // Sentinel for the v3.0-style behaviour: explicit json-only opt-out.
+    // Maintains v3.0 wire shape — no msgpack Binary frames will arrive
+    // even if the server advertises msgpack_format. Used during the
+    // v3.1 staged rollout: commit 1 ships the JSON-side wire fields
+    // with AcceptFormats fixed at this list so the receive loop (which
+    // doesn't yet know how to decode Binary) never sees one. Commit 2
+    // flips the watchdog over to AcceptFormatsPreference simultaneously
+    // with the binary-frame dispatch implementation.
+    public static readonly string[] AcceptFormatsJsonOnly = { FormatJson };
 
     // Player vocabulary. Spec is case-sensitive; only "avpro" and "unity" are
     // valid on the wire. PlayerUnknown is a watchdog-internal tag for log
@@ -183,6 +221,11 @@ public sealed class WelcomeFrame
     [JsonPropertyName("yt_dlp_version")] public string? YtDlpVersion { get; set; }
     [JsonPropertyName("server_version")] public string? ServerVersion { get; set; }
     [JsonPropertyName("welcome_hash")] public string? WelcomeHash { get; set; }
+    // v3.1: server's chosen post-welcome wire format. Picked from the
+    // client_hello.accept_formats list at handshake time and fixed for
+    // the connection's lifetime. Null/absent means "json" (v3.0
+    // behaviour). Values: "json" or "msgpack".
+    [JsonPropertyName("negotiated_format")] public string? NegotiatedFormat { get; set; }
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
@@ -198,6 +241,10 @@ public sealed class ClientHelloFrame
     [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionClientHello;
     [JsonPropertyName("welcome_hash")] public string? WelcomeHash { get; set; }
     [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
+    // v3.1: preference-ordered list of post-welcome wire formats the
+    // server may choose from. Null/absent means "v3.0-style hello, server
+    // defaults to json." See WireConstants.AcceptFormatsPreference.
+    [JsonPropertyName("accept_formats")] public string[]? AcceptFormats { get; set; }
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
@@ -213,6 +260,12 @@ public sealed class WelcomeCachedFrame
     [JsonPropertyName("protocol_version")] public int ProtocolVersion { get; set; }
     [JsonPropertyName("node")] public string? Node { get; set; }
     [JsonPropertyName("warp_active")] public bool? WarpActive { get; set; }
+    // v3.1: same semantics as WelcomeFrame.NegotiatedFormat — server's
+    // chosen post-welcome wire format. Repeated on welcome_cached
+    // because the format is per-connection, not cached: a returning
+    // watchdog may have cached features but the format choice depends
+    // on the just-sent client_hello.accept_formats and is fresh.
+    [JsonPropertyName("negotiated_format")] public string? NegotiatedFormat { get; set; }
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
