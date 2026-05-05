@@ -61,6 +61,7 @@ The most recent release is at the top.
 - harden(state): cap state-file reads + clean tmp residue + clarify deflate trust (13e308b)
 - **regex:** GeneratedRegex source-gen across watchdog (92ece39)
 - **json:** Route every JsonSerializer site through source-gen contexts (e6f5df5)
+- Bump the minor-and-patch group with 2 updates (#55) (ed7b866)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
