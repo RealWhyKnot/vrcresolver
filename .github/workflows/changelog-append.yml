@@ -30,6 +30,15 @@ on:
       - '.gitignore'
       - '.gitattributes'
       - '.editorconfig'
+  # Manual trigger so a failed run (e.g. transient GraphQL error, or a push
+  # whose head_commit message accidentally tripped the recursion filter) can
+  # be re-driven without waiting for the next push.
+  workflow_dispatch:
+    inputs:
+      range:
+        description: 'Override commit range (default: HEAD~1..HEAD).'
+        required: false
+        default: ''
 
 permissions:
   contents: write   # push the appender's commit back to main
@@ -42,7 +51,12 @@ concurrency:
 
 jobs:
   append:
-    if: ${{ github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip changelog]') }}
+    # Recursion guard for the push trigger: skip if the bot was the actor
+    # (the appender's own commit) or if the head commit carries the marker
+    # in its subject line (release.yml's promotion commit, manual back-fill
+    # on a docs-only push, etc.). workflow_dispatch always runs -- the
+    # operator picked it on purpose.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip changelog]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -55,15 +69,32 @@ jobs:
       - name: Compute push range
         id: range
         shell: bash
+        env:
+          DISPATCH_RANGE: ${{ inputs.range }}
         run: |
           set -euo pipefail
+
+          # workflow_dispatch path: honour the manual range input if set,
+          # otherwise default to HEAD~1..HEAD (last commit).
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ -n "$DISPATCH_RANGE" ]]; then
+              range="$DISPATCH_RANGE"
+              echo "workflow_dispatch with input range: $range"
+            else
+              range="HEAD~1..HEAD"
+              echo "workflow_dispatch with default range: $range"
+            fi
+            echo "range=$range" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           before='${{ github.event.before }}'
           after='${{ github.event.after }}'
 
-          # First push to a branch arrives with before=000... — fall back to
+          # First push to a branch arrives with before=000... -- fall back to
           # the parent of the current commit so we still process the head.
           if [[ "$before" =~ ^0+$ ]]; then
-            echo "First-push detection (before is zeros) — using HEAD~1..HEAD."
+            echo "First-push detection (before is zeros) -- using HEAD~1..HEAD."
             range="HEAD~1..HEAD"
           else
             # Force-push edge case: if before isn't an ancestor, the simple
@@ -72,7 +103,7 @@ jobs:
             if git merge-base --is-ancestor "$before" "$after" 2>/dev/null; then
               range="$before..$after"
             else
-              echo "before $before is not an ancestor of $after (force-push?) — using HEAD~1..HEAD."
+              echo "before $before is not an ancestor of $after (force-push?) -- using HEAD~1..HEAD."
               range="HEAD~1..HEAD"
             fi
           fi
