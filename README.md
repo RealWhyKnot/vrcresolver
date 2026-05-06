@@ -16,7 +16,7 @@ A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build t
 - **Server-side resolution behind WARP egress.** YouTube extraction happens on the backend behind Cloudflare WARP, so regional blocks and IP-rate-limits don't cost you a stalled video.
 - **Per-URL disk cache.** First resolve of a URL takes 2 to 3 seconds end-to-end. Second resolve in the same session lands in 20 ms (a 99.2% latency reduction on the wrapper-side). Cache survives watchdog restarts.
 - **HLS-first format selection.** AVPro gets 1080p HLS, not 360p progressive mp4. The dispatcher picks the best match for the player VRChat asked for.
-- **AOT-compiled.** Watchdog binary is 8.97 MB on disk; cold start to mesh-connected is ~486 ms. The patched yt-dlp shim VRChat invokes per video player is 3.27 MB native code with no JIT.
+- **AOT-compiled.** Watchdog binary is 10.1 MB on disk; cold start to mesh-connected is ~486 ms. The patched yt-dlp shim VRChat invokes per video player is 3.3 MB native code with no JIT.
 - **Server auto-updates yt-dlp nightly.** YouTube ships a breaking change at 2 AM UTC; the resolver picks up the upstream fix within 24 hours without you doing anything.
 - **Graceful fallback.** Every failure path execs the vanilla `yt-dlp.exe` that was bundled into VRChat. You never end up with a broken `Tools/yt-dlp.exe`.
 
@@ -29,7 +29,7 @@ What it does NOT do: bypass DRM, change VRChat's per-avatar limits, host content
 | Binary | Role |
 |---|---|
 | `WKVRCProxy.exe` | the watchdog. Long-running console window. Patches VRChat, holds the WebSocket, runs the trust-gateway listener. |
-| `tools/yt-dlp.exe` | the patched shim. Replaces VRChat's bundled yt-dlp at install time. AOT, 3.27 MB. |
+| `tools/yt-dlp.exe` | the patched shim. Replaces VRChat's bundled yt-dlp at install time. AOT, 3.3 MB. |
 | `tools/yt-dlp-og-fallback.exe` | bundled vanilla yt-dlp. Safety net when VRChat's own copy is missing (fresh install, file deleted, etc.). |
 | `WKVRCProxy.Updater.exe` | self-update against GitHub releases. Manual run. |
 | `WKVRCProxy.Uninstaller.exe` | restore the original `yt-dlp.exe`, remove the hosts entry, wipe state. No prompt; running it IS consent. |
