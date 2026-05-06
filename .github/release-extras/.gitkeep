@@ -1,0 +1,19 @@
+# Per-release extras files live in this directory.
+#
+# Convention: .github/release-extras/<tag>.md (e.g. v2026.5.5.5.md). If the
+# file exists when the release workflow runs, its contents are appended below
+# the auto-generated changelog slice with a `---` separator and an
+# `## Additional notes` heading.
+#
+# Use only for content that genuinely cannot be captured in commit subjects:
+# server-side coordination notes, migration instructions, links to a wiki
+# page that has the long-form details, etc. Anything that IS a code change
+# should land as a conventional-commit subject and let the auto-generator
+# pick it up.
+#
+# The same scrub gates (ASCII normalisation, voice + internal-only-vocabulary
+# check) run on the composed body, so an em-dash or a phrase like the
+# stock-marketing word for "covering everything" in an extras file fails
+# the workflow just as it would in a commit subject.
+#
+# See .github/RELEASE_WORKFLOW.md for the full policy.

@@ -170,7 +170,7 @@ public class V31MsgpackTests
     [Fact]
     public void MsgpackResolvedFrame_tolerates_extra_trailing_fields()
     {
-        // Forward-compat test (server agent's Q6 promise). MessagePack's
+        // Forward-compat test (per server protocol spec). MessagePack's
         // array layout includes the element count, so a v3.1 client
         // reading a hypothetical v3.5 frame with extra trailing fields
         // must silently skip the extras instead of throwing.

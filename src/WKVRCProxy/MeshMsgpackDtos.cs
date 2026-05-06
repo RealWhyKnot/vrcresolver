@@ -10,21 +10,21 @@ namespace WKVRCProxy;
 // guarantees the wrapper csproj never sees a MessagePack assembly
 // reference + the wrapper's AOT publish stays unaffected.
 //
-// Wire-tag-fragility rule (server agent confirmed Q6):
+// Wire-tag-fragility rule (per server protocol spec):
 //
 //   * Integer keys [Key(N)] are positional. The N values MUST mirror
 //     the server's MeshResolveProtocol.cs byte-exact.
 //   * NEW fields go at the next free index, never reuse a removed
 //     index, never reorder existing properties. A property reorder =
 //     silent corruption on the wire (server emits N=2 thinking it's
-//     Url, client reads N=2 thinking it's Engine — same type, no
+//     Url, client reads N=2 thinking it's Engine -- same type, no
 //     deserialize error, just wrong values).
 //   * Trailing nullable fields beyond what THIS client knows are
-//     skipped silently — MessagePack array-layout includes the count
+//     skipped silently -- MessagePack array-layout includes the count
 //     so a v3.1 client reading a v3.5 frame ignores the extra trailing
 //     values without throwing.
 //
-// Field orders pinned per server agent's Q5 reply 2026-05-04. Update
+// Field orders pinned per server protocol revision 2026-05-04. Update
 // MsgpackContractTests.cs's pinned-bytes assertions if these change.
 
 // "resolved" frame on the v3.1 hot path. Field order:

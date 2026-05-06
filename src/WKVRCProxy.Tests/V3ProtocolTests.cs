@@ -46,8 +46,8 @@ public class V3ProtocolTests
     {
         // Forward-compat: a future v3.x server might reflect extra fields
         // we don't statically know about. JsonExtensionData should
-        // round-trip them so a future agent reading the watchdog log
-        // can still see what the server saw.
+        // round-trip them so a future reader of the watchdog log can
+        // still see what the server saw.
         string json = "{\"action\":\"client_hello\",\"welcome_hash\":\"abc\",\"client_id\":\"c\",\"future_field\":42}";
         var parsed = JsonSerializer.Deserialize<ClientHelloFrame>(json);
         Assert.NotNull(parsed);
@@ -150,9 +150,9 @@ public class V3ProtocolTests
     [Fact]
     public void WireConstants_v3_1_strings_match_server_spec()
     {
-        // v3.1 additions. Server agent's Q9 confirmed feature literal is
-        // "msgpack_format". Format identifiers are "json" / "msgpack"
-        // per Q1. accept_formats / negotiated_format field names per Q1+Q5.
+        // v3.1 additions. Per server protocol spec the feature literal is
+        // "msgpack_format". Format identifiers are "json" / "msgpack".
+        // accept_formats / negotiated_format are the canonical field names.
         Assert.Equal("accept_formats", WireConstants.FieldAcceptFormats);
         Assert.Equal("negotiated_format", WireConstants.FieldNegotiatedFormat);
         Assert.Equal("json", WireConstants.FormatJson);
