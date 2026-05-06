@@ -94,6 +94,7 @@ The most recent release is at the top.
 - **uninstaller:** Wipe LocalLow state, scope kills, per-step breadcrumbs (b570aca)
 - **mesh:** Tolerate v3.1 control frames on binary dispatch path (c9b7ece)
 - **relay:** Unwrap trust-list segments + strip CF response headers (8f85b10)
+- **relay:** Segment id-registry replaces base64 wrap; all bytes via whyknot.dev (06927bc)
 
 ---
 
