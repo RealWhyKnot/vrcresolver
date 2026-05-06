@@ -68,24 +68,122 @@ if (-not $Extras) {
     $Extras = Join-Path -Path (Get-Location) -ChildPath ".github/release-extras/$Tag.md"
 }
 
-# Resolve previous tag. `git describe --tags --abbrev=0 <tag>^` finds the most
-# recent tag reachable from the parent of $Tag -- i.e. the tag before this one
-# along the same line of history. If there is no prior tag, fall back to the
-# repo's root commit so we still get a full list on the first release.
-$prevTag = $null
-$prevRef = & git describe --tags --abbrev=0 "$Tag^" 2>$null
-if ($LASTEXITCODE -eq 0 -and $prevRef) {
-    $prevTag = $prevRef.Trim()
-    $range   = "$prevTag..$Tag"
-} else {
-    $root  = (& git rev-list --max-parents=0 HEAD | Select-Object -First 1).Trim()
-    $range = "$root..$Tag"
+# Resolve previous tag. Layered fallback so a history rewrite that orphans the
+# prior tag does not produce a giant slice walking from root:
+#   1. `git describe --tags --abbrev=0 <tag>^` finds the most recent tag
+#      reachable from $Tag^ along the current line of history. Sanity gate:
+#      if the slice is more than 50 commits, treat the describe result as
+#      stale (likely orphaned by a rewrite) and fall through.
+#   2. Ask GitHub for the most recent published non-prerelease release. Look
+#      up its tag in the local repo (the SHA may be orphaned in current
+#      history but the object still exists in git's DB). Read the orphan
+#      commit's subject. Walk current $Tag history looking for that exact
+#      subject; use the matched SHA as the slice anchor. This works because
+#      a typical rebase preserves commit subjects even when SHAs change.
+#   3. Date anchoring is NOT used: a force-push rebase rewrites every
+#      commit's committer-date, so --since against the prev release's
+#      publishedAt walks the full rewritten history instead of the slice.
+#   4. If layers 1+2 yield nothing, walk from the repo's root commit.
+#      First-release fallback.
+# Surfaces a ::warning:: when layer 2 or 4 fires so the operator sees in
+# workflow logs that a fallback was used.
+function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
+    # Function-local relaxation of EAP. The script's outer Stop is intact
+    # for non-git logic, but the prev-tag probes legitimately fail in
+    # several cases (no tags yet, orphaned tags after rewrite, gh not
+    # authed) and need to be soft-failures here.
+    $ErrorActionPreference = 'Continue'
+
+    # Layer 1: describe + sanity gate.
+    $prevRef = & git describe --tags --abbrev=0 "$Tag^" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $prevRef) {
+        $prevTag = $prevRef.Trim()
+        $count = & git rev-list --count "$prevTag..$Tag" 2>$null
+        if ($LASTEXITCODE -eq 0 -and [int]$count -le 50) {
+            return @{
+                Tag     = $prevTag
+                LogArgs = @("$prevTag..$Tag")
+                Display = "$prevTag..$Tag"
+                Source  = 'describe'
+            }
+        }
+        Write-Host "::warning::Slice from $prevTag..$Tag is $count commits (>50 cap). Falling back to subject-match against the most recent published release."
+    }
+
+    # Layer 2: subject-match the most recent published GitHub release.
+    if ($Repo) {
+        $listJson = & gh release list --repo $Repo --limit 20 --json tagName,publishedAt,isPrerelease 2>$null
+        if ($LASTEXITCODE -eq 0 -and $listJson) {
+            $candidatePrevTag = $null
+            try {
+                $releases = $listJson | ConvertFrom-Json
+                $candidate = $releases |
+                    Where-Object { $_.tagName -ne $Tag -and -not $_.isPrerelease } |
+                    Sort-Object publishedAt -Descending |
+                    Select-Object -First 1
+                if ($candidate) { $candidatePrevTag = $candidate.tagName }
+            } catch {
+                Write-Host "::warning::Failed to parse 'gh release list' output: $_."
+            }
+
+            if ($candidatePrevTag) {
+                $orphanSha = & git rev-parse $candidatePrevTag 2>$null
+                if ($LASTEXITCODE -eq 0 -and $orphanSha) {
+                    $orphanSha = $orphanSha.Trim()
+                    $orphanSubject = & git show -s --format=%s $orphanSha 2>$null
+                    if ($LASTEXITCODE -eq 0 -and $orphanSubject) {
+                        $rebasedSha = $null
+                        $logLines = & git log $Tag --format='%H%x09%s' 2>$null
+                        if ($LASTEXITCODE -eq 0 -and $logLines) {
+                            $lineArr = if ($logLines -is [array]) { $logLines } else { ,$logLines }
+                            foreach ($line in $lineArr) {
+                                if (-not $line) { continue }
+                                $parts = $line -split "`t", 2
+                                if ($parts.Count -eq 2 -and $parts[1] -eq $orphanSubject) {
+                                    $rebasedSha = $parts[0]
+                                    break
+                                }
+                            }
+                        }
+                        if ($rebasedSha) {
+                            $shortSha = $rebasedSha.Substring(0, 12)
+                            Write-Host "::warning::Subject-matched slice: prev tag $candidatePrevTag (orphan sha $($orphanSha.Substring(0,12))) matches current-history sha $shortSha by subject; using $shortSha..$Tag."
+                            return @{
+                                Tag     = $candidatePrevTag
+                                LogArgs = @("$rebasedSha..$Tag")
+                                Display = "$candidatePrevTag..$Tag (subject-matched at $shortSha)"
+                                Source  = 'subject-match'
+                            }
+                        }
+                        Write-Host "::warning::Prev tag $candidatePrevTag subject '$orphanSubject' not found in current $Tag history. Falling back to root walk."
+                    }
+                }
+            }
+        } else {
+            Write-Host "::warning::'gh release list' produced no usable output (gh not authed or no releases yet). Falling back to root walk."
+        }
+    }
+
+    # Layer 3: root walk.
+    $root = (& git rev-list --max-parents=0 HEAD | Select-Object -First 1).Trim()
+    Write-Host "::warning::No prior tag matched; walking from root $root."
+    return @{
+        Tag     = $null
+        LogArgs = @("$root..$Tag")
+        Display = "$root..$Tag (root walk)"
+        Source  = 'root'
+    }
 }
+
+$prevInfo = Resolve-PrevTagForSlice -Tag $Tag -Repo $Repo
+$prevTag  = $prevInfo.Tag
+$logArgs  = $prevInfo.LogArgs
+$range    = $prevInfo.Display
 
 # %H = full sha, %h = short sha, %an = author name, %s = subject. Tabs as field
 # separator are safe -- git rejects literal tabs in author names and subjects
 # don't contain them in any of these repos.
-$raw = & git log $range --no-merges --pretty=format:"%H`t%h`t%an`t%s" 2>$null
+$raw = & git log @logArgs --no-merges --pretty=format:"%H`t%h`t%an`t%s" 2>$null
 if ($LASTEXITCODE -ne 0) { $raw = @() }
 
 $lines = @()
