@@ -68,12 +68,21 @@ try {
 } catch { }
 $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-# IsDevBuild gates verbose [relay] req= logging in LocalRelayServer. A release
-# build (the CI-produced artifact) has: explicit -Version that's release-shape
-# (no -XXXX suffix) AND a clean source tree. Anything else is dev. Local builds
-# that re-stamp a release version on a dirty tree still count as dev so a
-# half-finished local edit can't masquerade as a shipped release.
-$isDev = ($FullVersion -match '-') -or ($gitDirty -ne "")
+# IsDevBuild gates verbose [relay] req= logging in LocalRelayServer. The
+# CI-produced release artifact is always treated as release mode (the only
+# way to get a dev-mode CI build is to push a -XXXX-suffixed tag, which is
+# vanishingly rare). CI's release.yml runs the changelog-promotion step
+# before build.ps1, which leaves CHANGELOG.md modified -- a clean release
+# tag would otherwise trip the dirty check and ship a verbose-logging
+# binary. GITHUB_ACTIONS=true overrides the dirty check there.
+#
+# Local builds with a dirty tree DO get dev-mode -- they're prerelease
+# experiments and the verbose log is the whole point.
+if ($env:GITHUB_ACTIONS -eq 'true') {
+    $isDev = $FullVersion -match '-'
+} else {
+    $isDev = ($FullVersion -match '-') -or ($gitDirty -ne "")
+}
 $isDevLiteral = if ($isDev) { "true" } else { "false" }
 
 $buildInfoContent = @"
