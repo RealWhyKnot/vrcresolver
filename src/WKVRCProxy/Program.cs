@@ -184,8 +184,16 @@ internal static class Program
         Console.WriteLine($"  state:     {stateDir}");
         Console.WriteLine($"  os:        {RuntimeInformation.OSDescription}");
         Console.WriteLine($"  runtime:   {RuntimeInformation.FrameworkDescription}");
+        // Pragma: BuildInfo.IsDevBuild is a const, so when build.ps1 stamps
+        // it false in a release build the body folds to unreachable. The
+        // <TreatWarningsAsErrors> project setting promotes CS0162 to an error
+        // -- pragma-disable lets the conditional compile cleanly in both
+        // modes without resorting to a runtime field that the JIT can't
+        // constant-fold across.
+#pragma warning disable CS0162
         if (BuildInfo.IsDevBuild)
             Console.WriteLine($"  mode:      DEV (verbose [relay] req= trace enabled)");
+#pragma warning restore CS0162
         Console.WriteLine();
 
         // Detect a pre-existing VRChat process so the operator sees up-front

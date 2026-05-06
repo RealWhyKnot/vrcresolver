@@ -57,6 +57,14 @@ if ($LASTEXITCODE -ne 0) { $raw = @() }
 $lines = @()
 if ($raw) { $lines = $raw -split "`r?`n" | Where-Object { $_ } }
 
+# Git author.name to GitHub @-handle. Auto-changelog emits "by @<author>" and
+# GitHub @-mentions only resolve when the handle is the actual login. Local
+# git config uses the brand "WhyKnot" but the GitHub login is "RealWhyKnot".
+# Any commit author not in this map passes through unchanged.
+$AuthorHandleMap = @{
+    'WhyKnot' = 'RealWhyKnot'
+}
+
 $entries = foreach ($line in $lines) {
     if ($line -match '\[skip changelog\]') { continue }
     $parts = $line -split "`t", 4
@@ -64,6 +72,7 @@ $entries = foreach ($line in $lines) {
     $sha     = $parts[0]
     $short   = $parts[1]
     $author  = $parts[2]
+    if ($AuthorHandleMap.ContainsKey($author)) { $author = $AuthorHandleMap[$author] }
     $subject = $parts[3]
 
     # Strip embedded version-stamp noise like " (2026.4.30.13-EB4B)". Some
