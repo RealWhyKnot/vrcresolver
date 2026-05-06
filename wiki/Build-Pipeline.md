@@ -6,7 +6,7 @@
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-Pass `-SkipZip` to short-circuit the `release/`-zip step on local rebuilds. Pass `-Version YYYY.M.D.N` (release shape) or `-Version YYYY.M.D.N-XXXX` (dev shape, `XXXX` = 4 hex chars) to override the auto-derived stamp — release.yml does this so the published tag, zip filename, and embedded assembly version stay in sync.
+Pass `-SkipZip` to short-circuit the `release/`-zip step on local rebuilds. Pass `-Version YYYY.M.D.N` (release shape) or `-Version YYYY.M.D.N-XXXX` (dev shape, `XXXX` = 4 hex chars) to override the auto-derived stamp -- release.yml does this so the published tag, zip filename, and embedded assembly version stay in sync.
 
 ## Phases
 
@@ -24,7 +24,7 @@ The numeric part (without the `-XXXX` suffix) goes into `/p:Version=` for `dotne
 ### 3. Bundled yt-dlp fallback fetch
 Hits `api.github.com/repos/yt-dlp/yt-dlp/releases/latest`, downloads `yt-dlp.exe` to `_tools_staging/yt-dlp-og-fallback.exe`, and writes the version tag to `_tools_staging/yt-dlp-og-fallback.version.txt`. Skipped if the staged copy already matches the latest tag.
 
-The fallback is what the watchdog drops back into VRChat's Tools dir as `yt-dlp-og.exe` if the user's backup goes missing — it keeps the patched yt-dlp's server-down fallback path functional.
+The fallback is what the watchdog drops back into VRChat's Tools dir as `yt-dlp-og.exe` if the user's backup goes missing -- it keeps the patched yt-dlp's server-down fallback path functional.
 
 ### 4. .NET publish
 
@@ -33,23 +33,23 @@ Six projects total: `WKVRCProxy.Shared` (DLL referenced by all four exes) + `WKV
 The four exes split into two publish profiles:
 
 **Self-contained, single-file, R2R (Updater / Uninstaller / Watchdog):**
-- `WKVRCProxy` → `dist/WKVRCProxy.exe` (~80 MB)
-- `WKVRCProxy.Updater` → `dist/WKVRCProxy.Updater.exe` (~80 MB)
-- `WKVRCProxy.Uninstaller` → `dist/WKVRCProxy.Uninstaller.exe` (~80 MB)
+- `WKVRCProxy` -> `dist/WKVRCProxy.exe` (~80 MB)
+- `WKVRCProxy.Updater` -> `dist/WKVRCProxy.Updater.exe` (~80 MB)
+- `WKVRCProxy.Uninstaller` -> `dist/WKVRCProxy.Uninstaller.exe` (~80 MB)
 
 These embed the .NET 10 runtime + R2R-precompiled images. R2R is enabled for `OutputType=Exe AND IsTestProject!=true` projects via `src/Directory.Build.targets`.
 
 **AOT, native, single-binary (the patched yt-dlp wrapper):**
-- `WKVRCProxy.YtDlp` → `dist/tools/yt-dlp.exe` (~3.27 MB)
+- `WKVRCProxy.YtDlp` -> `dist/tools/yt-dlp.exe` (~3.27 MB)
 
-`<PublishAot>true</PublishAot>` + `<PublishTrimmed>true</PublishTrimmed>` + `<TrimMode>full</TrimMode>` + `<InvariantGlobalization>true</InvariantGlobalization>`. JSON serialization goes through the `WrapperJsonContext` source-gen at `src/WKVRCProxy.YtDlp/WrapperJsonContext.cs` — `ResolveRequest` and `ResolveResponse` only. **Don't widen the context** to types the wrapper doesn't actually serialize; the trimmer can't drop them once they're listed.
+`<PublishAot>true</PublishAot>` + `<PublishTrimmed>true</PublishTrimmed>` + `<TrimMode>full</TrimMode>` + `<InvariantGlobalization>true</InvariantGlobalization>`. JSON serialization goes through the `WrapperJsonContext` source-gen at `src/WKVRCProxy.YtDlp/WrapperJsonContext.cs` -- `ResolveRequest` and `ResolveResponse` only. **Don't widen the context** to types the wrapper doesn't actually serialize; the trimmer can't drop them once they're listed.
 
 **AOT prerequisites**: Visual Studio Build Tools "Desktop development with C++" workload. The AOT publish step calls MSVC's `link.exe`. `build.ps1` prepends the VS Installer dir (where `vswhere.exe` lives) to PATH so the AOT target can locate the toolchain. CI uses `windows-latest` which already has the workload installed; local devs need to install it once.
 
 ### 5. Tools staging in dist
-- `dist/tools/yt-dlp-og-fallback.exe` — bundled vanilla yt-dlp (downloaded fresh from yt-dlp/yt-dlp releases each build)
-- `dist/tools/yt-dlp-og-fallback.version.txt` — version tag of the bundled vanilla yt-dlp
-- `dist/tools/yt-dlp.exe` — the patched yt-dlp wrapper (built FROM this repo — `WKVRCProxy.YtDlp` with `<AssemblyName>yt-dlp</AssemblyName>` so the AOT publish lands the binary as `yt-dlp.exe`).
+- `dist/tools/yt-dlp-og-fallback.exe` -- bundled vanilla yt-dlp (downloaded fresh from yt-dlp/yt-dlp releases each build)
+- `dist/tools/yt-dlp-og-fallback.version.txt` -- version tag of the bundled vanilla yt-dlp
+- `dist/tools/yt-dlp.exe` -- the patched yt-dlp wrapper (built FROM this repo -- `WKVRCProxy.YtDlp` with `<AssemblyName>yt-dlp</AssemblyName>` so the AOT publish lands the binary as `yt-dlp.exe`).
 
 ### 6. Release zip
 - `release/WKVRCProxy-v<version>.zip` containing the contents of `dist/`.
@@ -62,7 +62,7 @@ These embed the .NET 10 runtime + R2R-precompiled images. R2R is enabled for `Ou
 - `actions/setup-dotnet@v5` with `10.0.x`
 - `dotnet restore` + `dotnet build` of `WKVRCProxy.slnx` in Release with `-warnaserror`
 
-CI deliberately skips `build.ps1` — the smoke check is `dotnet build`. The actual release zip is produced by `release.yml`.
+CI deliberately skips `build.ps1` -- the smoke check is `dotnet build`. The actual release zip is produced by `release.yml`.
 
 ## Release pipeline
 
@@ -70,16 +70,16 @@ CI deliberately skips `build.ps1` — the smoke check is `dotnet build`. The act
 
 - `windows-latest`, full `build.ps1 -Version <stripped-tag>`
 - Promotes the `## Unreleased` section in `CHANGELOG.md` and `wiki/Changelog.md` to the tagged version before the build.
-- `gh release create $tag $zip --title $tag --notes "...SHA256: <hash>..."` — release notes carry the curated changelog excerpt plus an auto-generated commit list.
+- `gh release create $tag $zip --title $tag --notes "...SHA256: <hash>..."` -- release notes carry the curated changelog excerpt plus an auto-generated commit list.
 - Opens a `release/promote-changelog-<tag>` PR with auto-merge so `main` eventually carries the promotion.
 
 Tag format must match what `build.ps1` accepts, with a leading `v`.
 
 ## Changelog automation
 
-`CHANGELOG.md` (and its wiki/ mirror) are autogenerated from commit subjects on `main` — **don't hand-edit either under `## Unreleased`**, edits will be overwritten on the next push.
+`CHANGELOG.md` (and its wiki/ mirror) are autogenerated from commit subjects on `main` -- **don't hand-edit either under `## Unreleased`**, edits will be overwritten on the next push.
 
-- **`.github/workflows/changelog-append.yml`** parses each commit on push as a [conventional commit](https://www.conventionalcommits.org/) and appends bullets under `## Unreleased`. `feat:` → Added, `fix:` → Fixed, `perf:`/`refactor:`/`revert:`/`chore(deps):` → Changed; `!` → Breaking. `docs:`/`build:`/`ci:`/`test:`/non-deps `chore:` are skipped.
+- **`.github/workflows/changelog-append.yml`** parses each commit on push as a [conventional commit](https://www.conventionalcommits.org/) and appends bullets under `## Unreleased`. `feat:` -> Added, `fix:` -> Fixed, `perf:`/`refactor:`/`revert:`/`chore(deps):` -> Changed; `!` -> Breaking. `docs:`/`build:`/`ci:`/`test:`/non-deps `chore:` are skipped.
 - **`.github/workflows/release.yml`** renames `## Unreleased` to `## [vTAG] - DATE` before the build, then opens an auto-merge PR to push the promotion back to `main`.
 - Both workflows share a concurrency group so the appender can't race with a release-in-progress.
 
