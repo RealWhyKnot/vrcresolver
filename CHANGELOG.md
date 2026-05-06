@@ -65,6 +65,7 @@ The most recent release is at the top.
 - **json:** Route every JsonSerializer site through source-gen contexts (e6f5df5)
 - Bump the minor-and-patch group with 2 updates (#55) (ed7b866)
 - Bump Microsoft.NET.Test.Sdk from 17.14.1 to 18.5.1 (#56) (7a7d755)
+- ux(watchdog): centralised console formatter -- per-component colour, fixed-column resolve line, boxed banner (b090c0d)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
