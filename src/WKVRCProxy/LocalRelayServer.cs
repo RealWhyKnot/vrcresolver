@@ -62,16 +62,23 @@ internal sealed partial class LocalRelayServer : IDisposable
         _port = port;
         _listener = new HttpListener();
         _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
-        // SocketsHttpHandler with sane defaults: connect pool keep-alive,
-        // automatic decompression off (AVPro consumes the upstream content
-        // verbatim; we don't decompress).
+        // AutomaticDecompression = All is load-bearing. Cloudflare gzip-encodes
+        // application/vnd.apple.mpegurl when the forwarded request advertises
+        // Accept-Encoding: gzip (the in-game player does, and we pass that
+        // header through). The HLS rewriter MUST run on plaintext: if it ran
+        // on gzipped bytes interpreted as UTF-8, output would be garbage
+        // re-emitted to the player WITH Content-Encoding: gzip still set,
+        // and the player would fail to gunzip plaintext (manifest load_failure).
+        // .NET strips Content-Encoding and Content-Length from the response
+        // headers when it transparently decompresses, so downstream forwarding
+        // stays consistent.
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
             MaxAutomaticRedirections = 5,
             PooledConnectionIdleTimeout = TimeSpan.FromSeconds(60),
             ConnectTimeout = TimeSpan.FromSeconds(15),
-            AutomaticDecompression = System.Net.DecompressionMethods.None,
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
         };
         _http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
     }
@@ -289,6 +296,10 @@ internal sealed partial class LocalRelayServer : IDisposable
         if (string.Equals(name, "Report-To", StringComparison.OrdinalIgnoreCase)) return true;
         if (string.Equals(name, "Nel", StringComparison.OrdinalIgnoreCase)) return true;
         if (name.StartsWith("CF-", StringComparison.OrdinalIgnoreCase)) return true;
+        // Defensive: AutomaticDecompression normally strips this. If decompression
+        // is ever toggled off, dropping here prevents silently lying to the
+        // player about a body we just decompressed.
+        if (string.Equals(name, "Content-Encoding", StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 
