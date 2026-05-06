@@ -149,7 +149,7 @@ internal sealed partial class LocalRelayServer : IDisposable
             long? contentLength = null;
             foreach (var h in resp.Headers.Concat(resp.Content.Headers))
             {
-                if (string.Equals(h.Key, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                if (ShouldDropResponseHeader(h.Key)) continue;
                 if (string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
                 {
                     if (long.TryParse(string.Join(", ", h.Value), out long len))
@@ -214,6 +214,31 @@ internal sealed partial class LocalRelayServer : IDisposable
         {
             try { ctx.Response.Close(); } catch { /* best-effort */ }
         }
+    }
+
+    // Upstream response headers that MUST NOT be re-emitted to AVPro. The
+    // trust-gateway listener pretends to be `localhost.youtube.com:{port}`,
+    // a hostname AVPro considers trusted. The actual upstream is Cloudflare
+    // in front of node1.whyknot.dev, so the response carries CF-specific
+    // headers (Alt-Svc, CF-RAY, cf-cache-status, Speculation-Rules,
+    // Report-To, Nel) that don't belong on a hostname AVPro thinks is on
+    // its own trust list. `Alt-Svc: h3=":443"` in particular tells AVPro
+    // to upgrade to HTTP/3 on port 443 of localhost.youtube.com -- nothing
+    // is listening there, the upgrade fails, AVPro may bail.
+    //
+    // Drop them before re-emitting. Transfer-Encoding gets the same
+    // treatment because HttpListener manages its own framing.
+    private static bool ShouldDropResponseHeader(string name)
+    {
+        if (string.Equals(name, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(name, "Alt-Svc", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(name, "Server", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(name, "cf-cache-status", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(name, "Speculation-Rules", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(name, "Report-To", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(name, "Nel", StringComparison.OrdinalIgnoreCase)) return true;
+        if (name.StartsWith("CF-", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private static void ForwardRequestHeaders(HttpListenerRequest src, HttpRequestMessage dst)
@@ -299,7 +324,30 @@ internal sealed partial class LocalRelayServer : IDisposable
 
 // HLS manifest rewriter. Rewrites every segment URL (absolute or relative
 // resolved against the manifest's base URL) to route through this listener
-// via /play?target=<base64-of-resolved-segment-url>.
+// via /play?target=<base64-of-resolved-segment-url> -- UNLESS the segment's
+// real upstream is already on AVPro's trusted-host allowlist (googlevideo,
+// vimeo, etc.), in which case the segment URL is emitted directly.
+//
+// The unwrap path closes a manifest-size blowup that broke long-form video
+// playback. The server's RewriteHls wraps every segment through
+// `node1.whyknot.dev/api/proxy?url=<base64-of-segment>` for WARP egress +
+// CF caching benefits. The listener used to wrap THAT again through
+// `localhost.youtube.com:port/play?target=<base64-of-node1-url>` to make
+// AVPro's trust check pass on every segment fetch. The double-encoding
+// inflates each segment URL ~2x; for a 2.7-hour video with ~1700
+// segments the manifest grows to ~4.9 MB. AVPro can't handle that and
+// times out at ~2 seconds with `Loading failed`, world script re-fires,
+// stuck loop.
+//
+// The fix: when a segment URL is the server's `node1/api/proxy?url=<base64>`
+// shape, decode the inner URL and check the host. If the host is on
+// AVPro's built-in trusted allowlist (which is where YouTube segments
+// already live -- *.googlevideo.com), emit the inner URL directly. AVPro's
+// trust check still passes (googlevideo is allowlisted), the manifest stays
+// small, segments fetch directly from googlevideo. Tradeoff: bypass the
+// server's per-segment proxy (lose CF edge cache + WARP egress on segment
+// bytes). Acceptable: CF Page Rule isn't activated yet, and YouTube doesn't
+// IP-block playback.
 [SupportedOSPlatform("windows")]
 internal static partial class HlsManifestRewriter
 {
@@ -333,9 +381,8 @@ internal static partial class HlsManifestRewriter
                 {
                     string segUrl = m.Groups[1].Value;
                     string resolved = ResolveAgainstBase(baseUri, segUrl);
-                    string wrapped = "http://localhost.youtube.com:" + portStr
-                        + "/play?target=" + LocalRelayServer.EncodeTargetParam(resolved);
-                    return "URI=\"" + wrapped + "\"";
+                    string emitted = ResolveSegmentForEmit(resolved, portStr);
+                    return "URI=\"" + emitted + "\"";
                 });
                 sb.Append(rewrittenTag);
                 sb.Append('\n');
@@ -350,10 +397,7 @@ internal static partial class HlsManifestRewriter
             string segResolved = ResolveAgainstBase(baseUri, trimmed);
             if (Uri.TryCreate(segResolved, UriKind.Absolute, out _))
             {
-                sb.Append("http://localhost.youtube.com:");
-                sb.Append(portStr);
-                sb.Append("/play?target=");
-                sb.Append(LocalRelayServer.EncodeTargetParam(segResolved));
+                sb.Append(ResolveSegmentForEmit(segResolved, portStr));
                 sb.Append('\n');
             }
             else
@@ -380,5 +424,140 @@ internal static partial class HlsManifestRewriter
         if (Uri.TryCreate(baseUri, maybeRelative, out var resolved))
             return resolved.ToString();
         return maybeRelative;
+    }
+
+    // Decide what URL to emit for a segment. Returns either:
+    //   1. The trusted upstream URL directly. Two paths into this branch:
+    //      a) Input is the server's `node1.whyknot.dev/api/proxy?url=<base64>`
+    //         shape AND the inner URL's host is on AVPro's trust list -- we
+    //         unwrap and emit the inner URL.
+    //      b) Input is already a trust-list-passing URL (e.g. a direct
+    //         googlevideo segment) -- we emit it as-is.
+    //      Both avoid the manifest-size blowup that broke long-form playback.
+    //   2. The trust-gateway wrap (otherwise). Standard path for hosts that
+    //      aren't already trust-list-passing.
+    internal static string ResolveSegmentForEmit(string resolvedSegmentUrl, string portStr)
+    {
+        string? bypassUrl = TryUnwrapServerProxyToTrustedHost(resolvedSegmentUrl);
+        if (bypassUrl != null) return bypassUrl;
+
+        if (Uri.TryCreate(resolvedSegmentUrl, UriKind.Absolute, out var direct)
+            && TrustedAvProHosts.IsTrusted(direct.Host))
+        {
+            return resolvedSegmentUrl;
+        }
+
+        return "http://localhost.youtube.com:" + portStr
+            + "/play?target=" + LocalRelayServer.EncodeTargetParam(resolvedSegmentUrl);
+    }
+
+    // Match the server's `https://node{N}.whyknot.dev/api/proxy?url=<base64>`
+    // shape. If the inner URL's host is on AVPro's allowlist, return the
+    // inner URL so AVPro can fetch the segment directly. Returns null when
+    // the segment can't safely be unwrapped (host not allowlisted, parse
+    // failure, malformed base64, etc.) -- caller falls through to wrap.
+    private static string? TryUnwrapServerProxyToTrustedHost(string segmentUrl)
+    {
+        if (!Uri.TryCreate(segmentUrl, UriKind.Absolute, out var uri)) return null;
+        // Server's proxy host pattern: node{N}.whyknot.dev (case-insensitive).
+        // Path must be exactly /api/proxy; query must contain `url=<base64>`.
+        if (!uri.Host.EndsWith(".whyknot.dev", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!uri.AbsolutePath.Equals("/api/proxy", StringComparison.OrdinalIgnoreCase)) return null;
+
+        // Pull the `url=` query param. Server uses it for segments (vs `q=`
+        // for full-state-pack manifest URLs).
+        string? urlParam = null;
+        foreach (var part in uri.Query.TrimStart('?').Split('&'))
+        {
+            int eq = part.IndexOf('=');
+            if (eq < 0) continue;
+            string k = part.Substring(0, eq);
+            if (k.Equals("url", StringComparison.OrdinalIgnoreCase))
+            {
+                urlParam = part.Substring(eq + 1);
+                break;
+            }
+        }
+        if (string.IsNullOrEmpty(urlParam)) return null;
+
+        // Server emits standard base64 (with padding) for `?url=`. URL-decode
+        // first in case the manifest URL-encoded any characters along the way.
+        string decoded;
+        try
+        {
+            string urlUnescaped = Uri.UnescapeDataString(urlParam);
+            string b64 = urlUnescaped.Replace('-', '+').Replace('_', '/');
+            switch (b64.Length % 4)
+            {
+                case 2: b64 += "=="; break;
+                case 3: b64 += "="; break;
+            }
+            decoded = Encoding.UTF8.GetString(Convert.FromBase64String(b64));
+        }
+        catch { return null; }
+
+        if (!Uri.TryCreate(decoded, UriKind.Absolute, out var inner)) return null;
+        if (!TrustedAvProHosts.IsTrusted(inner.Host)) return null;
+        return decoded;
+    }
+}
+
+// VRChat AVPro's built-in trusted-host allowlist. Hosts matching one of
+// these patterns pass AVPro's trust check in default-public worlds without
+// needing the localhost.youtube.com gateway wrap. Last verified against
+// VRChat: 2026-04-23 (project_vrchat_trusted_url_list memory). The list
+// evolves slowly; if VRChat adds providers we add them here.
+//
+// Used by HlsManifestRewriter to decide when a segment URL can be emitted
+// directly (manifest stays small) vs needing the gateway wrap (larger but
+// trust-list-passing for non-allowlisted hosts).
+[SupportedOSPlatform("windows")]
+internal static class TrustedAvProHosts
+{
+    private static readonly string[] s_exactHosts = new[]
+    {
+        "youtu.be",
+        "soundcloud.com",
+        "vod-progressive.akamaized.net",
+    };
+
+    // Wildcard suffixes: host matches if it is exactly the suffix OR ends
+    // with `.<suffix>`. So `*.youtube.com` matches `youtube.com`,
+    // `www.youtube.com`, and `m.youtube.com` but not `notyoutube.com`.
+    private static readonly string[] s_suffixes = new[]
+    {
+        "youtube.com",
+        "googlevideo.com",
+        "facebook.com",
+        "fbcdn.net",
+        "hyperbeam.com",
+        "hyperbeam.dev",
+        "mixcloud.com",
+        "nicovideo.jp",
+        "sndcdn.com",
+        "topaz.chat",
+        "twitch.tv",
+        "ttvnw.net",
+        "twitchcdn.net",
+        "vrcdn.live",
+        "vrcdn.video",
+        "vrcdn.cloud",
+        "vimeo.com",
+        "youku.com",
+    };
+
+    public static bool IsTrusted(string host)
+    {
+        if (string.IsNullOrEmpty(host)) return false;
+        foreach (var h in s_exactHosts)
+            if (host.Equals(h, StringComparison.OrdinalIgnoreCase)) return true;
+        foreach (var sfx in s_suffixes)
+        {
+            if (host.Equals(sfx, StringComparison.OrdinalIgnoreCase)) return true;
+            if (host.Length > sfx.Length + 1
+                && host.EndsWith("." + sfx, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 }

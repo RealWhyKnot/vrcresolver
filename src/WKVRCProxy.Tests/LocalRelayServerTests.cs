@@ -34,8 +34,12 @@ public class LocalRelayServerTests
     }
 
     [Fact]
-    public void HlsRewrite_AbsoluteSegmentUrl_GoesThroughRelay()
+    public void HlsRewrite_DirectGooglevideoSegments_EmittedAsIs()
     {
+        // Trust-list bypass: googlevideo segments don't need the wrap
+        // because *.googlevideo.com is on AVPro's allowlist already.
+        // Emitting them directly avoids the manifest-size blowup that
+        // broke long-form playback.
         string manifest =
             "#EXTM3U\n" +
             "#EXT-X-VERSION:3\n" +
@@ -49,11 +53,12 @@ public class LocalRelayServerTests
         string rewritten = HlsManifestRewriter.Rewrite(
             manifest, "https://r1.googlevideo.com/manifest.m3u8", 51234);
 
-        // Segment URLs replaced with relay-wrapped ones.
-        Assert.Contains("http://localhost.youtube.com:51234/play?target=", rewritten);
-        Assert.DoesNotContain("https://r1.googlevideo.com/seg-1.ts\n", rewritten);
+        // Trust-listed segments emitted directly -- no wrap.
+        Assert.DoesNotContain("http://localhost.youtube.com:", rewritten);
+        Assert.Contains("https://r1.googlevideo.com/seg-1.ts", rewritten);
+        Assert.Contains("https://r1.googlevideo.com/seg-2.ts", rewritten);
 
-        // Non-segment lines preserved (#EXTM3U + #EXT-X-VERSION + #EXT-X-TARGETDURATION + #EXTINF + #EXT-X-ENDLIST).
+        // Non-segment lines preserved.
         Assert.Contains("#EXTM3U", rewritten);
         Assert.Contains("#EXT-X-VERSION:3", rewritten);
         Assert.Contains("#EXT-X-TARGETDURATION:6", rewritten);
@@ -62,8 +67,59 @@ public class LocalRelayServerTests
     }
 
     [Fact]
-    public void HlsRewrite_RelativeSegmentUrl_ResolvesAgainstBase()
+    public void HlsRewrite_ServerProxyWrappedTrustedSegments_Unwrapped()
     {
+        // Real-world shape: server's RewriteHls wraps each segment as
+        // `https://node1.whyknot.dev/api/proxy?url=<base64-of-googlevideo>`.
+        // The listener unwraps and emits the inner googlevideo URL directly
+        // because its host is on AVPro's trust list. Closes the manifest-
+        // size blowup that fired this regression test in the first place.
+        string innerUrl = "https://rr4---sn-nx57ynsl.googlevideo.com/videoplayback/expire/1778055157/itag/301/source/youtube";
+        string innerB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(innerUrl))
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+        string serverWrapped = "https://node1.whyknot.dev/api/proxy?url=" + innerB64;
+
+        string manifest =
+            "#EXTM3U\n" +
+            "#EXTINF:5.0,\n" +
+            serverWrapped + "\n" +
+            "#EXT-X-ENDLIST\n";
+
+        string rewritten = HlsManifestRewriter.Rewrite(
+            manifest, "https://node1.whyknot.dev/api/proxy?q=...", 51234);
+
+        // Inner googlevideo URL emitted directly. No node1 wrapping
+        // remains, no localhost gateway wrap remains.
+        Assert.Contains(innerUrl, rewritten);
+        Assert.DoesNotContain("node1.whyknot.dev/api/proxy", rewritten);
+        Assert.DoesNotContain("http://localhost.youtube.com:", rewritten);
+    }
+
+    [Fact]
+    public void HlsRewrite_NonAllowlistedHost_StillWrapped()
+    {
+        // example.com is NOT on AVPro's trust list, so the segment URL
+        // continues to need the localhost.youtube.com gateway wrap.
+        // Verifies the unwrap path is gated on the allowlist; doesn't
+        // bypass for arbitrary hosts.
+        string manifest =
+            "#EXTM3U\n" +
+            "#EXTINF:5.0,\n" +
+            "https://example.com/segment.ts\n";
+
+        string rewritten = HlsManifestRewriter.Rewrite(
+            manifest, "https://example.com/m.m3u8", 51234);
+
+        Assert.Contains("http://localhost.youtube.com:51234/play?target=", rewritten);
+        Assert.DoesNotContain("https://example.com/segment.ts\n", rewritten);
+    }
+
+    [Fact]
+    public void HlsRewrite_RelativeGooglevideoSegment_EmittedAsAbsoluteDirect()
+    {
+        // Relative segment URLs resolved against a googlevideo base URL
+        // produce absolute googlevideo URLs, which are trust-listed and
+        // emitted directly.
         string manifest =
             "#EXTM3U\n" +
             "#EXTINF:5.0,\n" +
@@ -74,27 +130,19 @@ public class LocalRelayServerTests
         string rewritten = HlsManifestRewriter.Rewrite(
             manifest, "https://r1.googlevideo.com/path/manifest.m3u8", 51234);
 
-        // The relative URL must have been resolved against the base
-        // before being wrapped, so the base64 target inside should
-        // decode to the absolute URL.
-        Assert.Contains("http://localhost.youtube.com:51234/play?target=", rewritten);
-
-        // Both segments wrapped (one bare, one with a subdir).
-        var lines = rewritten.Split('\n');
-        int wrapped = 0;
-        foreach (var line in lines)
-        {
-            if (line.StartsWith("http://localhost.youtube.com:51234/play?target=")) wrapped++;
-        }
-        Assert.Equal(2, wrapped);
+        // Relative URLs resolved + emitted directly.
+        Assert.Contains("https://r1.googlevideo.com/path/seg-1.ts", rewritten);
+        Assert.Contains("https://r1.googlevideo.com/path/subdir/seg-2.ts", rewritten);
+        Assert.DoesNotContain("http://localhost.youtube.com:", rewritten);
     }
 
     [Fact]
-    public void HlsRewrite_UriAttribute_Rewritten()
+    public void HlsRewrite_UriAttribute_TrustListAware()
     {
-        // EXT-X-MAP (init segment) and EXT-X-MEDIA URI= forms must be
-        // rewritten just like segment lines, otherwise AVPro fetches
-        // those raw and fails the trust check.
+        // EXT-X-MAP (init segment) + EXT-X-MEDIA URI= attribute lines:
+        // the URI gets the same trust-list-aware handling as bare segment
+        // lines. Init segment on googlevideo emits direct; audio playlist
+        // (relative) resolves to googlevideo and also emits direct.
         string manifest =
             "#EXTM3U\n" +
             "#EXT-X-MAP:URI=\"https://r1.googlevideo.com/init.mp4\",BYTERANGE=\"800@0\"\n" +
@@ -105,13 +153,16 @@ public class LocalRelayServerTests
         string rewritten = HlsManifestRewriter.Rewrite(
             manifest, "https://r1.googlevideo.com/manifest.m3u8", 51234);
 
-        // Both URI="..." attributes wrapped through the relay
-        Assert.Contains("URI=\"http://localhost.youtube.com:51234/play?target=", rewritten);
-        // BYTERANGE preserved alongside the rewritten URI on the EXT-X-MAP line
+        // URI attributes emit direct googlevideo URLs.
+        Assert.Contains("URI=\"https://r1.googlevideo.com/init.mp4\"", rewritten);
+        Assert.Contains("URI=\"https://r1.googlevideo.com/audio-eng.m3u8\"", rewritten);
+        // BYTERANGE preserved alongside the URI on the EXT-X-MAP line
         Assert.Contains("BYTERANGE=\"800@0\"", rewritten);
         // EXT-X-MEDIA attributes preserved
         Assert.Contains("GROUP-ID=\"audio\"", rewritten);
         Assert.Contains("NAME=\"English\"", rewritten);
+        // Whole manifest stays free of the gateway wrap on this all-trusted set.
+        Assert.DoesNotContain("http://localhost.youtube.com:", rewritten);
     }
 
     [Fact]
@@ -126,17 +177,47 @@ public class LocalRelayServerTests
     [Fact]
     public void HlsRewrite_NonUriBareLine_LeftAlone()
     {
-        // Defensive: bare lines that don't parse as a URL when resolved
-        // against the manifest URI shouldn't be mangled.
+        // Defensive: bare lines that resolve against the manifest base
+        // become a URL on a non-trust-listed host (example.com) and
+        // therefore go through the wrap path -- the rewriter is intentionally
+        // permissive about what counts as a segment; the cost of false-
+        // positive wrap on non-allowlisted hosts is one 404 fetch when
+        // AVPro tries to play it, not a parse failure.
         string manifest = "#EXTM3U\nrandom-non-url-text-that-isnt-a-segment\n";
         string rewritten = HlsManifestRewriter.Rewrite(
             manifest, "https://example.com/m.m3u8", 51234);
-        // The "random-non-url-text..." resolves against the manifest base
-        // to `https://example.com/random-non-url-text-...` which IS a
-        // valid absolute URL -- so this gets wrapped. Verify wrapping
-        // happened (the rewriter is intentionally permissive about what
-        // counts as a segment; the cost of false-positive wrap is one
-        // 404 fetch, not a parse failure).
         Assert.Contains("http://localhost.youtube.com:51234/play?target=", rewritten);
+    }
+
+    [Theory]
+    [InlineData("youtube.com", true)]
+    [InlineData("www.youtube.com", true)]
+    [InlineData("m.youtube.com", true)]
+    [InlineData("music.youtube.com", true)]
+    [InlineData("youtu.be", true)]
+    [InlineData("rr4---sn-nx57ynsl.googlevideo.com", true)]
+    [InlineData("manifest.googlevideo.com", true)]
+    [InlineData("googlevideo.com", true)]
+    [InlineData("vimeo.com", true)]
+    [InlineData("player.vimeo.com", true)]
+    [InlineData("www.twitch.tv", true)]
+    [InlineData("video-weaver.lax03.hls.ttvnw.net", true)]
+    [InlineData("video-edge-abc.lax03.abs.hls.ttvnw.net", true)]
+    [InlineData("a1.sndcdn.com", true)]
+    [InlineData("vrcdn.live", true)]
+    [InlineData("stream.vrcdn.cloud", true)]
+    [InlineData("vod-progressive.akamaized.net", true)]
+    [InlineData("notyoutube.com", false)]
+    [InlineData("youtube.com.evil.com", false)]
+    [InlineData("example.com", false)]
+    [InlineData("node1.whyknot.dev", false)]
+    [InlineData("", false)]
+    public void TrustedAvProHosts_IsTrusted_MatchesAllowlist(string host, bool expected)
+    {
+        // Pin the allowlist so a future "let's also trust X" change is a
+        // visible diff alongside the test update. Substring-evil-host
+        // negatives prevent a regression where a contributor switches
+        // from suffix-match to substring-match.
+        Assert.Equal(expected, TrustedAvProHosts.IsTrusted(host));
     }
 }
