@@ -57,6 +57,14 @@ internal sealed partial class LocalRelayServer : IDisposable
     private readonly SegmentIdRegistry _idRegistry = new();
     private Task? _acceptLoop;
 
+    // Verbose request/response trace gated on BuildInfo.IsDevBuild. Dev builds
+    // (auto-version OR dirty source) emit per-request logs the user can paste
+    // back when reporting an issue; release builds (clean -Version + clean
+    // tree, what CI ships) stay quiet so the watchdog log isn't flooded
+    // during normal use.
+    private static readonly bool s_verbose = BuildInfo.IsDevBuild;
+    private static long s_reqCounter;
+
     public LocalRelayServer(int port)
     {
         _port = port;
@@ -133,11 +141,27 @@ internal sealed partial class LocalRelayServer : IDisposable
         using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         reqCts.CancelAfter(UpstreamHeaderDeadline);
         string targetUrl = "";
+        string reqId = s_verbose
+            ? Interlocked.Increment(ref s_reqCounter).ToString("x6", System.Globalization.CultureInfo.InvariantCulture)
+            : "";
+        long t0 = s_verbose ? Environment.TickCount64 : 0;
+        long bytesOut = 0;
         try
         {
             string path = ctx.Request.Url?.AbsolutePath ?? "";
+            string method = ctx.Request.HttpMethod ?? "?";
+            if (s_verbose)
+            {
+                string rawUrl = ctx.Request.RawUrl ?? "";
+                string remote = ctx.Request.RemoteEndPoint?.ToString() ?? "?";
+                string protoVer = "HTTP/" + (ctx.Request.ProtocolVersion?.ToString() ?? "?");
+                Console.WriteLine("[relay] req=" + reqId + " <- " + method + " " + ShortUrl(rawUrl)
+                    + " from=" + remote + " " + protoVer);
+                DumpHeaders("[relay] req=" + reqId + "  H<", ctx.Request.Headers);
+            }
             if (!path.StartsWith("/play", StringComparison.OrdinalIgnoreCase))
             {
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 404 (path mismatch)");
                 ctx.Response.StatusCode = 404;
                 ctx.Response.Close();
                 return;
@@ -165,36 +189,43 @@ internal sealed partial class LocalRelayServer : IDisposable
             // manifest in that case and gets fresh IDs.
             string? idParam = ctx.Request.QueryString["id"];
             string? targetParam = ctx.Request.QueryString["target"];
+            string kind;
             if (!string.IsNullOrEmpty(idParam))
             {
                 string? mapped = _idRegistry.TryGetUrl(idParam);
                 if (string.IsNullOrEmpty(mapped))
                 {
+                    if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 404 (id=" + idParam + " not in registry; size=" + _idRegistry.Count + ")");
                     ctx.Response.StatusCode = 404;
                     ctx.Response.Close();
                     return;
                 }
                 targetUrl = mapped;
+                kind = "segment";
             }
             else if (!string.IsNullOrEmpty(targetParam))
             {
                 targetUrl = DecodeTargetParam(targetParam);
+                kind = "manifest-or-direct";
             }
             else
             {
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 400 (no id or target param)");
                 ctx.Response.StatusCode = 400;
                 ctx.Response.Close();
                 return;
             }
             if (string.IsNullOrEmpty(targetUrl) || !Uri.TryCreate(targetUrl, UriKind.Absolute, out _))
             {
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 400 (invalid resolved target='" + ShortUrl(targetUrl) + "')");
                 ctx.Response.StatusCode = 400;
                 ctx.Response.Close();
                 return;
             }
+            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " kind=" + kind + " target=" + ShortUrl(targetUrl));
 
             using var outboundReq = new HttpRequestMessage(
-                new HttpMethod(ctx.Request.HttpMethod), targetUrl);
+                new HttpMethod(method), targetUrl);
             ForwardRequestHeaders(ctx.Request, outboundReq);
 
             using var resp = await _http.SendAsync(
@@ -202,12 +233,21 @@ internal sealed partial class LocalRelayServer : IDisposable
                 HttpCompletionOption.ResponseHeadersRead,
                 reqCts.Token).ConfigureAwait(false);
 
+            if (s_verbose)
+            {
+                Console.WriteLine("[relay] req=" + reqId + " upstream-status=" + (int)resp.StatusCode
+                    + " ms=" + (Environment.TickCount64 - t0));
+                DumpHttpHeaders("[relay] req=" + reqId + "  upstream-H>", resp.Headers, resp.Content.Headers);
+            }
+
             ctx.Response.StatusCode = (int)resp.StatusCode;
             string contentType = "";
             long? contentLength = null;
+            int passedHeaders = 0;
+            int droppedHeaders = 0;
             foreach (var h in resp.Headers.Concat(resp.Content.Headers))
             {
-                if (ShouldDropResponseHeader(h.Key)) continue;
+                if (ShouldDropResponseHeader(h.Key)) { droppedHeaders++; continue; }
                 if (string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
                 {
                     if (long.TryParse(string.Join(", ", h.Value), out long len))
@@ -216,9 +256,11 @@ internal sealed partial class LocalRelayServer : IDisposable
                 }
                 if (string.Equals(h.Key, "Content-Type", StringComparison.OrdinalIgnoreCase))
                     contentType = string.Join(", ", h.Value);
-                try { ctx.Response.Headers.Add(h.Key, string.Join(", ", h.Value)); }
+                try { ctx.Response.Headers.Add(h.Key, string.Join(", ", h.Value)); passedHeaders++; }
                 catch { /* HttpListener rejects some restricted headers; skip */ }
             }
+            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " response-headers passed=" + passedHeaders
+                + " dropped=" + droppedHeaders + " ct='" + contentType + "' len=" + (contentLength?.ToString() ?? "null"));
 
             bool isHls = LooksLikeHls(contentType, targetUrl);
             if (isHls && resp.StatusCode == HttpStatusCode.OK)
@@ -228,15 +270,27 @@ internal sealed partial class LocalRelayServer : IDisposable
                 // doesn't false-trip the idle watchdog (they're small).
                 reqCts.CancelAfter(Timeout.InfiniteTimeSpan);
                 string manifest = await resp.Content.ReadAsStringAsync(_cts.Token).ConfigureAwait(false);
+                int regBefore = s_verbose ? _idRegistry.Count : 0;
                 string rewritten = HlsManifestRewriter.Rewrite(manifest, targetUrl, _port, _idRegistry);
                 byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                 ctx.Response.ContentLength64 = manifestBytes.Length;
                 try { ctx.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
+                if (s_verbose)
+                {
+                    Console.WriteLine("[relay] req=" + reqId + " hls-rewrite raw=" + manifest.Length
+                        + "B out=" + manifestBytes.Length + "B segs-added=" + (_idRegistry.Count - regBefore)
+                        + " reg-size=" + _idRegistry.Count);
+                    DumpHeaders("[relay] req=" + reqId + "  H>", ctx.Response.Headers);
+                }
                 await ctx.Response.OutputStream.WriteAsync(manifestBytes, _cts.Token).ConfigureAwait(false);
+                bytesOut = manifestBytes.Length;
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> " + ctx.Response.StatusCode
+                    + " HLS bytes-out=" + bytesOut + " elapsed=" + (Environment.TickCount64 - t0) + "ms");
                 return;
             }
 
             if (contentLength.HasValue) ctx.Response.ContentLength64 = contentLength.Value;
+            if (s_verbose) DumpHeaders("[relay] req=" + reqId + "  H>", ctx.Response.Headers);
 
             // Binary stream copy with per-read idle CTS so a long video
             // (HLS segment, mp4 progressive) doesn't get killed by a
@@ -257,10 +311,19 @@ internal sealed partial class LocalRelayServer : IDisposable
                 }
                 if (n == 0) break;
                 await ctx.Response.OutputStream.WriteAsync(buf.AsMemory(0, n), _cts.Token).ConfigureAwait(false);
+                bytesOut += n;
             }
+            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> " + ctx.Response.StatusCode
+                + " stream bytes-out=" + bytesOut + " elapsed=" + (Environment.TickCount64 - t0) + "ms");
         }
-        catch (HttpListenerException) { /* AVPro disconnected mid-stream; expected */ }
-        catch (System.IO.IOException) { /* same */ }
+        catch (HttpListenerException hle)
+        {
+            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " client-disconnect (HttpListenerException ec=" + hle.ErrorCode + ") bytes-out=" + bytesOut);
+        }
+        catch (System.IO.IOException ioe)
+        {
+            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " client-disconnect (IOException: " + ioe.Message + ") bytes-out=" + bytesOut);
+        }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* shutdown */ }
         catch (Exception ex)
         {
@@ -271,6 +334,28 @@ internal sealed partial class LocalRelayServer : IDisposable
         finally
         {
             try { ctx.Response.Close(); } catch { /* best-effort */ }
+        }
+    }
+
+    private static void DumpHeaders(string prefix, System.Collections.Specialized.NameValueCollection headers)
+    {
+        if (headers == null) return;
+        foreach (string? key in headers.AllKeys)
+        {
+            if (string.IsNullOrEmpty(key)) continue;
+            string val = headers[key] ?? "";
+            if (val.Length > 200) val = val.Substring(0, 200) + "...";
+            Console.WriteLine(prefix + " " + key + ": " + val);
+        }
+    }
+
+    private static void DumpHttpHeaders(string prefix, System.Net.Http.Headers.HttpResponseHeaders respH, System.Net.Http.Headers.HttpContentHeaders contentH)
+    {
+        foreach (var h in respH.Concat(contentH))
+        {
+            string val = string.Join(", ", h.Value);
+            if (val.Length > 200) val = val.Substring(0, 200) + "...";
+            Console.WriteLine(prefix + " " + h.Key + ": " + val);
         }
     }
 

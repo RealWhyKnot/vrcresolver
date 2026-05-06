@@ -184,6 +184,8 @@ internal static class Program
         Console.WriteLine($"  state:     {stateDir}");
         Console.WriteLine($"  os:        {RuntimeInformation.OSDescription}");
         Console.WriteLine($"  runtime:   {RuntimeInformation.FrameworkDescription}");
+        if (BuildInfo.IsDevBuild)
+            Console.WriteLine($"  mode:      DEV (verbose [relay] req= trace enabled)");
         Console.WriteLine();
 
         // Detect a pre-existing VRChat process so the operator sees up-front

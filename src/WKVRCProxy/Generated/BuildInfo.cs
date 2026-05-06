@@ -11,4 +11,8 @@ internal static class BuildInfo
 {
     public const string GitSha = "<unknown>";
     public const string BuildTime = "<unknown>";
+    // Placeholder defaults to true (dev) so fresh-clone `dotnet test` runs
+    // exercise the verbose-logging path. build.ps1 overwrites with the real
+    // value (false for clean release builds, true otherwise).
+    public const bool IsDevBuild = true;
 }
