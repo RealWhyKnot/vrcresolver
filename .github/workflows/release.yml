@@ -66,19 +66,6 @@ jobs:
           Copy-Item CHANGELOG.md       .changelog-stash/CHANGELOG.md       -Force
           Copy-Item wiki/Changelog.md  .changelog-stash/wiki/Changelog.md  -Force
 
-      - name: Capture release notes
-        id: notes
-        shell: pwsh
-        run: |
-          $body = & ./.github/scripts/Update-Changelog.ps1 -Mode Notes -ForVersion -Version '${{ github.ref_name }}'
-          if (-not $body) { $body = '_Maintenance release; see commit log for details._' }
-          # Multi-line outputs require the heredoc form. Use a unique delimiter
-          # so a stray "EOF" inside the body can't terminate it early.
-          $delim = "EOF_" + [Guid]::NewGuid().ToString('N')
-          "body<<$delim"  >> $env:GITHUB_OUTPUT
-          $body           >> $env:GITHUB_OUTPUT
-          $delim          >> $env:GITHUB_OUTPUT
-
       - name: Generate auto-changelog
         id: changelog
         shell: pwsh
@@ -86,11 +73,15 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          # Auto-generated commit list appended below the curated CHANGELOG.md
-          # excerpt. See .github/scripts/Generate-ReleaseNotes.ps1 for filtering
-          # rules ([skip changelog], merge commits, version-stamp noise).
+          # Auto-generated commit list scoped to commits between the previous
+          # tag and the current tag. See .github/scripts/Generate-ReleaseNotes.ps1
+          # for filtering rules ([skip changelog], merge commits, version-stamp
+          # noise). The release body is ONLY this slice -- no curated
+          # CHANGELOG.md dump above it. (The promotion PR step still mirrors
+          # CHANGELOG.md back to main so the file stays accurate; that
+          # mirroring is separate from what shows on the GitHub release.)
           $auto = & ./.github/scripts/Generate-ReleaseNotes.ps1
-          if (-not $auto) { $auto = '' }
+          if (-not $auto) { $auto = '_Maintenance release; see commit log for details._' }
           $delim = "EOF_" + [Guid]::NewGuid().ToString('N')
           "body<<$delim" >> $env:GITHUB_OUTPUT
           $auto          >> $env:GITHUB_OUTPUT
@@ -128,9 +119,6 @@ jobs:
           $zip    = "${{ steps.zip.outputs.path }}"
           $sha    = "${{ steps.zip.outputs.sha256 }}"
           $name   = "${{ steps.zip.outputs.name }}"
-          $body   = @'
-          ${{ steps.notes.outputs.body }}
-          '@
           $auto   = @'
           ${{ steps.changelog.outputs.body }}
           '@
@@ -140,10 +128,6 @@ jobs:
           Download **$name** below and extract anywhere. The bundled ``WKVRCProxy.Updater.exe`` and ``WKVRCProxy.Uninstaller.exe`` live next to ``WKVRCProxy.exe``.
 
           SHA256: $sha
-
-          ---
-
-          $body
 
           ---
 
