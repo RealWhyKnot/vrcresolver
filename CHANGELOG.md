@@ -93,6 +93,7 @@ The most recent release is at the top.
 - **updater:** HTTP timeout + Content-Type + corp-proxy + temp sweep (41cb8d6)
 - **uninstaller:** Wipe LocalLow state, scope kills, per-step breadcrumbs (b570aca)
 - **mesh:** Tolerate v3.1 control frames on binary dispatch path (c9b7ece)
+- **relay:** Unwrap trust-list segments + strip CF response headers (8f85b10)
 
 ---
 
