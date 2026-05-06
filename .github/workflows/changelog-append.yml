@@ -2,14 +2,20 @@ name: Changelog append
 
 # On every push to main, walk the commits in the push range and append bullets
 # under "## Unreleased" in CHANGELOG.md (root, embedded into the in-app viewer)
-# and wiki/Changelog.md (mirrored to the GitHub Wiki). Then commit the
-# updated files back to main and trigger wiki-sync so the Wiki reflects the
-# new state without waiting for the next manual push.
+# and wiki/Changelog.md (mirrored to the GitHub Wiki). Then commit the updated
+# files back to main via the GraphQL createCommitOnBranch mutation (so the
+# resulting commit is signed server-side with GitHub's bot key and clears the
+# "Commits must have verified signatures" protected-branch rule on main; a
+# plain `git push` of an unsigned commit gets GH006). Then trigger wiki-sync
+# so the Wiki reflects the new state without waiting for the next manual push.
 #
-# A push made by GITHUB_TOKEN does NOT trigger workflow runs, so the appender's
-# own commit-and-push won't recurse. The wiki-sync workflow is fired explicitly
-# at the end of this job for the same reason — its push trigger wouldn't fire
-# off a token-pushed commit.
+# A commit made by GITHUB_TOKEN (whether via push or via createCommitOnBranch)
+# does NOT trigger workflow runs, so the appender's own commit will not recurse.
+# The wiki-sync workflow is fired explicitly at the end of this job for the
+# same reason -- its push trigger wouldn't fire off a token-authored commit.
+# Belt-and-braces: the commit message carries [skip changelog] and the job's
+# `if:` filter rejects messages with that marker, so even a manual re-trigger
+# or non-token actor cannot recurse.
 
 on:
   push:
@@ -90,23 +96,89 @@ jobs:
             & git --no-pager diff --stat CHANGELOG.md wiki/Changelog.md
           }
 
-      - name: Commit and push
+      - name: Commit via createCommitOnBranch (verified)
         if: steps.append.outputs.changed == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          git config user.name  'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add CHANGELOG.md wiki/Changelog.md
-          git commit -m "docs(changelog): auto-append entries from ${GITHUB_SHA::7} [skip changelog]
+          # Use the GraphQL createCommitOnBranch mutation instead of a
+          # plain `git commit && git push`. Mutation-authored commits are
+          # signed server-side with GitHub's bot key, so the resulting
+          # commit is verified -- which is required by the protected-branch
+          # rule on main. Plain push of an unsigned commit gets GH006.
+          # The author + committer default to the actor of GITHUB_TOKEN
+          # (github-actions[bot]) so the commit identity matches the
+          # convention.
+          short_sha="${GITHUB_SHA::7}"
+          expected_oid=$(git rev-parse HEAD)
+          changelog_b64=$(base64 -w 0 CHANGELOG.md)
+          wiki_b64=$(base64 -w 0 wiki/Changelog.md)
 
-          Maintained by .github/workflows/changelog-append.yml.
-          See .github/scripts/Update-Changelog.ps1 for the parsing rules."
-          # Push to the same branch this workflow ran on (always main given the
-          # trigger filter, but read it from context anyway).
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          headline="docs(changelog): auto-append entries from ${short_sha} [skip changelog]"
+          body=$(printf '%s\n%s' \
+            'Maintained by .github/workflows/changelog-append.yml.' \
+            'See .github/scripts/Update-Changelog.ps1 for the parsing rules.')
+
+          payload=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg headline "$headline" \
+            --arg body "$body" \
+            --arg oid "$expected_oid" \
+            --arg changelog "$changelog_b64" \
+            --arg wiki "$wiki_b64" \
+            '{
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
+              variables: {
+                input: {
+                  branch: { repositoryNameWithOwner: $repo, branchName: $branch },
+                  message: { headline: $headline, body: $body },
+                  fileChanges: {
+                    additions: [
+                      { path: "CHANGELOG.md",      contents: $changelog },
+                      { path: "wiki/Changelog.md", contents: $wiki }
+                    ]
+                  },
+                  expectedHeadOid: $oid
+                }
+              }
+            }')
+
+          response=$(printf '%s' "$payload" | gh api graphql --input -)
+          echo "$response" | jq .
+
+          # gh api exits non-zero on transport errors but a successful 200
+          # with a GraphQL `errors` field passes through silently. Surface it.
+          if echo "$response" | jq -e '.errors // empty' >/dev/null; then
+            echo "::error::createCommitOnBranch returned GraphQL errors"
+            exit 1
+          fi
+
+          new_oid=$(echo "$response" | jq -r '.data.createCommitOnBranch.commit.oid')
+          new_url=$(echo "$response" | jq -r '.data.createCommitOnBranch.commit.url')
+          if [[ -z "$new_oid" || "$new_oid" == "null" ]]; then
+            echo "::error::createCommitOnBranch did not return a commit oid"
+            exit 1
+          fi
+          echo "Verified commit: $new_oid"
+          echo "URL:             $new_url"
+
+          # Belt + braces: confirm GitHub recorded the commit as verified.
+          # Should always be true for a createCommitOnBranch output; if not,
+          # the protected-branch rule would fire on the next workflow run
+          # and we'd rather see it here.
+          verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$new_oid" --jq '.commit.verification.verified')
+          if [[ "$verified" != "true" ]]; then
+            echo "::error::Commit $new_oid is not verified (got: $verified)"
+            gh api "repos/$GITHUB_REPOSITORY/commits/$new_oid" --jq '.commit.verification'
+            exit 1
+          fi
+          echo "Verification: ok"
 
       - name: Trigger wiki sync
         # wiki/Changelog.md changed under github-actions[bot] auth, which
