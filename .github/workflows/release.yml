@@ -66,36 +66,6 @@ jobs:
           Copy-Item CHANGELOG.md       .changelog-stash/CHANGELOG.md       -Force
           Copy-Item wiki/Changelog.md  .changelog-stash/wiki/Changelog.md  -Force
 
-      - name: Generate auto-changelog
-        id: changelog
-        shell: pwsh
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          # gh release list is used by the prev-tag resolver's subject-match
-          # fallback. Without it the resolver silently falls through to the
-          # root walk, which produces a giant slice on rebased histories.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Auto-generated commit list scoped to commits between the previous
-          # tag and the current tag. See .github/scripts/Generate-ReleaseNotes.ps1
-          # for filtering rules ([skip changelog], merge commits, version-stamp
-          # noise) and the empty-slice / ASCII / voice scrub gates that fail
-          # the workflow if any commit subject (or extras file) trips them.
-          # If .github/release-extras/<tag>.md exists, its contents are appended
-          # below the auto section verbatim; the same scrub still runs.
-          # Release body is the full output of this script; nothing else gets
-          # concatenated above or below it (the curated CHANGELOG dump from
-          # earlier release shapes is gone).
-          $auto = & ./.github/scripts/Generate-ReleaseNotes.ps1
-          if (-not $auto) {
-            throw "Generate-ReleaseNotes.ps1 returned empty output. Either the script failed silently or the slice was empty. Inspect the workflow log for warnings."
-          }
-          $delim = "EOF_" + [Guid]::NewGuid().ToString('N')
-          "body<<$delim" >> $env:GITHUB_OUTPUT
-          $auto          >> $env:GITHUB_OUTPUT
-          $delim         >> $env:GITHUB_OUTPUT
-
       - name: Build distribution
         shell: pwsh
         env:
@@ -106,18 +76,54 @@ jobs:
           $version = $env:TAG_NAME -replace '^v', ''
           ./build.ps1 -Version $version
 
-      - name: Locate release zip
+      - name: Locate release artifacts
         id: zip
         shell: pwsh
         run: |
           $zip = Get-ChildItem release/WKVRCProxy-*.zip | Select-Object -First 1
-          if (-not $zip) { throw "No release zip found in release/ — build.ps1 did not produce one." }
+          if (-not $zip) { throw "No release zip found in release/ -- build.ps1 did not produce one." }
           $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash
-          "path=$($zip.FullName)" >> $env:GITHUB_OUTPUT
-          "name=$($zip.Name)"     >> $env:GITHUB_OUTPUT
-          "sha256=$hash"          >> $env:GITHUB_OUTPUT
-          Write-Host "Release zip: $($zip.Name)"
-          Write-Host "SHA256: $hash"
+          $manifest = Get-ChildItem release/WKVRCProxy-*.manifest.tsv | Select-Object -First 1
+          if (-not $manifest) { throw "No manifest found in release/ -- build.ps1 did not produce one. Generate-ReleaseNotes.ps1 needs it for the File integrity section." }
+          "path=$($zip.FullName)"           >> $env:GITHUB_OUTPUT
+          "name=$($zip.Name)"               >> $env:GITHUB_OUTPUT
+          "size=$($zip.Length)"             >> $env:GITHUB_OUTPUT
+          "sha256=$hash"                    >> $env:GITHUB_OUTPUT
+          "manifest=$($manifest.FullName)"  >> $env:GITHUB_OUTPUT
+          Write-Host "Release zip:      $($zip.Name)"
+          Write-Host "Release manifest: $($manifest.Name)"
+          Write-Host "SHA256:           $hash"
+
+      - name: Generate release body
+        id: changelog
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # gh release list is used by the prev-tag resolver's subject-match
+          # fallback. Without it the resolver silently falls through to the
+          # root walk, which produces a giant slice on rebased histories.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Composes the full release body: title + auto-changelog slice +
+          # File integrity (from the manifest emitted by build.ps1) + four
+          # templated evergreen sections (More / Install / Uninstall / What
+          # you need to do) + optional .github/release-extras/<tag>.md.
+          # See .github/scripts/Generate-ReleaseNotes.ps1 for filtering rules,
+          # token substitution, and scrub gates.
+          $body = & ./.github/scripts/Generate-ReleaseNotes.ps1 `
+            -ZipPath   '${{ steps.zip.outputs.path }}' `
+            -ZipName   '${{ steps.zip.outputs.name }}' `
+            -ZipSize   '${{ steps.zip.outputs.size }}' `
+            -ZipSha256 '${{ steps.zip.outputs.sha256 }}' `
+            -Manifest  '${{ steps.zip.outputs.manifest }}'
+          if (-not $body) {
+            throw "Generate-ReleaseNotes.ps1 returned empty output. Inspect the workflow log for warnings."
+          }
+          $delim = "EOF_" + [Guid]::NewGuid().ToString('N')
+          "body<<$delim" >> $env:GITHUB_OUTPUT
+          $body          >> $env:GITHUB_OUTPUT
+          $delim         >> $env:GITHUB_OUTPUT
 
       - name: Create GitHub release
         id: publish
@@ -125,24 +131,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          $tag    = "${{ github.ref_name }}"
-          $zip    = "${{ steps.zip.outputs.path }}"
-          $sha    = "${{ steps.zip.outputs.sha256 }}"
-          $name   = "${{ steps.zip.outputs.name }}"
-          $auto   = @'
+          $tag = "${{ github.ref_name }}"
+          $zip = "${{ steps.zip.outputs.path }}"
+          $notes = @'
           ${{ steps.changelog.outputs.body }}
           '@
-          $notes  = @"
-          ## WKVRCProxy $tag
-
-          Download **$name** below and extract anywhere. The bundled ``WKVRCProxy.Updater.exe`` and ``WKVRCProxy.Uninstaller.exe`` live next to ``WKVRCProxy.exe``.
-
-          SHA256: $sha
-
-          ---
-
-          $auto
-          "@
           # Persist the input body so the verify step can diff against what
           # GitHub actually serves. Doing it here avoids re-deriving the body
           # in a second step and risking divergence.
@@ -150,7 +143,7 @@ jobs:
           $notes | Out-File -LiteralPath $notesPath -Encoding utf8 -NoNewline
           "input_path=$notesPath" >> $env:GITHUB_OUTPUT
           # gh release create accepts the asset paths as positional arguments after the tag.
-          gh release create $tag $zip --title $tag --notes $notes
+          gh release create $tag $zip --title $tag --notes-file $notesPath
 
       - name: Verify published release body matches input
         env:

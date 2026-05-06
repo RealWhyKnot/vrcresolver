@@ -189,9 +189,26 @@ if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.YtDlp publish failed" }
 # --- Trim debug symbols we don't ship ---
 Get-ChildItem $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
 
-# --- Zip ---
+# --- Manifest (per-file SHA256 + size for the release-body File Integrity section) ---
+# Tab-separated: <sha256>\t<size_bytes>\t<relative_path>. One file per line,
+# sorted by path. Generate-ReleaseNotes.ps1 reads this to compose the inner-file
+# hash table without needing to unzip the artifact.
 if (-not $SkipZip) {
     if (-not (Test-Path $ReleaseDir)) { New-Item -ItemType Directory $ReleaseDir -Force | Out-Null }
+    $ManifestPath = Join-Path $ReleaseDir "WKVRCProxy-v$FullVersion.manifest.tsv"
+    $manifestLines = Get-ChildItem $BuildDir -Recurse -File |
+        Sort-Object FullName |
+        ForEach-Object {
+            $relPath = $_.FullName.Substring($BuildDir.Length + 1) -replace '\\', '/'
+            $sha = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$sha`t$($_.Length)`t$relPath"
+        }
+    [System.IO.File]::WriteAllLines($ManifestPath, [string[]]$manifestLines, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Manifest: $ManifestPath ($($manifestLines.Count) files)" -ForegroundColor Cyan
+}
+
+# --- Zip ---
+if (-not $SkipZip) {
     $ZipPath = Join-Path $ReleaseDir "WKVRCProxy-v$FullVersion.zip"
     if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
     Compress-Archive -Path (Join-Path $BuildDir "*") -DestinationPath $ZipPath

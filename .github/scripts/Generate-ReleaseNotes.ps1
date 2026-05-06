@@ -1,20 +1,40 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-  Generate the GitHub release body for a tag from the git-log slice.
+  Generate the GitHub release body for a tag from the git-log slice plus
+  per-repo template sections plus a per-file integrity table.
 
 .DESCRIPTION
-  Walks commits between the previous tag and the current tag (or initial commit
-  if no prior tag exists). Skips merge commits and commits containing the marker
-  "[skip changelog]". Strips trailing version-stamp noise of the form
-  " (YYYY.M.D.N-XXXX)" that some repos append to commit subjects. Groups by
-  conventional-commit prefix when at least one entry has one, otherwise emits a
-  flat bullet list.
+  Composes a multi-section markdown body for the release page. Section order:
 
-  Optionally appends an "extras" file (free-form per-release prose) below the
-  auto-generated section, separated by --- and an `## Additional notes` heading.
-  This is the only supported path for adding hand-written content;
-  every other path goes through the auto-generator.
+    1. Title (h1: "<repo> <tag>")
+    2. What's Changed (auto-changelog from the commit slice between prev tag
+       and this tag; bucketed by conventional-commit prefix)
+    3. File integrity (auto-generated SHA256 + size table for the release zip
+       and every file inside it; reads inner-file metadata from the manifest
+       emitted by build.ps1)
+    4. More (from .github/release-template/links.md, with token substitution)
+    5. Install (fresh) (from .github/release-template/install.md)
+    6. Uninstall (from .github/release-template/uninstall.md)
+    7. What you need to do (from .github/release-template/what-you-need-to-do.md)
+    8. Optional extras (from .github/release-extras/<tag>.md if present;
+       appended below with `---` separator and `## Additional notes` heading)
+
+  Slice composition: walks commits between prev tag and current tag. Skips
+  merge commits and commits containing "[skip changelog]". Strips trailing
+  version-stamp noise of the form " (YYYY.M.D.N-XXXX)" that some repos append
+  to subjects. Groups by conventional-commit prefix when at least one entry
+  has one, otherwise emits a flat bullet list.
+
+  Prev-tag resolution is layered for resilience against history rewrites that
+  orphan the prior tag (rebase + force-push of main): describe + sanity gate,
+  then subject-match against the most recent published GitHub release, then
+  root-walk fallback. See Resolve-PrevTagForSlice for details.
+
+  Templates and the optional extras file run through the same scrub gates as
+  commit subjects: ASCII normalisation pass, then non-ASCII fail, then a
+  voice / internal-vocab grep. Any violation in any input fails the workflow
+  and prints a remediation hint.
 
   Outputs the markdown body to stdout. Throws on:
     * empty slice (no qualifying commits between prev and current tag)
@@ -22,7 +42,8 @@
     * non-ASCII characters in the final body (after a normalisation pass)
 
   Each failure prints a clear remediation hint so the operator knows whether
-  to amend a commit, mark one [skip changelog], or fix the extras file.
+  to amend a commit, mark one [skip changelog], or fix a template or the
+  extras file.
 
   Requires the checkout step to have used fetch-depth: 0 (or otherwise have
   the full history + tags available).
@@ -36,8 +57,37 @@
 
 .PARAMETER Extras
   Optional path to a markdown file whose contents get appended verbatim
-  below the auto-changelog section. If absent, the auto section is the
-  whole body. Default: ".github/release-extras/<tag>.md".
+  below all auto sections. Used for release-specific narrative that does
+  not fit a commit subject (migration steps, server-side coordination
+  notes, etc.). Default: ".github/release-extras/<tag>.md".
+
+.PARAMETER TemplateDir
+  Directory containing the per-section evergreen templates: links.md,
+  install.md, uninstall.md, what-you-need-to-do.md. Templates undergo
+  token substitution (see README in this directory) before emission.
+  Default: ".github/release-template".
+
+.PARAMETER Manifest
+  Path to the per-file manifest emitted by build.ps1 alongside the zip.
+  Tab-separated <sha256>\t<size_bytes>\t<relative_path> per line. Used
+  to compose the inner-file rows of the File integrity section.
+  Required (along with -ZipPath, -ZipSize, -ZipSha256) for the File
+  integrity section to render; otherwise that section is skipped.
+
+.PARAMETER ZipPath
+  Path to the release zip artifact. Used to derive the zip name when
+  -ZipName is not set, and as a presence check for the File integrity
+  section.
+
+.PARAMETER ZipName
+  Override for the zip's display name in the File integrity section.
+  Defaults to the leaf of -ZipPath.
+
+.PARAMETER ZipSize
+  Size in bytes of the release zip. Used by the File integrity section.
+
+.PARAMETER ZipSha256
+  SHA256 of the release zip. Used by the File integrity section.
 
 .PARAMETER AllowEmpty
   Skip the empty-slice guard. Use only for the very first release on a repo
@@ -50,9 +100,15 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Tag      = $(if ($env:TAG_NAME) { $env:TAG_NAME } else { $env:GITHUB_REF_NAME }),
-    [string] $Repo     = $env:GITHUB_REPOSITORY,
-    [string] $Extras   = $null,
+    [string] $Tag         = $(if ($env:TAG_NAME) { $env:TAG_NAME } else { $env:GITHUB_REF_NAME }),
+    [string] $Repo        = $env:GITHUB_REPOSITORY,
+    [string] $Extras      = $null,
+    [string] $TemplateDir = $null,
+    [string] $Manifest    = $null,
+    [string] $ZipPath     = $null,
+    [string] $ZipName     = $null,
+    [long]   $ZipSize     = 0,
+    [string] $ZipSha256   = $null,
     [switch] $AllowEmpty,
     [switch] $SkipScrub
 )
@@ -66,6 +122,14 @@ if (-not $Tag) { throw "No tag provided (pass -Tag or set TAG_NAME / GITHUB_REF_
 # not the script dir, so the workflow can invoke the script from repo root.
 if (-not $Extras) {
     $Extras = Join-Path -Path (Get-Location) -ChildPath ".github/release-extras/$Tag.md"
+}
+
+# Default template dir for the per-section evergreen content (More, Install,
+# Uninstall, What you need to do). Each repo curates its own content here;
+# the composer reads `<TemplateDir>/<section>.md` and runs token substitution
+# on the contents before emitting it as a section of the release body.
+if (-not $TemplateDir) {
+    $TemplateDir = Join-Path -Path (Get-Location) -ChildPath ".github/release-template"
 }
 
 # Resolve previous tag. Layered fallback so a history rewrite that orphans the
@@ -273,7 +337,72 @@ foreach ($e in $entries) {
     }
 }
 
+# Token substitution map. Templates and emitted sections reference these by
+# {key} string (literal curly braces in the template). Any value the resolver
+# could not compute is left as the literal {key} in the output so the operator
+# sees the omission rather than blank space.
+$ownerOnly = ''
+$repoShort = ''
+if ($Repo -and ($Repo -match '/')) {
+    $parts = $Repo -split '/', 2
+    $ownerOnly = $parts[0]
+    $repoShort = $parts[1]
+} elseif ($Repo) {
+    $repoShort = $Repo
+}
+$tagCommitSha = ''
+$tagCommitShort = ''
+$tagSha = & git rev-parse $Tag 2>$null
+if ($LASTEXITCODE -eq 0 -and $tagSha) {
+    $tagCommitSha = $tagSha.Trim()
+    if ($tagCommitSha.Length -ge 12) { $tagCommitShort = $tagCommitSha.Substring(0, 12) }
+}
+$priorTagToken = if ($prevTag) { $prevTag } else { '' }
+$zipNameToken  = if ($ZipName) { $ZipName } elseif ($ZipPath) { (Split-Path -Leaf $ZipPath) } else { '' }
+$tokens = @{
+    '{tag}'              = $Tag
+    '{version}'          = ($Tag -replace '^v', '')
+    '{owner}'            = $ownerOnly
+    '{repo}'             = $repoShort
+    '{full-repo}'        = $Repo
+    '{commit-sha}'       = $tagCommitSha
+    '{commit-sha-short}' = $tagCommitShort
+    '{prior-tag}'        = $priorTagToken
+    '{zip-name}'         = $zipNameToken
+}
+
+function Expand-Tokens([string] $text, [hashtable] $map) {
+    if (-not $text) { return $text }
+    foreach ($key in $map.Keys) {
+        $val = $map[$key]
+        if ($null -eq $val) { $val = '' }
+        $text = $text.Replace($key, $val)
+    }
+    return $text
+}
+
+function Format-Bytes([long] $bytes) {
+    if ($bytes -ge 1MB) { return ('{0:F2} MB' -f ($bytes / 1MB)) }
+    if ($bytes -ge 1KB) { return ('{0:F2} KB' -f ($bytes / 1KB)) }
+    return ('{0} B' -f $bytes)
+}
+
+function Read-TemplateSection([string] $name, [string] $dir, [hashtable] $tokenMap) {
+    $path = Join-Path -Path $dir -ChildPath "$name.md"
+    if (-not (Test-Path -LiteralPath $path)) {
+        Write-Host "::warning::Release-body template missing: $path. Section '$name' will not render."
+        return $null
+    }
+    $content = (Get-Content -LiteralPath $path -Raw -Encoding UTF8).Trim()
+    if (-not $content) { return $null }
+    return (Expand-Tokens -text $content -map $tokenMap)
+}
+
 $sb = [System.Text.StringBuilder]::new()
+if ($repoShort) {
+    [void]$sb.AppendLine("# $repoShort $Tag")
+    [void]$sb.AppendLine()
+}
 [void]$sb.AppendLine("## What's Changed")
 [void]$sb.AppendLine()
 
@@ -300,6 +429,68 @@ if ($useGroups) {
 
 if ($Repo -and $prevTag) {
     [void]$sb.AppendLine("**Full Changelog**: https://github.com/$Repo/compare/$prevTag...$Tag")
+}
+
+# --- File integrity ---
+# Composes a code-block with the release zip on the first line and indented
+# inner-file rows below. Inner-file hashes come from the manifest emitted by
+# build.ps1 (release/<zip-name>.manifest.tsv); the zip itself is hashed by the
+# workflow's "Locate release zip" step and passed in via -ZipPath/-ZipSha256/-ZipSize.
+# If any of those are missing (running locally without a build, or the workflow
+# wiring is incomplete), the section is skipped with a warning so the operator
+# notices.
+$includeIntegrity = $ZipPath -and $ZipSha256 -and $ZipSize -gt 0 -and $Manifest -and (Test-Path -LiteralPath $Manifest)
+if ($includeIntegrity) {
+    $manifestEntries = @()
+    foreach ($line in Get-Content -LiteralPath $Manifest -Encoding UTF8) {
+        if (-not $line) { continue }
+        $parts = $line -split "`t", 3
+        if ($parts.Count -ne 3) {
+            Write-Host "::warning::Skipping malformed manifest line: $line"
+            continue
+        }
+        $manifestEntries += [pscustomobject]@{
+            Sha256 = $parts[0]
+            Size   = [long]$parts[1]
+            Path   = $parts[2]
+        }
+    }
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## File integrity")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("Every file in the release zip is hashed below. Verify with ``Get-FileHash <file> -Algorithm SHA256`` on PowerShell.")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine('```')
+    $zipNameForLine = if ($zipNameToken) { $zipNameToken } else { Split-Path -Leaf $ZipPath }
+    $zipSizeStr = Format-Bytes $ZipSize
+    [void]$sb.AppendLine(("{0,-36}    {1,8}    SHA256: {2}" -f $zipNameForLine, $zipSizeStr, $ZipSha256.ToUpper()))
+    [void]$sb.AppendLine()
+    # Top-level files before subdirectory files; alphabetical within each
+    # group. Reads better for a user verifying a hash: the binary they
+    # double-click on is at the top.
+    $sortedEntries = $manifestEntries |
+        Sort-Object @{Expression = { ($_.Path -split '/').Count }}, Path
+    foreach ($entry in $sortedEntries) {
+        $indented = "  " + $entry.Path
+        $sizeStr = Format-Bytes $entry.Size
+        [void]$sb.AppendLine(("{0,-36}    {1,8}    SHA256: {2}" -f $indented, $sizeStr, $entry.Sha256.ToUpper()))
+    }
+    [void]$sb.AppendLine('```')
+} elseif ($Manifest -or $ZipPath -or $ZipSha256) {
+    Write-Host "::warning::File-integrity section skipped: -Manifest, -ZipPath, -ZipSize, and -ZipSha256 must all be set. Got Manifest='$Manifest' ZipPath='$ZipPath' ZipSize=$ZipSize ZipSha256='$ZipSha256'."
+}
+
+# --- Templated evergreen sections ---
+# Each template is repo-curated content under .github/release-template/<name>.md.
+# Read in this fixed order; missing templates emit a warning and skip without
+# failing the build. Token substitution happens inside Read-TemplateSection.
+$templateOrder = @('links', 'install', 'uninstall', 'what-you-need-to-do')
+foreach ($name in $templateOrder) {
+    $section = Read-TemplateSection -name $name -dir $TemplateDir -tokenMap $tokens
+    if ($section) {
+        [void]$sb.AppendLine()
+        [void]$sb.AppendLine($section)
+    }
 }
 
 # Optional extras append. Free-form prose for the rare case where a release
