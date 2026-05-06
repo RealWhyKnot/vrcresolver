@@ -99,6 +99,7 @@ The most recent release is at the top.
 - **relay:** Decompress upstream HLS so we don't lie about Content-Encoding (947aae5)
 - **release:** Map git-author WhyKnot -> @RealWhyKnot + pragma CS0162 dev banner (7f6e246)
 - **build:** Treat CI-tagged release builds as release-mode regardless of dirty state (370878f)
+- **release:** Scope release body to the just-this-version commit slice only (fa44a75)
 
 ---
 
