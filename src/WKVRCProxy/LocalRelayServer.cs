@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.Versioning;
@@ -11,24 +12,37 @@ namespace WKVRCProxy;
 // for AVPro: VRChat's AVPro player ships a built-in trusted-host
 // allowlist that includes `*.youtube.com`. The hosts file maps
 // `localhost.youtube.com -> 127.0.0.1`, so AVPro fetches
-//   http://localhost.youtube.com:{port}/play?target=<base64-of-real-url>
-// passes the trust check, and lands on this listener which forwards the
-// request to the real resolved URL (typically
-// `https://node1.whyknot.dev/api/proxy?q=...`) and streams bytes back.
+//   http://localhost.youtube.com:{port}/play?target=<base64>   (manifest URL,
+//   http://localhost.youtube.com:{port}/play?id=<12hex>         emitted by wrapper)
+//                                                              (segment URL,
+//                                                              emitted by the
+//                                                              manifest rewriter
+//                                                              into the manifest
+//                                                              this listener
+//                                                              returns to AVPro)
+// AVPro's trust check passes on either form; the listener resolves the URL
+// (decode for `target=`, lookup for `id=`) and forwards to the real upstream
+// (typically `https://node1.whyknot.dev/api/proxy?...`) and streams bytes back.
+//
+// EVERY byte routes through whyknot.dev. Both the initial manifest fetch
+// (where the wrapper-emitted target= URL points at the server proxy) and
+// every segment fetch (where the rewriter-emitted id= maps to the server
+// proxy URL the manifest pulled in). This preserves WARP egress, central
+// control, and CF caching potential for all bytes.
 //
 // HLS handling: when the upstream Content-Type is application/vnd.apple.mpegurl
 // or the URL contains `.m3u8`, the listener reads the manifest as text and
-// rewrites every segment URL through the same `/play?target=...` shape so
-// AVPro's segment fetches also pass the trust check. Without the rewrite the
-// server-rewritten manifest points at `node1.whyknot.dev/api/proxy?url=...`
-// for each segment which AVPro rejects the same way it rejected the manifest.
+// rewrites every segment URL into a `/play?id=<12hex>` URL via the
+// SegmentIdRegistry. The 12-hex encoding compresses the manifest by ~98%
+// vs base64-encoding-the-full-server-URL-into-each-line, fixing the
+// long-form-video manifest blowup.
 //
 // Phase 1: HTTP-only. HTTPS + per-machine cert lifecycle is a separate
 // follow-up. AVPro accepts plain http:// on a non-443 port for hostnames
 // matching its allowlist (legacy implementation proved this for years).
 //
-// AOT-clean: HttpListener + HttpClient + System.IO + GeneratedRegex.
-// No reflection, no dynamic codegen.
+// AOT-clean: HttpListener + HttpClient + System.IO + GeneratedRegex +
+// ConcurrentDictionary + RandomNumberGenerator. No reflection, no dynamic codegen.
 [SupportedOSPlatform("windows")]
 internal sealed partial class LocalRelayServer : IDisposable
 {
@@ -40,6 +54,7 @@ internal sealed partial class LocalRelayServer : IDisposable
     private readonly HttpListener _listener;
     private readonly CancellationTokenSource _cts = new();
     private readonly HttpClient _http;
+    private readonly SegmentIdRegistry _idRegistry = new();
     private Task? _acceptLoop;
 
     public LocalRelayServer(int port)
@@ -120,14 +135,50 @@ internal sealed partial class LocalRelayServer : IDisposable
                 ctx.Response.Close();
                 return;
             }
+
+            // Two paths into the listener, both resolve to a single
+            // upstream URL we then fetch:
+            //
+            //   ?target=<base64url>  -- the wrapper emits this for the
+            //     manifest URL it gets from MeshClient. base64url-encoded
+            //     full upstream URL. Self-contained, stateless, survives
+            //     listener restarts.
+            //
+            //   ?id=<8-hex>          -- the HlsManifestRewriter emits this
+            //     for every segment URL in a manifest the listener rewrites.
+            //     Looked up against the listener's in-memory SegmentIdRegistry.
+            //     8 hex chars vs ~3000 chars for a base64url-encoded server-
+            //     proxy URL. Closes the manifest-size blowup that broke
+            //     long-form playback while keeping ALL segment fetches
+            //     routed through whyknot.dev (registry value is the full
+            //     `node1.whyknot.dev/api/proxy?url=<base64>` URL).
+            //
+            // 404 if id= is given but unknown (listener restarted, or the
+            // segment expired off the registry). AVPro re-fetches the
+            // manifest in that case and gets fresh IDs.
+            string? idParam = ctx.Request.QueryString["id"];
             string? targetParam = ctx.Request.QueryString["target"];
-            if (string.IsNullOrEmpty(targetParam))
+            if (!string.IsNullOrEmpty(idParam))
+            {
+                string? mapped = _idRegistry.TryGetUrl(idParam);
+                if (string.IsNullOrEmpty(mapped))
+                {
+                    ctx.Response.StatusCode = 404;
+                    ctx.Response.Close();
+                    return;
+                }
+                targetUrl = mapped;
+            }
+            else if (!string.IsNullOrEmpty(targetParam))
+            {
+                targetUrl = DecodeTargetParam(targetParam);
+            }
+            else
             {
                 ctx.Response.StatusCode = 400;
                 ctx.Response.Close();
                 return;
             }
-            targetUrl = DecodeTargetParam(targetParam);
             if (string.IsNullOrEmpty(targetUrl) || !Uri.TryCreate(targetUrl, UriKind.Absolute, out _))
             {
                 ctx.Response.StatusCode = 400;
@@ -170,7 +221,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                 // doesn't false-trip the idle watchdog (they're small).
                 reqCts.CancelAfter(Timeout.InfiniteTimeSpan);
                 string manifest = await resp.Content.ReadAsStringAsync(_cts.Token).ConfigureAwait(false);
-                string rewritten = HlsManifestRewriter.Rewrite(manifest, targetUrl, _port);
+                string rewritten = HlsManifestRewriter.Rewrite(manifest, targetUrl, _port, _idRegistry);
                 byte[] manifestBytes = Encoding.UTF8.GetBytes(rewritten);
                 ctx.Response.ContentLength64 = manifestBytes.Length;
                 try { ctx.Response.Headers["Content-Type"] = "application/vnd.apple.mpegurl"; } catch { }
@@ -322,39 +373,41 @@ internal sealed partial class LocalRelayServer : IDisposable
     }
 }
 
-// HLS manifest rewriter. Rewrites every segment URL (absolute or relative
-// resolved against the manifest's base URL) to route through this listener
-// via /play?target=<base64-of-resolved-segment-url> -- UNLESS the segment's
-// real upstream is already on AVPro's trusted-host allowlist (googlevideo,
-// vimeo, etc.), in which case the segment URL is emitted directly.
+// HLS manifest rewriter. Every segment URL in the manifest gets routed
+// through this listener, which then fetches the upstream and streams bytes
+// back to AVPro. The listener IS the trust gateway -- it's how AVPro can
+// reach `node1.whyknot.dev/api/proxy?...` URLs even though `node1` is not
+// on AVPro's allowlist; AVPro sees `localhost.youtube.com:{port}` (which
+// matches `*.youtube.com`) and accepts.
 //
-// The unwrap path closes a manifest-size blowup that broke long-form video
-// playback. The server's RewriteHls wraps every segment through
-// `node1.whyknot.dev/api/proxy?url=<base64-of-segment>` for WARP egress +
-// CF caching benefits. The listener used to wrap THAT again through
-// `localhost.youtube.com:port/play?target=<base64-of-node1-url>` to make
-// AVPro's trust check pass on every segment fetch. The double-encoding
-// inflates each segment URL ~2x; for a 2.7-hour video with ~1700
-// segments the manifest grows to ~4.9 MB. AVPro can't handle that and
-// times out at ~2 seconds with `Loading failed`, world script re-fires,
-// stuck loop.
+// Encoding: each segment URL is registered against the listener's
+// SegmentIdRegistry and rewritten to `localhost.youtube.com:{port}/play?id=<12hex>`.
+// AVPro fetches the wrapped URL; the handler looks up the ID; the listener
+// fetches the registered upstream (which is the server's
+// `node1.whyknot.dev/api/proxy?url=<base64>` URL); bytes flow back to AVPro.
+// Every byte routes through whyknot.dev -- WARP egress, central control,
+// CF caching potential preserved.
 //
-// The fix: when a segment URL is the server's `node1/api/proxy?url=<base64>`
-// shape, decode the inner URL and check the host. If the host is on
-// AVPro's built-in trusted allowlist (which is where YouTube segments
-// already live -- *.googlevideo.com), emit the inner URL directly. AVPro's
-// trust check still passes (googlevideo is allowlisted), the manifest stays
-// small, segments fetch directly from googlevideo. Tradeoff: bypass the
-// server's per-segment proxy (lose CF edge cache + WARP egress on segment
-// bytes). Acceptable: CF Page Rule isn't activated yet, and YouTube doesn't
-// IP-block playback.
+// Why an ID-map instead of base64-encoding the upstream URL into the
+// manifest line: a typical googlevideo HLS segment URL is ~1500 chars;
+// the server's wrap adds another ~30%; base64-encoding that for the
+// listener wrap inflates again ~30%. Per segment: ~3000 chars. With ~1700
+// segments in a 2.7-hour video, the manifest balloons to ~4.9 MB and
+// AVPro times out parsing it. The 12-hex ID compresses each segment URL
+// to ~50 chars total in the manifest. 1700 segments x 50 chars = ~85 KB;
+// well under any AVPro tolerance.
+//
+// Limitation: the registry is in-memory + ephemeral. A listener restart
+// invalidates all outstanding IDs -- AVPro fetches a segment, gets 404,
+// the world script re-fires the resolve, fresh manifest with fresh IDs.
+// Acceptable: listener restart only happens on watchdog restart.
 [SupportedOSPlatform("windows")]
 internal static partial class HlsManifestRewriter
 {
     [GeneratedRegex(@"URI=""([^""]+)""", RegexOptions.IgnoreCase)]
     private static partial Regex UriAttributeRegex();
 
-    public static string Rewrite(string manifest, string baseUrl, int port)
+    public static string Rewrite(string manifest, string baseUrl, int port, SegmentIdRegistry registry)
     {
         if (string.IsNullOrEmpty(manifest)) return manifest;
 
@@ -381,7 +434,7 @@ internal static partial class HlsManifestRewriter
                 {
                     string segUrl = m.Groups[1].Value;
                     string resolved = ResolveAgainstBase(baseUri, segUrl);
-                    string emitted = ResolveSegmentForEmit(resolved, portStr);
+                    string emitted = WrapSegmentThroughListener(resolved, portStr, registry);
                     return "URI=\"" + emitted + "\"";
                 });
                 sb.Append(rewrittenTag);
@@ -397,7 +450,7 @@ internal static partial class HlsManifestRewriter
             string segResolved = ResolveAgainstBase(baseUri, trimmed);
             if (Uri.TryCreate(segResolved, UriKind.Absolute, out _))
             {
-                sb.Append(ResolveSegmentForEmit(segResolved, portStr));
+                sb.Append(WrapSegmentThroughListener(segResolved, portStr, registry));
                 sb.Append('\n');
             }
             else
@@ -426,138 +479,162 @@ internal static partial class HlsManifestRewriter
         return maybeRelative;
     }
 
-    // Decide what URL to emit for a segment. Returns either:
-    //   1. The trusted upstream URL directly. Two paths into this branch:
-    //      a) Input is the server's `node1.whyknot.dev/api/proxy?url=<base64>`
-    //         shape AND the inner URL's host is on AVPro's trust list -- we
-    //         unwrap and emit the inner URL.
-    //      b) Input is already a trust-list-passing URL (e.g. a direct
-    //         googlevideo segment) -- we emit it as-is.
-    //      Both avoid the manifest-size blowup that broke long-form playback.
-    //   2. The trust-gateway wrap (otherwise). Standard path for hosts that
-    //      aren't already trust-list-passing.
-    internal static string ResolveSegmentForEmit(string resolvedSegmentUrl, string portStr)
+    // Register the segment URL against the listener's id-registry and emit
+    // the gateway URL. NO bypass paths: every segment routes through the
+    // listener so byte traffic stays on the whyknot.dev path. The registry
+    // dedupes -- the same upstream URL appearing multiple times in a
+    // manifest (rare but possible for byte-range variants) gets the same id.
+    internal static string WrapSegmentThroughListener(string resolvedSegmentUrl, string portStr, SegmentIdRegistry registry)
     {
-        string? bypassUrl = TryUnwrapServerProxyToTrustedHost(resolvedSegmentUrl);
-        if (bypassUrl != null) return bypassUrl;
-
-        if (Uri.TryCreate(resolvedSegmentUrl, UriKind.Absolute, out var direct)
-            && TrustedAvProHosts.IsTrusted(direct.Host))
-        {
-            return resolvedSegmentUrl;
-        }
-
-        return "http://localhost.youtube.com:" + portStr
-            + "/play?target=" + LocalRelayServer.EncodeTargetParam(resolvedSegmentUrl);
-    }
-
-    // Match the server's `https://node{N}.whyknot.dev/api/proxy?url=<base64>`
-    // shape. If the inner URL's host is on AVPro's allowlist, return the
-    // inner URL so AVPro can fetch the segment directly. Returns null when
-    // the segment can't safely be unwrapped (host not allowlisted, parse
-    // failure, malformed base64, etc.) -- caller falls through to wrap.
-    private static string? TryUnwrapServerProxyToTrustedHost(string segmentUrl)
-    {
-        if (!Uri.TryCreate(segmentUrl, UriKind.Absolute, out var uri)) return null;
-        // Server's proxy host pattern: node{N}.whyknot.dev (case-insensitive).
-        // Path must be exactly /api/proxy; query must contain `url=<base64>`.
-        if (!uri.Host.EndsWith(".whyknot.dev", StringComparison.OrdinalIgnoreCase)) return null;
-        if (!uri.AbsolutePath.Equals("/api/proxy", StringComparison.OrdinalIgnoreCase)) return null;
-
-        // Pull the `url=` query param. Server uses it for segments (vs `q=`
-        // for full-state-pack manifest URLs).
-        string? urlParam = null;
-        foreach (var part in uri.Query.TrimStart('?').Split('&'))
-        {
-            int eq = part.IndexOf('=');
-            if (eq < 0) continue;
-            string k = part.Substring(0, eq);
-            if (k.Equals("url", StringComparison.OrdinalIgnoreCase))
-            {
-                urlParam = part.Substring(eq + 1);
-                break;
-            }
-        }
-        if (string.IsNullOrEmpty(urlParam)) return null;
-
-        // Server emits standard base64 (with padding) for `?url=`. URL-decode
-        // first in case the manifest URL-encoded any characters along the way.
-        string decoded;
-        try
-        {
-            string urlUnescaped = Uri.UnescapeDataString(urlParam);
-            string b64 = urlUnescaped.Replace('-', '+').Replace('_', '/');
-            switch (b64.Length % 4)
-            {
-                case 2: b64 += "=="; break;
-                case 3: b64 += "="; break;
-            }
-            decoded = Encoding.UTF8.GetString(Convert.FromBase64String(b64));
-        }
-        catch { return null; }
-
-        if (!Uri.TryCreate(decoded, UriKind.Absolute, out var inner)) return null;
-        if (!TrustedAvProHosts.IsTrusted(inner.Host)) return null;
-        return decoded;
+        string id = registry.GetOrAddId(resolvedSegmentUrl);
+        return "http://localhost.youtube.com:" + portStr + "/play?id=" + id;
     }
 }
 
-// VRChat AVPro's built-in trusted-host allowlist. Hosts matching one of
-// these patterns pass AVPro's trust check in default-public worlds without
-// needing the localhost.youtube.com gateway wrap. Last verified against
-// VRChat: 2026-04-23 (project_vrchat_trusted_url_list memory). The list
-// evolves slowly; if VRChat adds providers we add them here.
+// In-memory registry mapping short IDs to full upstream URLs, used by the
+// HLS manifest rewriter to compact segment URLs in rewritten manifests.
 //
-// Used by HlsManifestRewriter to decide when a segment URL can be emitted
-// directly (manifest stays small) vs needing the gateway wrap (larger but
-// trust-list-passing for non-allowlisted hosts).
+// Each upstream URL gets a 12-hex-char (48-bit) ID via cryptographic RNG;
+// collision probability at the 100k-entry soft cap is ~negligible (birthday
+// at sqrt(2^48) = 16.7M entries). Capacity is bounded by FIFO eviction
+// past the hard cap so a long session can't grow the registry forever.
+//
+// Concurrency: two threads racing to register the same URL get the same
+// ID (atomic via ConcurrentDictionary.TryAdd + race-detection rollback).
+// Thread that loses the race generates a wasted ID but cleans it up.
+//
+// AOT-clean: pure managed code, no reflection.
 [SupportedOSPlatform("windows")]
-internal static class TrustedAvProHosts
+internal sealed class SegmentIdRegistry
 {
-    private static readonly string[] s_exactHosts = new[]
-    {
-        "youtu.be",
-        "soundcloud.com",
-        "vod-progressive.akamaized.net",
-    };
+    public const int DefaultSoftCap = 100_000;
+    public const int DefaultHardCap = 200_000;
 
-    // Wildcard suffixes: host matches if it is exactly the suffix OR ends
-    // with `.<suffix>`. So `*.youtube.com` matches `youtube.com`,
-    // `www.youtube.com`, and `m.youtube.com` but not `notyoutube.com`.
-    private static readonly string[] s_suffixes = new[]
-    {
-        "youtube.com",
-        "googlevideo.com",
-        "facebook.com",
-        "fbcdn.net",
-        "hyperbeam.com",
-        "hyperbeam.dev",
-        "mixcloud.com",
-        "nicovideo.jp",
-        "sndcdn.com",
-        "topaz.chat",
-        "twitch.tv",
-        "ttvnw.net",
-        "twitchcdn.net",
-        "vrcdn.live",
-        "vrcdn.video",
-        "vrcdn.cloud",
-        "vimeo.com",
-        "youku.com",
-    };
+    // 12 hex chars = 48 bits. Collision probability at HardCap entries:
+    // n * (n-1) / (2 * 2^48) = 200k * 200k / (2 * 2^48) = ~7e-5. The
+    // generator loops on collision below; this is just for context.
+    private const int IdHexLength = 12;
+    private const int IdRandomBytes = IdHexLength / 2;
+    private const int MaxGenerationAttempts = 8;
 
-    public static bool IsTrusted(string host)
+    private readonly ConcurrentDictionary<string, string> _idToUrl = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _urlToId = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<string> _insertionOrder = new();
+
+    private readonly int _softCap;
+    private readonly int _hardCap;
+
+    public SegmentIdRegistry()
+        : this(DefaultSoftCap, DefaultHardCap) { }
+
+    // Constructor takes caps so tests can drive eviction with small numbers.
+    public SegmentIdRegistry(int softCap, int hardCap)
     {
-        if (string.IsNullOrEmpty(host)) return false;
-        foreach (var h in s_exactHosts)
-            if (host.Equals(h, StringComparison.OrdinalIgnoreCase)) return true;
-        foreach (var sfx in s_suffixes)
+        if (softCap <= 0 || hardCap <= 0)
+            throw new ArgumentOutOfRangeException(softCap <= 0 ? nameof(softCap) : nameof(hardCap),
+                "Caps must be positive.");
+        if (hardCap < softCap)
+            throw new ArgumentException("hardCap must be >= softCap.", nameof(hardCap));
+        _softCap = softCap;
+        _hardCap = hardCap;
+    }
+
+    public int Count => _idToUrl.Count;
+
+    // Returns the existing ID for `url` if already registered, otherwise
+    // registers `url` with a fresh 12-hex ID and returns that. Thread-safe;
+    // concurrent calls with the same URL converge on a single ID.
+    //
+    // Throws ArgumentException for null/empty URL (caller bug; the rewriter
+    // already filters those before calling). Throws InvalidOperationException
+    // in the astronomically-unlikely case of 8 consecutive ID collisions
+    // (something is broken with RNG; fail loud rather than spin).
+    public string GetOrAddId(string url)
+    {
+        if (string.IsNullOrEmpty(url))
+            throw new ArgumentException("URL must be non-empty.", nameof(url));
+
+        // Fast path: already registered. Tight loop hot in long manifests
+        // (every segment URL hits this).
+        if (_urlToId.TryGetValue(url, out var existingId))
+            return existingId;
+
+        // Slow path: capacity check then claim. Eviction runs first so a
+        // newly-claimed ID isn't evicted by the same call.
+        EvictIfOver();
+
+        for (int attempts = 0; attempts < MaxGenerationAttempts; attempts++)
         {
-            if (host.Equals(sfx, StringComparison.OrdinalIgnoreCase)) return true;
-            if (host.Length > sfx.Length + 1
-                && host.EndsWith("." + sfx, StringComparison.OrdinalIgnoreCase))
-                return true;
+            string newId = GenerateId();
+
+            // Claim newId in idToUrl. ConcurrentDictionary.TryAdd is atomic.
+            if (!_idToUrl.TryAdd(newId, url))
+                continue; // ID collision (extremely rare); generate another.
+
+            // Now register the reverse. If a concurrent thread won the
+            // urlToId slot first, prefer their ID and roll ours back.
+            if (_urlToId.TryAdd(url, newId))
+            {
+                _insertionOrder.Enqueue(newId);
+                return newId;
+            }
+
+            _idToUrl.TryRemove(newId, out _);
+            // Re-read; the concurrent thread's ID is now the canonical one.
+            if (_urlToId.TryGetValue(url, out var concurrentId))
+                return concurrentId;
+            // Concurrent thread's TryAdd succeeded but their idToUrl insert
+            // hasn't landed yet -- spin briefly. In practice this window is
+            // sub-microsecond; the spin terminates quickly.
         }
-        return false;
+
+        throw new InvalidOperationException(
+            "SegmentIdRegistry could not allocate a unique ID after "
+            + MaxGenerationAttempts + " attempts. RNG broken or registry "
+            + "wildly oversized; investigate before resuming.");
+    }
+
+    public string? TryGetUrl(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        return _idToUrl.TryGetValue(id, out var url) ? url : null;
+    }
+
+    // Drop oldest entries down to soft cap when the registry has grown
+    // past hard cap. Cheap O(over-by) scan; only runs on pages that push
+    // past the hard cap, not on every insert.
+    private void EvictIfOver()
+    {
+        int over = _idToUrl.Count - _hardCap;
+        if (over <= 0) return;
+
+        int target = _idToUrl.Count - _softCap;
+        for (int i = 0; i < target; i++)
+        {
+            if (!_insertionOrder.TryDequeue(out var oldId)) break;
+            if (_idToUrl.TryRemove(oldId, out var url))
+            {
+                // Only remove urlToId mapping if it still points at this
+                // specific id. Otherwise a concurrent re-registration of
+                // the same URL could be wiped.
+                _urlToId.TryRemove(new KeyValuePair<string, string>(url, oldId));
+            }
+        }
+    }
+
+    // Test-only hook so the test suite can verify eviction without filling
+    // the registry to 200k entries.
+    public void ClearForTesting()
+    {
+        _idToUrl.Clear();
+        _urlToId.Clear();
+        while (_insertionOrder.TryDequeue(out _)) { }
+    }
+
+    private static string GenerateId()
+    {
+        Span<byte> bytes = stackalloc byte[IdRandomBytes];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 }
