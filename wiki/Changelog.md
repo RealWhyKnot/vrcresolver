@@ -38,6 +38,7 @@ The most recent release is at the top.
 - **protocol:** V3.1 client_hello.accept_formats + welcome.negotiated_format (85878b7)
 - **resolve-cache:** Per-(url,player,format,node) disk cache for hot resolves (3e6f0c6)
 - **relay:** Plan 1 phase 1 -- localhost.youtube.com HTTP trust gateway (b27772f)
+- **relay:** Dev-build verbose request trace gated on BuildInfo.IsDevBuild (0745ed4)
 
 ### Changed
 - scaffold: 4-project solution (WKVRCProxy + Updater + Uninstaller + Shared) (4174228)
