@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
@@ -93,12 +94,12 @@ internal static class HostsManager
     public static void EnsureBypassEntryOrPrompt()
     {
         if (IsBypassActive()) return;
-        Console.WriteLine("[hosts] adding entry for public-instance support -- UAC prompt incoming.");
+        ConsoleUx.Write(LogComponent.Hosts, "adding entry for public-instance support -- UAC prompt incoming.");
         if (!ReexecElevated(AddArg)) return;
         if (IsBypassActive())
-            Console.WriteLine("[hosts] added " + MarkerIp + " " + MarkerHost);
+            ConsoleUx.Write(LogComponent.Hosts, "added " + MarkerIp + " " + MarkerHost);
         else
-            Console.WriteLine("[hosts][warn] entry not present after elevation -- public-instance support may not work.");
+            ConsoleUx.Warn(LogComponent.Hosts, "entry not present after elevation -- public-instance support may not work.");
     }
 
     public static void RemoveBypassEntryIfPresent()
@@ -169,18 +170,18 @@ internal static class HostsManager
             proc?.WaitForExit(60000);
             if (proc != null && !proc.HasExited)
             {
-                Console.WriteLine("[hosts][warn] elevation child still running after 60s -- continuing without hosts entry.");
+                ConsoleUx.Warn(LogComponent.Hosts, "elevation child still running after 60s -- continuing without hosts entry.");
             }
             return true;
         }
         catch (Win32Exception)
         {
-            Console.WriteLine("[hosts] UAC declined -- entry not modified.");
+            ConsoleUx.Write(LogComponent.Hosts, "UAC declined -- entry not modified.");
             return false;
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[hosts][warn] elevation error: " + ex.Message);
+            ConsoleUx.Warn(LogComponent.Hosts, "elevation error: " + ex.Message);
             return false;
         }
     }

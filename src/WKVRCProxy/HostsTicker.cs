@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
@@ -49,7 +50,7 @@ internal sealed class HostsTicker : IDisposable
             try { Tick(); }
             catch (Exception ex)
             {
-                Console.WriteLine("[hosts][warn] tick threw: " + ex.GetType().Name + ": " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Hosts, "tick threw: " + ex.GetType().Name + ": " + ex.Message);
             }
             try { await Task.Delay(TickInterval, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
@@ -65,7 +66,7 @@ internal sealed class HostsTicker : IDisposable
             // condition we can't verify. Log once per state change.
             if (_lastPresent != null)
             {
-                Console.WriteLine("[hosts][warn] tick: hosts file unreadable (" + error + ") -- skipping check");
+                ConsoleUx.Warn(LogComponent.Hosts, "tick: hosts file unreadable (" + error + ") -- skipping check");
                 _lastPresent = null;
             }
             return;
@@ -75,7 +76,7 @@ internal sealed class HostsTicker : IDisposable
         {
             if (_lastPresent != true)
             {
-                Console.WriteLine("[hosts] tick: " + HostsManager.MarkerHost + " entry present");
+                ConsoleUx.Write(LogComponent.Hosts, "tick: " + HostsManager.MarkerHost + " entry present");
                 _lastPresent = true;
             }
             return;
@@ -85,7 +86,7 @@ internal sealed class HostsTicker : IDisposable
         // backoff so user-declined-prompt doesn't loop every minute.
         if (_lastPresent != false)
         {
-            Console.WriteLine("[hosts] tick: " + HostsManager.MarkerHost + " missing -- re-adding");
+            ConsoleUx.Write(LogComponent.Hosts, "tick: " + HostsManager.MarkerHost + " missing -- re-adding");
             _lastPresent = false;
         }
 
@@ -106,17 +107,17 @@ internal sealed class HostsTicker : IDisposable
             // but we want the tick path to confirm the post-state too.
             if (HostsManager.IsBypassActive())
             {
-                Console.WriteLine("[hosts] tick: re-add succeeded in " + sw.ElapsedMilliseconds + " ms");
+                ConsoleUx.Write(LogComponent.Hosts, "tick: re-add succeeded in " + sw.ElapsedMilliseconds + " ms");
                 _lastPresent = true;
             }
             else
             {
-                Console.WriteLine("[hosts][warn] tick: re-add failed (UAC declined or write blocked) -- next attempt in " + (int)ReAddBackoff.TotalMinutes + " min");
+                ConsoleUx.Warn(LogComponent.Hosts, "tick: re-add failed (UAC declined or write blocked) -- next attempt in " + (int)ReAddBackoff.TotalMinutes + " min");
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[hosts][warn] tick re-add threw: " + ex.GetType().Name + ": " + ex.Message);
+            ConsoleUx.Warn(LogComponent.Hosts, "tick re-add threw: " + ex.GetType().Name + ": " + ex.Message);
         }
     }
 

@@ -404,7 +404,7 @@ internal sealed class MeshClient : IAsyncDisposable
         {
             _pending.TryRemove(req.Id, out _);
             _inflightCids.TryRemove(req.Id, out _);
-            Console.WriteLine($"[mesh][warn] request serialization failed id={req.Id}: {ex.Message}");
+            ConsoleUx.Warn(LogComponent.Mesh, $"request serialization failed id={req.Id}: {ex.Message}");
             return MakeFallbackResult(req.Id, WireConstants.FallbackInternalError);
         }
 
@@ -559,10 +559,10 @@ internal sealed class MeshClient : IAsyncDisposable
                     }
                 }, TaskScheduler.Default);
 
-                Console.WriteLine("[mesh] connected node=" + node);
+                ConsoleUx.Write(LogComponent.Mesh, "connected node=" + node);
 
                 await PumpAsync(ct).ConfigureAwait(false);
-                Console.WriteLine("[mesh] disconnected (clean close)");
+                ConsoleUx.Write(LogComponent.Mesh, "disconnected (clean close)");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -570,9 +570,9 @@ internal sealed class MeshClient : IAsyncDisposable
                 // Distinguish abnormal disconnects from clean ones with a
                 // [warn] prefix so a user grepping the log can see at a
                 // glance that something failed.
-                if (_wasConnected) Console.WriteLine("[mesh][warn] disconnected (error): "
+                if (_wasConnected) ConsoleUx.Warn(LogComponent.Mesh, "disconnected (error): "
                     + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
-                else if (_reconnectAttempt == 0) Console.WriteLine("[mesh][warn] disconnected (error): "
+                else if (_reconnectAttempt == 0) ConsoleUx.Warn(LogComponent.Mesh, "disconnected (error): "
                     + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
                 _wasConnected = false;
                 FailAllPending(WireConstants.FallbackServerUnreachable);
@@ -600,7 +600,7 @@ internal sealed class MeshClient : IAsyncDisposable
             // sustained outage doesn't fill the scrollback with retry chatter.
             if (_reconnectAttempt <= 5 || _reconnectAttempt % 10 == 0)
             {
-                Console.WriteLine($"[mesh] reconnect attempt {_reconnectAttempt} in {waitMs / 1000} s");
+                ConsoleUx.Write(LogComponent.Mesh, $"reconnect attempt {_reconnectAttempt} in {waitMs / 1000} s");
             }
             try { await Task.Delay(waitMs, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
@@ -646,7 +646,7 @@ internal sealed class MeshClient : IAsyncDisposable
         }
 
         FailAllPending(WireConstants.FallbackServerUnreachable);
-        Console.WriteLine("[mesh][warn] apex discovery failed -- falling back to native yt-dlp until reconnect succeeds.");
+        ConsoleUx.Warn(LogComponent.Mesh, "apex discovery failed -- falling back to native yt-dlp until reconnect succeeds.");
         throw lastEx ?? new InvalidOperationException("apex discovery failed");
     }
 
@@ -689,7 +689,7 @@ internal sealed class MeshClient : IAsyncDisposable
                             // MITM on the upgraded WS. Tear down + let
                             // the run loop reconnect with a fresh
                             // negotiation.
-                            Console.WriteLine("[mesh][warn] unexpected Binary frame on json-negotiated connection -- aborting + reconnecting");
+                            ConsoleUx.Warn(LogComponent.Mesh, "unexpected Binary frame on json-negotiated connection -- aborting + reconnecting");
                             try { _ws?.Abort(); } catch { /* ignore */ }
                             return;
                         }
@@ -907,11 +907,11 @@ internal sealed class MeshClient : IAsyncDisposable
             }
             case "protocol_error":
             case "rate_limited":
-                Console.WriteLine("[mesh][warn] " + action + " received via binary path "
+                ConsoleUx.Warn(LogComponent.Mesh, "" + action + " received via binary path "
                     + "(server should send as Text per v3.1 spec)");
                 return;
             default:
-                Console.WriteLine("[mesh][warn] unknown binary action -- discarding: "
+                ConsoleUx.Warn(LogComponent.Mesh, "unknown binary action -- discarding: "
                     + LogUtil.SanitizeForConsole(action, 64));
                 return;
         }
@@ -1044,7 +1044,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 try { welcome = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.WelcomeFrame); }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("[mesh][warn] welcome parse failed -- assuming v1 server: "
+                    ConsoleUx.Warn(LogComponent.Mesh, "welcome parse failed -- assuming v1 server: "
                         + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
                     // Pin protocol version to v1 so subsequent ResolveAsync calls
                     // don't get stuck waiting for a welcome that never arrives in
@@ -1084,9 +1084,9 @@ internal sealed class MeshClient : IAsyncDisposable
                     // Surface a warning if either is null so a server-side
                     // regression that drops the field is diagnosable.
                     if (welcome.Engines == null)
-                        Console.WriteLine("[mesh][warn] welcome missing required field: engines");
+                        ConsoleUx.Warn(LogComponent.Mesh, "welcome missing required field: engines");
                     if (welcome.Features == null)
-                        Console.WriteLine("[mesh][warn] welcome missing required field: features");
+                        ConsoleUx.Warn(LogComponent.Mesh, "welcome missing required field: features");
 
                     string features = welcome.Features != null && welcome.Features.Length > 0
                         ? "[" + string.Join(",", welcome.Features) + "]"
@@ -1130,7 +1130,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 // version strings come from the cache entry.
                 if (!_isV3Connection)
                 {
-                    Console.WriteLine("[mesh][warn] welcome_cached received on non-v3 connection -- protocol error, reconnecting");
+                    ConsoleUx.Warn(LogComponent.Mesh, "welcome_cached received on non-v3 connection -- protocol error, reconnecting");
                     try { _ws?.Abort(); } catch { /* ignore */ }
                     doc.Dispose();
                     return;
@@ -1139,7 +1139,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 try { cached = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.WelcomeCachedFrame); }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("[mesh][warn] welcome_cached parse failed: "
+                    ConsoleUx.Warn(LogComponent.Mesh, "welcome_cached parse failed: "
                         + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
                     Interlocked.CompareExchange(ref _serverProtocolVersion, 1, 0);
                     _welcomeTcs?.TrySetResult(null);
@@ -1160,7 +1160,7 @@ internal sealed class MeshClient : IAsyncDisposable
                     // the server will resend the full welcome.
                     if (!string.IsNullOrEmpty(_currentNodeHost))
                         _welcomeCache.Invalidate(_currentNodeHost);
-                    Console.WriteLine("[mesh][warn] welcome_cached but local entry missing -- invalidating + reconnecting");
+                    ConsoleUx.Warn(LogComponent.Mesh, "welcome_cached but local entry missing -- invalidating + reconnecting");
                     try { _ws?.Abort(); } catch { /* ignore */ }
                     doc.Dispose();
                     return;
@@ -1228,7 +1228,7 @@ internal sealed class MeshClient : IAsyncDisposable
                 // Server-supplied string — strip control chars + truncate so a
                 // hostile or buggy server can't inject ANSI escapes into the
                 // user's console window.
-                Console.WriteLine("[mesh][warn] unknown action -- discarding: "
+                ConsoleUx.Warn(LogComponent.Mesh, "unknown action -- discarding: "
                     + LogUtil.SanitizeForConsole(action, 64));
                 doc.Dispose();
                 return;

@@ -178,23 +178,28 @@ internal static class Program
         string stateDir = WkvrcPaths.StateRoot();
         string vrcToolsDir = VrcPathLocator.Find() ?? "<not found — launch VRChat once>";
 
-        Console.WriteLine($"WKVRCProxy {version} (sha {BuildInfo.GitSha}, built {BuildInfo.BuildTime})");
-        Console.WriteLine($"  install:   {installDir}");
-        Console.WriteLine($"  vrc tools: {vrcToolsDir}");
-        Console.WriteLine($"  state:     {stateDir}");
-        Console.WriteLine($"  os:        {RuntimeInformation.OSDescription}");
-        Console.WriteLine($"  runtime:   {RuntimeInformation.FrameworkDescription}");
         // Pragma: BuildInfo.IsDevBuild is a const, so when build.ps1 stamps
-        // it false in a release build the body folds to unreachable. The
-        // <TreatWarningsAsErrors> project setting promotes CS0162 to an error
-        // -- pragma-disable lets the conditional compile cleanly in both
-        // modes without resorting to a runtime field that the JIT can't
+        // it false in a release build the banner branch folds to unreachable.
+        // The <TreatWarningsAsErrors> project setting promotes CS0162 to an
+        // error; pragma-disable lets the conditional compile cleanly in both
+        // modes without resorting to a runtime field that the JIT cannot
         // constant-fold across.
 #pragma warning disable CS0162
-        if (BuildInfo.IsDevBuild)
-            Console.WriteLine($"  mode:      DEV (verbose [relay] req= trace enabled)");
+        bool isDev = BuildInfo.IsDevBuild;
 #pragma warning restore CS0162
-        Console.WriteLine();
+        ConsoleUx.Banner(
+            version: version,
+            sha: BuildInfo.GitSha,
+            buildTime: BuildInfo.BuildTime,
+            isDev: isDev,
+            paths: new (string, string)[]
+            {
+                ("install",   installDir),
+                ("vrc tools", vrcToolsDir),
+                ("state",     stateDir),
+                ("os",        RuntimeInformation.OSDescription),
+                ("runtime",   RuntimeInformation.FrameworkDescription),
+            });
 
         // Detect a pre-existing VRChat process so the operator sees up-front
         // whether the patch can apply immediately or whether it will defer

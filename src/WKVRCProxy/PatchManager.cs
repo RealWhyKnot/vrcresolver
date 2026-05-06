@@ -62,7 +62,7 @@ internal sealed class PatchManager : IDisposable
             var procs = System.Diagnostics.Process.GetProcessesByName("VRChat");
             if (procs.Length == 0)
             {
-                Console.WriteLine("[patch] VRChat not detected -- patch will apply immediately.");
+                ConsoleUx.Write(LogComponent.Patch, "VRChat not detected -- patch will apply immediately.");
                 return;
             }
             // Pick the oldest (most likely the actual game; auxiliary tools
@@ -94,7 +94,7 @@ internal sealed class PatchManager : IDisposable
             // Process enumeration can fail in locked-down contexts (RDP
             // session privileges, AV interference). Don't escalate; the
             // 3-s tick loop's lock probe handles correctness regardless.
-            Console.WriteLine("[patch][warn] could not enumerate VRChat processes: " + ex.GetType().Name + ": " + ex.Message);
+            ConsoleUx.Warn(LogComponent.Patch, "could not enumerate VRChat processes: " + ex.GetType().Name + ": " + ex.Message);
         }
     }
 
@@ -136,7 +136,7 @@ internal sealed class PatchManager : IDisposable
 
         if (File.Exists(backupPath))
         {
-            Console.WriteLine("[patch][warn] Recovery: previous run exited uncleanly -- restoring vanilla yt-dlp from yt-dlp-og.exe.");
+            ConsoleUx.Warn(LogComponent.Patch, "Recovery: previous run exited uncleanly -- restoring vanilla yt-dlp from yt-dlp-og.exe.");
             RestoreYtDlpInTools(_vrcToolsDir);
             return;
         }
@@ -181,13 +181,13 @@ internal sealed class PatchManager : IDisposable
 
         if (string.IsNullOrEmpty(_vrcToolsDir))
         {
-            Console.WriteLine("[patch][err] Cannot apply patch -- VRChat Tools folder not found. Launch VRChat once first, then re-run.");
+            ConsoleUx.Error(LogComponent.Patch, "Cannot apply patch -- VRChat Tools folder not found. Launch VRChat once first, then re-run.");
             Interlocked.Exchange(ref _started, 0);
             return false;
         }
         if (!File.Exists(_patchedYtDlpPath))
         {
-            Console.WriteLine("[patch][err] Cannot apply patch -- patched yt-dlp.exe is missing from this install. Reinstall WKVRCProxy.");
+            ConsoleUx.Error(LogComponent.Patch, "Cannot apply patch -- patched yt-dlp.exe is missing from this install. Reinstall WKVRCProxy.");
             Interlocked.Exchange(ref _started, 0);
             return false;
         }
@@ -196,7 +196,7 @@ internal sealed class PatchManager : IDisposable
         string backupPath = Path.Combine(_vrcToolsDir, "yt-dlp-og.exe");
         if (!File.Exists(targetPath) && !File.Exists(backupPath))
         {
-            Console.WriteLine("[patch][err] Cannot apply patch -- VRChat hasn't shipped its own yt-dlp.exe yet, and we have no original to preserve as fallback. Launch VRChat once first, then re-run.");
+            ConsoleUx.Error(LogComponent.Patch, "Cannot apply patch -- VRChat hasn't shipped its own yt-dlp.exe yet, and we have no original to preserve as fallback. Launch VRChat once first, then re-run.");
             Interlocked.Exchange(ref _started, 0);
             return false;
         }
@@ -261,7 +261,7 @@ internal sealed class PatchManager : IDisposable
         while (!_cts.IsCancellationRequested)
         {
             try { TickOnce(); }
-            catch (Exception ex) { Console.WriteLine("[patch][warn] tick error: " + ex.Message); }
+            catch (Exception ex) { ConsoleUx.Warn(LogComponent.Patch, "tick error: " + ex.Message); }
             try { await Task.Delay(TickDelayMs, _cts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
@@ -299,7 +299,7 @@ internal sealed class PatchManager : IDisposable
                 try
                 {
                     AtomicCopy(_bundledFallbackPath, backupPath);
-                    Console.WriteLine("[patch] yt-dlp-og.exe was missing -- restored from bundled fallback (" + ReadBundledFallbackVersion() + "). Server-side fallback path is now functional again.");
+                    ConsoleUx.Write(LogComponent.Patch, "yt-dlp-og.exe was missing -- restored from bundled fallback (" + ReadBundledFallbackVersion() + "). Server-side fallback path is now functional again.");
                 }
                 catch (IOException) { return; } // disk-full / locked — retry next tick
             }
@@ -449,12 +449,12 @@ internal sealed class PatchManager : IDisposable
         // is visible without filling the scrollback.
         if (_consecutiveLockFailures == 3)
         {
-            Console.WriteLine("[patch][warn] " + stage + " has failed 3 times in a row -- possible antivirus interference or permissions issue. Last error: "
+            ConsoleUx.Warn(LogComponent.Patch, "" + stage + " has failed 3 times in a row -- possible antivirus interference or permissions issue. Last error: "
                 + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 120));
         }
         else if (_consecutiveLockFailures > 3 && _consecutiveLockFailures % 20 == 0)
         {
-            Console.WriteLine("[patch][warn] " + stage + " still failing after " + _consecutiveLockFailures + " ticks ("
+            ConsoleUx.Warn(LogComponent.Patch, "" + stage + " still failing after " + _consecutiveLockFailures + " ticks ("
                 + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 120) + ")");
         }
     }
@@ -536,14 +536,14 @@ internal sealed class PatchManager : IDisposable
             {
                 string stale = targetPath + ".stale-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
                 File.Move(targetPath, stale);
-                Console.WriteLine("[patch] yt-dlp.exe was locked; moved aside to " + Path.GetFileName(stale) + ".");
+                ConsoleUx.Write(LogComponent.Patch, "yt-dlp.exe was locked; moved aside to " + Path.GetFileName(stale) + ".");
             }
             File.Move(backupPath, targetPath);
             return true;
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[patch][warn] restore error: " + ex.Message);
+            ConsoleUx.Warn(LogComponent.Patch, "restore error: " + ex.Message);
             return false;
         }
     }

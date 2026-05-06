@@ -60,7 +60,7 @@ internal sealed class Heartbeat : IDisposable
             try { Tick(); }
             catch (Exception ex)
             {
-                Console.WriteLine("[heartbeat][warn] tick threw: " + ex.GetType().Name + ": " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Heartbeat, "tick threw: " + ex.GetType().Name + ": " + ex.Message);
             }
         }
     }

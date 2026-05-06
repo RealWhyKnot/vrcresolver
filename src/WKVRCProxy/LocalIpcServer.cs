@@ -464,33 +464,35 @@ internal sealed partial class LocalIpcServer : IDisposable
             // feedback_no_console_spam.md: one summary line per resolve,
             // not a START + END pair.
             swReq.Stop();
-            string elapsedLabel = FormatElapsed(swReq.Elapsed.TotalSeconds);
-            ConsoleColor color;
-            string statusToken;
+            ResolveStatus status;
+            string? reasonForLine = null;
             if (outcome == WireConstants.ActionResolved)
             {
-                color = ConsoleColor.Green;
-                statusToken = viaCache ? "OK cached" : "OK resolved";
+                status = ResolveStatus.Resolved;
             }
             else if (failReason != null)
             {
-                color = ConsoleColor.Red;
-                statusToken = "XX failed (" + failReason + ")";
+                status = ResolveStatus.Failed;
+                reasonForLine = failReason;
             }
             else if (outcome == WireConstants.ActionFallbackNative)
             {
-                color = ConsoleColor.Yellow;
-                string reason = !string.IsNullOrEmpty(serverReason) ? serverReason : "?";
-                statusToken = "!! fallback (" + reason + ")";
+                status = ResolveStatus.Fallback;
+                reasonForLine = !string.IsNullOrEmpty(serverReason) ? serverReason : "unspecified";
             }
             else
             {
-                color = ConsoleColor.DarkGray;
-                statusToken = "?? " + outcome;
+                status = ResolveStatus.Unexpected;
+                reasonForLine = outcome;
             }
-            string lhYtTag = viaLhYt ? " [via lh-yt]" : "";
-            WriteUserActivity(color,
-                "  " + host + lhYtTag + " (" + playerLabel + ")  " + statusToken + "  " + elapsedLabel);
+            ConsoleUx.ResolveOutcome(
+                host: host,
+                player: playerLabel,
+                status: status,
+                viaCache: viaCache,
+                viaLhYt: viaLhYt,
+                elapsed: swReq.Elapsed,
+                reason: reasonForLine);
 
             // Detailed per-request line (id, cid, full outcome) routed to
             // the rolling watchdog log only -- kept off the user-facing
@@ -533,12 +535,9 @@ internal sealed partial class LocalIpcServer : IDisposable
     {
         string host = string.IsNullOrEmpty(notify.Url) ? "<no-url>" : ExtractHost(notify.Url);
         string reason = LogUtil.SanitizeForConsole(notify.Reason ?? "?", 32);
-        // User-facing one-liner. Yellow signals "watchdog couldn't
-        // resolve, og picked up" -- pairs visually with the !! fallback
-        // colour scheme on the per-resolve summary.
-        WriteUserActivity(ConsoleColor.Yellow,
-            "  [wrapper] og fallback  " + host + "  reason=" + reason +
-            "  elapsed=" + notify.ElapsedMs + "ms");
+        // Pairs visually with the !! fallback colour on the resolve summary
+        // line -- the wrapper's og fallback path is the same outcome category.
+        ConsoleUx.WrapperFallback(host: host, reason: reason, elapsedMs: notify.ElapsedMs);
         Logger.WriteFileOnly(
             "[wrapper] og_fallback_notify rid=" + LogUtil.SanitizeForConsole(notify.Rid ?? "?", 16) +
             " host=" + host +
@@ -691,43 +690,6 @@ internal sealed partial class LocalIpcServer : IDisposable
             if (m.Success) return player + " " + m.Groups[1].Value + "p";
         }
         return player + " max";
-    }
-
-    // Compact elapsed-time label for the response line. Always one decimal
-    // under 60 s so a 0.5 s cache hit is visible vs a 12.3 s server escalate;
-    // switches to "<m>m<s>s" past 60 s for the unusual stuck case.
-    private static string FormatElapsed(double seconds)
-    {
-        if (seconds < 60) return seconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "s";
-        int m = (int)(seconds / 60);
-        int s = (int)(seconds - m * 60);
-        return m + "m" + s + "s";
-    }
-
-    // Atomic colour-set + line-write + colour-reset under a static lock so
-    // concurrent resolves (a busy world spawning 10+ video players at once)
-    // don't interleave their colour-state changes mid-line. Writes a local
-    // HH:mm:ss timestamp at the head so the operator can eyeball the time
-    // gap between request and response without parsing the file log.
-    private static readonly object s_consoleLock = new();
-    private static void WriteUserActivity(ConsoleColor color, string body)
-    {
-        string stamped = "[" + DateTime.Now.ToString("HH:mm:ss") + "]" + body;
-        lock (s_consoleLock)
-        {
-            ConsoleColor prev;
-            try { prev = Console.ForegroundColor; }
-            catch { prev = ConsoleColor.Gray; }
-            try
-            {
-                try { Console.ForegroundColor = color; } catch { /* no-tty */ }
-                Console.WriteLine(stamped);
-            }
-            finally
-            {
-                try { Console.ForegroundColor = prev; } catch { /* no-tty */ }
-            }
-        }
     }
 
     public void Dispose()
