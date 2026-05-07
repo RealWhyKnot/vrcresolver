@@ -103,6 +103,7 @@ The most recent release is at the top.
 - **release:** Scope release body to the just-this-version commit slice only (fa44a75)
 - **relay:** /play/<hex><ext> path form for AVPro/MF byte-stream dispatch (7673d6c)
 - **relay:** Recognise /api/proxy/<ext> token form when extracting extension (0dac0a6)
+- **release:** Retry release-body verify to tolerate GitHub API settle time (a4291aa)
 
 ---
 
