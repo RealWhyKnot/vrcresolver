@@ -154,28 +154,93 @@ jobs:
           $inputPath = "${{ steps.publish.outputs.input_path }}"
           $expected  = (Get-Content -LiteralPath $inputPath -Raw -Encoding UTF8) -replace "`r`n","`n"
           $expected  = $expected.TrimEnd("`n")
-          $actual    = & gh release view $tag --json body --jq '.body'
-          if ($LASTEXITCODE -ne 0) { throw "gh release view $tag failed: $actual" }
-          $actual    = ($actual -replace "`r`n","`n").TrimEnd("`n")
-          if ($expected -eq $actual) {
-            Write-Host "Published release body matches input ($($expected.Length) chars)."
+
+          function Get-StringSha256 {
+            param([string]$Text)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try { return [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '') }
+            finally { $sha.Dispose() }
+          }
+
+          # GitHub's release-body read-after-write isn't strictly consistent.
+          # Right after `gh release create` (or `gh release edit`) the next
+          # `gh release view` can return a stub or partial body for several
+          # seconds before the API settles on the published value. Compare
+          # via SHA256 (catches length-match-but-content-different corruption
+          # the old length check would miss), and retry with exponential
+          # backoff so the transient settle window doesn't false-fail the
+          # workflow. Total budget across attempts: 2+4+8+16+32 = 62s.
+          function Test-PublishedBodyMatches {
+            param([string]$Tag, [string]$Expected, [int]$MaxAttempts = 6)
+            $expectedSha = Get-StringSha256 -Text $Expected
+            $delay = 2
+            $lastActual = ''
+            for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+              $raw = & gh release view $Tag --json body --jq '.body'
+              if ($LASTEXITCODE -ne 0) { throw "gh release view $Tag failed: $raw" }
+              $actual = ($raw -replace "`r`n","`n").TrimEnd("`n")
+              $lastActual = $actual
+              $actualSha = Get-StringSha256 -Text $actual
+              if ($actualSha -eq $expectedSha) {
+                Write-Host "Attempt $attempt/$MaxAttempts: body matches (len=$($actual.Length) sha256=$($actualSha.Substring(0,12)))."
+                return @{ Match = $true; Actual = $actual; AttemptCount = $attempt }
+              }
+              Write-Host "Attempt $attempt/$MaxAttempts: actual_len=$($actual.Length) expected_len=$($Expected.Length) actual_sha=$($actualSha.Substring(0,12)) expected_sha=$($expectedSha.Substring(0,12))"
+              if ($attempt -lt $MaxAttempts) {
+                Write-Host "Sleeping ${delay}s before retry..."
+                Start-Sleep -Seconds $delay
+                $delay = $delay * 2
+              }
+            }
+            return @{ Match = $false; Actual = $lastActual; AttemptCount = $MaxAttempts }
+          }
+
+          # First pass: tolerate the post-create settle window.
+          $result = Test-PublishedBodyMatches -Tag $tag -Expected $expected
+          if ($result.Match) {
+            Write-Host "Published release body matches input on attempt $($result.AttemptCount) ($($expected.Length) chars)."
             return
           }
-          # Mismatch is rare but real -- GitHub occasionally normalises trailing
-          # whitespace or rejects exotic characters. Auto-correct via gh release
-          # edit, then re-verify; if it still drifts, fail loud so the operator
-          # can investigate rather than letting a bad body sit on the release.
-          Write-Host "::warning::Published body differs from input. Auto-correcting via gh release edit."
+
+          # Real divergence after the settle window. Auto-correct via
+          # `gh release edit`, then re-run the same retry loop -- the edit
+          # itself has the same eventual-consistency window so a single
+          # post-edit read can still see stale content.
+          Write-Host "::warning::Body still differs after $($result.AttemptCount) attempts. Auto-correcting via gh release edit."
           gh release edit $tag --notes-file $inputPath
           if ($LASTEXITCODE -ne 0) { throw "gh release edit failed during auto-correct" }
-          $recheck = & gh release view $tag --json body --jq '.body'
-          $recheck = ($recheck -replace "`r`n","`n").TrimEnd("`n")
-          if ($recheck -ne $expected) {
-            $diffPath = Join-Path $env:RUNNER_TEMP 'release-body-actual.md'
-            $recheck | Out-File -LiteralPath $diffPath -Encoding utf8 -NoNewline
-            throw "Release body still differs after auto-correct. Expected length $($expected.Length), got $($recheck.Length). Compare $inputPath vs $diffPath in the runner artifacts."
+
+          $recheck = Test-PublishedBodyMatches -Tag $tag -Expected $expected
+          if ($recheck.Match) {
+            Write-Host "Auto-correct succeeded; body matches on attempt $($recheck.AttemptCount)."
+            return
           }
-          Write-Host "Auto-correct succeeded; body now matches input."
+
+          # Real mismatch. Persist the served body and dump head/tail of
+          # both expected and actual so the operator can diagnose without
+          # re-running anything.
+          $diffPath = Join-Path $env:RUNNER_TEMP 'release-body-actual.md'
+          $recheck.Actual | Out-File -LiteralPath $diffPath -Encoding utf8 -NoNewline
+          $headLen = [Math]::Min(200, $expected.Length)
+          $tailStart = [Math]::Max(0, $expected.Length - 200)
+          $expectedHead = $expected.Substring(0, $headLen)
+          $expectedTail = $expected.Substring($tailStart)
+          $actHeadLen = [Math]::Min(200, $recheck.Actual.Length)
+          $actTailStart = [Math]::Max(0, $recheck.Actual.Length - 200)
+          $actualHead = $recheck.Actual.Substring(0, $actHeadLen)
+          $actualTail = $recheck.Actual.Substring($actTailStart)
+          Write-Host "Expected length $($expected.Length); got $($recheck.Actual.Length)."
+          Write-Host "--- Expected head ---"
+          Write-Host $expectedHead
+          Write-Host "--- Expected tail ---"
+          Write-Host $expectedTail
+          Write-Host "--- Actual head ---"
+          Write-Host $actualHead
+          Write-Host "--- Actual tail ---"
+          Write-Host $actualTail
+          Write-Host "Compare $inputPath vs $diffPath in the runner artifacts."
+          throw "Release body still differs after auto-correct + retries."
 
       - name: Open promotion PR + enable auto-merge
         # We can't push directly to main: branch protection requires the
