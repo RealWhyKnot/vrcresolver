@@ -586,4 +586,46 @@ public class LocalRelayServerTests
         Assert.Null(r.TryGetEntry(""));
         Assert.Null(r.TryGetEntry(null!));
     }
+
+    // ---- ExtractPathExtension shape recognition ------------------------------
+
+    [Fact]
+    public void HlsRewrite_ServerSlashExtForm_PicksUpExtension()
+    {
+        // The server's RewriteHls emits segments as
+        //   https://node1.whyknot.dev/api/proxy/<ext>?url=<b64>
+        // where <ext> is the upstream extension token without a dot.
+        // The relay receives these URLs in the rewritten variant manifest
+        // and needs to recover the extension so the wrapped /play/<hex>
+        // URL ends in the right suffix for AVPro/MF dispatch.
+        var registry = new SegmentIdRegistry();
+        string manifest =
+            "#EXTM3U\n" +
+            "#EXTINF:6.0,\n" +
+            "https://node1.whyknot.dev/api/proxy/mp4?url=AAAA\n" +
+            "#EXTINF:6.0,\n" +
+            "https://node1.whyknot.dev/api/proxy/ts?url=BBBB\n" +
+            "#EXT-X-ENDLIST\n";
+
+        string rewritten = HlsManifestRewriter.Rewrite(
+            manifest, "https://node1.whyknot.dev/api/proxy?q=...", 51234, registry);
+
+        var idLines = rewritten.Split('\n')
+            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play/"))
+            .ToList();
+        Assert.Equal(2, idLines.Count);
+
+        // First segment came from /api/proxy/mp4, second from /api/proxy/ts.
+        // Order in registry insertion matches order in manifest, but the
+        // path-extension recognition is what matters here -- both lines
+        // must end in .mp4 and .ts respectively (any order).
+        var suffixes = idLines.Select(line =>
+        {
+            string idAndExt = line.Substring("http://localhost.youtube.com:51234/play/".Length);
+            int dotIdx = idAndExt.IndexOf('.');
+            return dotIdx >= 0 ? idAndExt.Substring(dotIdx) : "";
+        }).ToList();
+        Assert.Contains(".mp4", suffixes);
+        Assert.Contains(".ts", suffixes);
+    }
 }

@@ -613,16 +613,38 @@ internal static partial class HlsManifestRewriter
         "vtt", "srt",
     };
 
+    // Recovers the upstream extension from a URL the relay sees in a
+    // rewritten manifest. Two shapes turn up in practice:
+    //
+    // 1. Direct upstream URL with a real file extension on the path
+    //    (https://r1.googlevideo.com/seg.ts, https://example.com/init.mp4).
+    //    Path.GetExtension returns ".ts" / ".mp4" and the allowlist
+    //    accepts the trimmed lowercase form.
+    //
+    // 2. Server-emitted /api/proxy/<ext>?url=<b64> form. The path's last
+    //    segment is the extension token without a leading dot
+    //    (/api/proxy/mp4 -> Path.GetExtension = ""). Treat the bare
+    //    last-segment as a candidate when it matches the allowlist; the
+    //    allowlist scope keeps this from misidentifying directories.
+    //
+    // Returns "" for unknown / unrecognised extensions so the wrapper
+    // emits /play/<hex> with no suffix and MF falls back rather than
+    // dispatching on a hint that doesn't fit the payload.
     internal static string ExtractPathExtension(string upstreamUrl)
     {
         if (string.IsNullOrEmpty(upstreamUrl)) return "";
         string path;
         try { path = new Uri(upstreamUrl).AbsolutePath; }
         catch { return ""; }
-        string ext = System.IO.Path.GetExtension(path);
-        if (string.IsNullOrEmpty(ext) || ext.Length < 2) return "";
-        string trimmed = ext.Substring(1).ToLowerInvariant();
-        return s_allowedPathExts.Contains(trimmed) ? trimmed : "";
+        int lastSlash = path.LastIndexOf('/');
+        string lastSegment = lastSlash >= 0 ? path.Substring(lastSlash + 1) : path;
+        if (string.IsNullOrEmpty(lastSegment)) return "";
+        int dotIdx = lastSegment.LastIndexOf('.');
+        string ext = dotIdx >= 0
+            ? lastSegment.Substring(dotIdx + 1)
+            : lastSegment;
+        ext = ext.ToLowerInvariant();
+        return s_allowedPathExts.Contains(ext) ? ext : "";
     }
 
     internal static string WrapSegmentThroughListener(string resolvedSegmentUrl, string portStr, SegmentIdRegistry registry)
