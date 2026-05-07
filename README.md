@@ -96,4 +96,4 @@ The remote resolver is whyknot.dev. The wire protocol is documented in the [Mesh
 
 ## License
 
-[MIT](LICENSE).
+Licensed under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for third-party attributions covering binaries shipped in release archives.
