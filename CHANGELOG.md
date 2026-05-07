@@ -102,6 +102,7 @@ The most recent release is at the top.
 - **build:** Treat CI-tagged release builds as release-mode regardless of dirty state (370878f)
 - **release:** Scope release body to the just-this-version commit slice only (fa44a75)
 - **relay:** /play/<hex><ext> path form for AVPro/MF byte-stream dispatch (7673d6c)
+- **relay:** Recognise /api/proxy/<ext> token form when extracting extension (0dac0a6)
 
 ---
 
