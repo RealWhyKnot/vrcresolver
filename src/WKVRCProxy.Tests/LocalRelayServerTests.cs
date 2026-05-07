@@ -42,12 +42,14 @@ public class LocalRelayServerTests
     [Fact]
     public void HlsRewrite_AllSegments_RoutedThroughListener()
     {
-        // Every segment URL gets a /play?id=<12hex> wrap. NO bypass for
+        // Every segment URL gets a /play/<hex>(.<ext>)? wrap. NO bypass for
         // trust-listed hosts -- the architectural intent is that all bytes
         // route through whyknot.dev so WARP egress + central control are
         // preserved. The listener's id-registry compresses the wire encoding
         // to ~50 chars per segment (vs ~3000 for base64-target) so the
-        // manifest stays small enough for AVPro to parse.
+        // manifest stays small enough for AVPro to parse. The optional .ext
+        // suffix is the path-extension hint AVPro/MediaFoundation needs to
+        // dispatch the right byte-stream handler per segment.
         var registry = new SegmentIdRegistry();
         string manifest =
             "#EXTM3U\n" +
@@ -65,7 +67,7 @@ public class LocalRelayServerTests
         // Segments rewrite to id-form. Original server-proxy URLs are gone
         // from the manifest body (they live in the registry instead).
         var idLines = rewritten.Split('\n')
-            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play?id="))
+            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play/"))
             .ToList();
         Assert.Equal(2, idLines.Count);
         Assert.DoesNotContain("https://node1.whyknot.dev/api/proxy?url=AAA", rewritten);
@@ -74,14 +76,14 @@ public class LocalRelayServerTests
         // Each ID is exactly 12 hex characters.
         foreach (var line in idLines)
         {
-            string id = line.Substring("http://localhost.youtube.com:51234/play?id=".Length);
+            string id = line.Substring("http://localhost.youtube.com:51234/play/".Length);
             Assert.Equal(12, id.Length);
             Assert.Matches("^[0-9a-f]{12}$", id);
         }
 
         // Both IDs registered + each maps back to the original URL.
-        string id1 = idLines[0].Substring("http://localhost.youtube.com:51234/play?id=".Length);
-        string id2 = idLines[1].Substring("http://localhost.youtube.com:51234/play?id=".Length);
+        string id1 = idLines[0].Substring("http://localhost.youtube.com:51234/play/".Length);
+        string id2 = idLines[1].Substring("http://localhost.youtube.com:51234/play/".Length);
         Assert.Equal("https://node1.whyknot.dev/api/proxy?url=AAA", registry.TryGetUrl(id1));
         Assert.Equal("https://node1.whyknot.dev/api/proxy?url=BBB", registry.TryGetUrl(id2));
 
@@ -118,7 +120,7 @@ public class LocalRelayServerTests
 
         // Both segments wrapped through localhost.
         Assert.Equal(2, rewritten.Split('\n')
-            .Count(l => l.StartsWith("http://localhost.youtube.com:51234/play?id=")));
+            .Count(l => l.StartsWith("http://localhost.youtube.com:51234/play/")));
 
         // Registry has both URLs.
         Assert.Equal(2, registry.Count);
@@ -143,7 +145,7 @@ public class LocalRelayServerTests
             manifest, "https://node1.whyknot.dev/api/proxy?q=...", 51234, registry);
 
         var idLines = rewritten.Split('\n')
-            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play?id="))
+            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play/"))
             .ToList();
         Assert.Equal(2, idLines.Count);
         Assert.Equal(idLines[0], idLines[1]); // same URL -> same id.
@@ -168,15 +170,17 @@ public class LocalRelayServerTests
 
         // Both segments wrapped through localhost.
         Assert.Equal(2, rewritten.Split('\n')
-            .Count(l => l.StartsWith("http://localhost.youtube.com:51234/play?id=")));
+            .Count(l => l.StartsWith("http://localhost.youtube.com:51234/play/")));
         Assert.Equal(2, registry.Count);
 
         // Registered URLs are absolute (resolved against the base).
         var registered = new HashSet<string>();
         foreach (var line in rewritten.Split('\n'))
         {
-            if (!line.StartsWith("http://localhost.youtube.com:51234/play?id=")) continue;
-            string id = line.Substring("http://localhost.youtube.com:51234/play?id=".Length);
+            if (!line.StartsWith("http://localhost.youtube.com:51234/play/")) continue;
+            string idAndExt = line.Substring("http://localhost.youtube.com:51234/play/".Length);
+            int dotIdx = idAndExt.IndexOf('.');
+            string id = dotIdx >= 0 ? idAndExt.Substring(0, dotIdx) : idAndExt;
             string? url = registry.TryGetUrl(id);
             Assert.NotNull(url);
             registered.Add(url!);
@@ -203,7 +207,7 @@ public class LocalRelayServerTests
         string rewritten = HlsManifestRewriter.Rewrite(
             manifest, "https://node1.whyknot.dev/api/proxy?q=...", 51234, registry);
 
-        Assert.Contains("URI=\"http://localhost.youtube.com:51234/play?id=", rewritten);
+        Assert.Contains("URI=\"http://localhost.youtube.com:51234/play/", rewritten);
         Assert.DoesNotContain("URI=\"https://node1.whyknot.dev/api/proxy?url=INIT\"", rewritten);
         Assert.Contains("BYTERANGE=\"800@0\"", rewritten);
         Assert.Contains("GROUP-ID=\"audio\"", rewritten);
@@ -236,7 +240,7 @@ public class LocalRelayServerTests
         string manifest = "#EXTM3U\nrandom-non-url-text-that-isnt-a-segment\n";
         string rewritten = HlsManifestRewriter.Rewrite(
             manifest, "https://example.com/m.m3u8", 51234, registry);
-        Assert.Contains("http://localhost.youtube.com:51234/play?id=", rewritten);
+        Assert.Contains("http://localhost.youtube.com:51234/play/", rewritten);
         Assert.Equal(1, registry.Count);
     }
 
@@ -274,7 +278,7 @@ public class LocalRelayServerTests
 
         // Sanity: every original segment URL was registered.
         Assert.Equal(segmentCount, rewritten.Split('\n')
-            .Count(l => l.StartsWith("http://localhost.youtube.com:51234/play?id=")));
+            .Count(l => l.StartsWith("http://localhost.youtube.com:51234/play/")));
     }
 
     // ---- SegmentIdRegistry ---------------------------------------------------
@@ -429,5 +433,157 @@ public class LocalRelayServerTests
             () => new SegmentIdRegistry(softCap: 5, hardCap: 0));
         Assert.Throws<System.ArgumentException>(
             () => new SegmentIdRegistry(softCap: 100, hardCap: 50));
+    }
+
+    // ---- Path-extension form (Tubi byterange fix) ----------------------------
+
+    [Fact]
+    public void HlsRewrite_TubiByterangeMp4_EmitsMp4PathExtension()
+    {
+        // Tubi-style HLSv6 byterange manifest. Segments share a single
+        // .mp4 URL; EXT-X-BYTERANGE picks slices. AVPro/MediaFoundation
+        // dispatches the fmp4 handler on the .mp4 path extension; without
+        // it MF defaults to a single Range bytes=0- per URL and breaks
+        // playback. Empirical 2026-05-07.
+        var registry = new SegmentIdRegistry();
+        string manifest =
+            "#EXTM3U\n" +
+            "#EXT-X-VERSION:6\n" +
+            "#EXT-X-MAP:URI=\"https://nc-aka.tubi.video/abc/nw8cd9da.mp4?token=t\",BYTERANGE=\"866@0\"\n" +
+            "#EXTINF:8.008,\n" +
+            "#EXT-X-BYTERANGE:2440009@8158\n" +
+            "https://nc-aka.tubi.video/abc/nw8cd9da.mp4?token=t\n" +
+            "#EXT-X-ENDLIST\n";
+
+        string rewritten = HlsManifestRewriter.Rewrite(
+            manifest, "https://nc-aka.tubi.video/abc/playlist.m3u8", 51234, registry);
+
+        // Bare segment line and EXT-X-MAP URI both end in .mp4 (the path
+        // extension propagated from the upstream URL).
+        var idLines = rewritten.Split('\n')
+            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play/"))
+            .ToList();
+        Assert.NotEmpty(idLines);
+        foreach (var line in idLines)
+        {
+            string idAndExt = line.Substring("http://localhost.youtube.com:51234/play/".Length);
+            Assert.EndsWith(".mp4", idAndExt);
+            // Strip the extension to get the bare 12-hex id.
+            string id = idAndExt.Substring(0, idAndExt.Length - ".mp4".Length);
+            Assert.Equal(12, id.Length);
+            Assert.Matches("^[0-9a-f]{12}$", id);
+        }
+        Assert.Contains("URI=\"http://localhost.youtube.com:51234/play/", rewritten);
+        Assert.Contains(".mp4\"", rewritten);
+    }
+
+    [Fact]
+    public void HlsRewrite_YoutubeTsSegments_EmitsTsPathExtension()
+    {
+        // YouTube live / VOD HLS variant. Per-segment .ts URLs. The
+        // empirical test on 2026-05-07 broke YouTube when the relay
+        // emitted a hardcoded .mp4 suffix against .ts payloads -- MF
+        // tried the fmp4 handler against a Transport Stream and bailed.
+        // Per-segment extension extraction fixes that.
+        var registry = new SegmentIdRegistry();
+        string manifest =
+            "#EXTM3U\n" +
+            "#EXTINF:5.0,\n" +
+            "https://r1.googlevideo.com/seg-1.ts?token=abc\n" +
+            "#EXTINF:5.0,\n" +
+            "https://r1.googlevideo.com/seg-2.ts?token=abc\n" +
+            "#EXT-X-ENDLIST\n";
+
+        string rewritten = HlsManifestRewriter.Rewrite(
+            manifest, "https://r1.googlevideo.com/manifest.m3u8", 51234, registry);
+
+        var idLines = rewritten.Split('\n')
+            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play/"))
+            .ToList();
+        Assert.Equal(2, idLines.Count);
+        Assert.All(idLines, line =>
+        {
+            string idAndExt = line.Substring("http://localhost.youtube.com:51234/play/".Length);
+            Assert.EndsWith(".ts", idAndExt);
+        });
+    }
+
+    [Fact]
+    public void HlsRewrite_ExtensionlessUpstream_EmitsBarePathForm()
+    {
+        // Upstream URL has no recognised path extension -- emit /play/<hex>
+        // with no suffix. MF falls back to MIME-based dispatch.
+        var registry = new SegmentIdRegistry();
+        string manifest =
+            "#EXTM3U\n" +
+            "#EXTINF:5.0,\n" +
+            "https://example.com/segment_001\n" +
+            "#EXT-X-ENDLIST\n";
+
+        string rewritten = HlsManifestRewriter.Rewrite(
+            manifest, "https://example.com/m.m3u8", 51234, registry);
+
+        var idLines = rewritten.Split('\n')
+            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play/"))
+            .ToList();
+        Assert.Single(idLines);
+        string idAndExt = idLines[0].Substring("http://localhost.youtube.com:51234/play/".Length);
+        Assert.DoesNotContain(".", idAndExt);
+        Assert.Equal(12, idAndExt.Length);
+    }
+
+    [Fact]
+    public void HlsRewrite_UnknownExtension_FallsBackToBarePathForm()
+    {
+        // Defense: if the upstream URL has an extension we haven't
+        // tested with MF (.bin, .dat, etc.), emit /play/<hex> instead
+        // of advertising an extension that might mis-dispatch.
+        var registry = new SegmentIdRegistry();
+        string manifest =
+            "#EXTM3U\n" +
+            "#EXTINF:5.0,\n" +
+            "https://example.com/blob.bin?token=abc\n" +
+            "#EXT-X-ENDLIST\n";
+
+        string rewritten = HlsManifestRewriter.Rewrite(
+            manifest, "https://example.com/m.m3u8", 51234, registry);
+
+        var idLines = rewritten.Split('\n')
+            .Where(l => l.StartsWith("http://localhost.youtube.com:51234/play/"))
+            .ToList();
+        Assert.Single(idLines);
+        string idAndExt = idLines[0].Substring("http://localhost.youtube.com:51234/play/".Length);
+        Assert.DoesNotContain(".", idAndExt);
+        Assert.DoesNotContain("bin", idAndExt);
+    }
+
+    [Fact]
+    public void Registry_GetOrAddId_StoresExtension()
+    {
+        var r = new SegmentIdRegistry();
+        string id = r.GetOrAddId("https://example.com/seg.mp4", "mp4");
+        var entry = r.TryGetEntry(id);
+        Assert.NotNull(entry);
+        Assert.Equal("https://example.com/seg.mp4", entry!.Url);
+        Assert.Equal("mp4", entry.Ext);
+    }
+
+    [Fact]
+    public void Registry_GetOrAddId_BackwardsCompat_DefaultsExtToEmpty()
+    {
+        var r = new SegmentIdRegistry();
+        string id = r.GetOrAddId("https://example.com/seg");
+        var entry = r.TryGetEntry(id);
+        Assert.NotNull(entry);
+        Assert.Equal("", entry!.Ext);
+    }
+
+    [Fact]
+    public void Registry_TryGetEntry_UnknownId_ReturnsNull()
+    {
+        var r = new SegmentIdRegistry();
+        Assert.Null(r.TryGetEntry("000000000000"));
+        Assert.Null(r.TryGetEntry(""));
+        Assert.Null(r.TryGetEntry(null!));
     }
 }

@@ -167,28 +167,45 @@ internal sealed partial class LocalRelayServer : IDisposable
                 return;
             }
 
-            // Two paths into the listener, both resolve to a single
-            // upstream URL we then fetch:
+            // Three forms supported, resolved in priority order:
             //
-            //   ?target=<base64url>  -- the wrapper emits this for the
-            //     manifest URL it gets from MeshClient. base64url-encoded
-            //     full upstream URL. Self-contained, stateless, survives
-            //     listener restarts.
+            //   /play/<hex>(.<ext>)?  -- segment URL emitted by
+            //     HlsManifestRewriter. The cosmetic <ext> suffix
+            //     (.mp4, .ts, .m4s, ...) is the primary signal AVPro/
+            //     MediaFoundation uses to pick a byte-stream handler;
+            //     without it MF defaults to a single Range bytes=0-
+            //     per URL and breaks byterange-addressed fmp4 (Tubi).
+            //     The handler ignores the suffix when resolving the
+            //     id against SegmentIdRegistry.
             //
-            //   ?id=<8-hex>          -- the HlsManifestRewriter emits this
-            //     for every segment URL in a manifest the listener rewrites.
-            //     Looked up against the listener's in-memory SegmentIdRegistry.
-            //     8 hex chars vs ~3000 chars for a base64url-encoded server-
-            //     proxy URL. Closes the manifest-size blowup that broke
-            //     long-form playback while keeping ALL segment fetches
-            //     routed through whyknot.dev (registry value is the full
-            //     `node1.whyknot.dev/api/proxy?url=<base64>` URL).
+            //   /play/manifest.<ext>?target=<base64url>  -- manifest URL
+            //     emitted by the wrapper's TryWrapForTrustGateway. The
+            //     hex-slot is a literal "manifest" placeholder; the real
+            //     resolution comes from target=. <ext> is the upstream
+            //     manifest extension (.m3u8, .mpd) so MF dispatches the
+            //     HLS / DASH handler.
             //
-            // 404 if id= is given but unknown (listener restarted, or the
-            // segment expired off the registry). AVPro re-fetches the
-            // manifest in that case and gets fresh IDs.
-            string? idParam = ctx.Request.QueryString["id"];
+            //   /play?target=<base64url> or /play?id=<12hex>  -- legacy
+            //     query-string forms. Kept for backwards compatibility
+            //     with watchdog binaries that pre-date the path form.
+            //
+            // Priority: target= wins over path-id (so the manifest-
+            // placeholder hex doesn't accidentally hit the registry).
+            // 404 if id= or path-id is given but unknown -- listener
+            // restarted, or the entry rolled off the FIFO. AVPro re-
+            // fetches the manifest in that case and gets fresh IDs.
+            string? pathId = null;
+            if (path.Length > "/play/".Length
+                && path.StartsWith("/play/", StringComparison.OrdinalIgnoreCase))
+            {
+                string after = path.Substring("/play/".Length);
+                int dotIdx = after.IndexOf('.');
+                pathId = dotIdx >= 0 ? after.Substring(0, dotIdx) : after;
+            }
             string? targetParam = ctx.Request.QueryString["target"];
+            string? idParam = string.IsNullOrEmpty(targetParam)
+                ? (pathId ?? ctx.Request.QueryString["id"])
+                : null;
             string kind;
             if (!string.IsNullOrEmpty(idParam))
             {
@@ -580,10 +597,40 @@ internal static partial class HlsManifestRewriter
     // listener so byte traffic stays on the whyknot.dev path. The registry
     // dedupes -- the same upstream URL appearing multiple times in a
     // manifest (rare but possible for byte-range variants) gets the same id.
+    // Path-extension allowlist. AVPro/MediaFoundation dispatches its byte-
+    // stream handler primarily on the URL path's extension. The relay
+    // mirrors the upstream segment's extension onto the wrapped URL so MF
+    // picks the correct handler (.mp4 -> fmp4, .ts -> Transport Stream,
+    // .m4s -> DASH segment, etc.). The allowlist guards against synthesising
+    // an extension MF doesn't recognise (.bin, .dat) which would mis-
+    // dispatch onto the wrong handler. When upstream has no extension,
+    // emit /play/<hex> (no suffix) and let MF fall back.
+    private static readonly HashSet<string> s_allowedPathExts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mp4", "m4s", "m4v", "ts", "m3u8", "mpd",
+        "webm", "mkv", "mov",
+        "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac",
+        "vtt", "srt",
+    };
+
+    internal static string ExtractPathExtension(string upstreamUrl)
+    {
+        if (string.IsNullOrEmpty(upstreamUrl)) return "";
+        string path;
+        try { path = new Uri(upstreamUrl).AbsolutePath; }
+        catch { return ""; }
+        string ext = System.IO.Path.GetExtension(path);
+        if (string.IsNullOrEmpty(ext) || ext.Length < 2) return "";
+        string trimmed = ext.Substring(1).ToLowerInvariant();
+        return s_allowedPathExts.Contains(trimmed) ? trimmed : "";
+    }
+
     internal static string WrapSegmentThroughListener(string resolvedSegmentUrl, string portStr, SegmentIdRegistry registry)
     {
-        string id = registry.GetOrAddId(resolvedSegmentUrl);
-        return "http://localhost.youtube.com:" + portStr + "/play?id=" + id;
+        string ext = ExtractPathExtension(resolvedSegmentUrl);
+        string id = registry.GetOrAddId(resolvedSegmentUrl, ext);
+        string suffix = string.IsNullOrEmpty(ext) ? "" : ("." + ext);
+        return "http://localhost.youtube.com:" + portStr + "/play/" + id + suffix;
     }
 }
 
@@ -594,6 +641,13 @@ internal static partial class HlsManifestRewriter
 // collision probability at the 100k-entry soft cap is ~negligible (birthday
 // at sqrt(2^48) = 16.7M entries). Capacity is bounded by FIFO eviction
 // past the hard cap so a long session can't grow the registry forever.
+//
+// Each entry also carries the upstream URL's path extension (".mp4", ".ts",
+// "" for none). The wrapped URL emitted by HlsManifestRewriter mirrors the
+// extension onto the path (`/play/<hex><ext>`) so AVPro/MediaFoundation's
+// byte-stream-handler dispatch picks the right handler per segment. The
+// extension travels with the URL inside the registry so a request whose
+// path-id strips the suffix can still recover the upstream's mime hint.
 //
 // Concurrency: two threads racing to register the same URL get the same
 // ID (atomic via ConcurrentDictionary.TryAdd + race-detection rollback).
@@ -613,7 +667,9 @@ internal sealed class SegmentIdRegistry
     private const int IdRandomBytes = IdHexLength / 2;
     private const int MaxGenerationAttempts = 8;
 
-    private readonly ConcurrentDictionary<string, string> _idToUrl = new(StringComparer.Ordinal);
+    internal sealed record SegmentEntry(string Url, string Ext);
+
+    private readonly ConcurrentDictionary<string, SegmentEntry> _idToEntry = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _urlToId = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<string> _insertionOrder = new();
 
@@ -635,20 +691,28 @@ internal sealed class SegmentIdRegistry
         _hardCap = hardCap;
     }
 
-    public int Count => _idToUrl.Count;
+    public int Count => _idToEntry.Count;
+
+    // Backwards-compat overload: register a URL without an extension hint.
+    public string GetOrAddId(string url) => GetOrAddId(url, "");
 
     // Returns the existing ID for `url` if already registered, otherwise
-    // registers `url` with a fresh 12-hex ID and returns that. Thread-safe;
-    // concurrent calls with the same URL converge on a single ID.
+    // registers `(url, ext)` with a fresh 12-hex ID and returns that.
+    // `ext` is the lowercase extension without the dot (e.g. "mp4", "ts"),
+    // or "" when the upstream has no path extension. Thread-safe;
+    // concurrent calls with the same URL converge on a single ID. The
+    // extension recorded is whichever caller registered first; subsequent
+    // calls with a different ext for the same URL keep the original.
     //
     // Throws ArgumentException for null/empty URL (caller bug; the rewriter
     // already filters those before calling). Throws InvalidOperationException
     // in the astronomically-unlikely case of 8 consecutive ID collisions
     // (something is broken with RNG; fail loud rather than spin).
-    public string GetOrAddId(string url)
+    public string GetOrAddId(string url, string ext)
     {
         if (string.IsNullOrEmpty(url))
             throw new ArgumentException("URL must be non-empty.", nameof(url));
+        ext ??= "";
 
         // Fast path: already registered. Tight loop hot in long manifests
         // (every segment URL hits this).
@@ -662,9 +726,10 @@ internal sealed class SegmentIdRegistry
         for (int attempts = 0; attempts < MaxGenerationAttempts; attempts++)
         {
             string newId = GenerateId();
+            var entry = new SegmentEntry(url, ext);
 
-            // Claim newId in idToUrl. ConcurrentDictionary.TryAdd is atomic.
-            if (!_idToUrl.TryAdd(newId, url))
+            // Claim newId in idToEntry. ConcurrentDictionary.TryAdd is atomic.
+            if (!_idToEntry.TryAdd(newId, entry))
                 continue; // ID collision (extremely rare); generate another.
 
             // Now register the reverse. If a concurrent thread won the
@@ -675,11 +740,11 @@ internal sealed class SegmentIdRegistry
                 return newId;
             }
 
-            _idToUrl.TryRemove(newId, out _);
+            _idToEntry.TryRemove(newId, out _);
             // Re-read; the concurrent thread's ID is now the canonical one.
             if (_urlToId.TryGetValue(url, out var concurrentId))
                 return concurrentId;
-            // Concurrent thread's TryAdd succeeded but their idToUrl insert
+            // Concurrent thread's TryAdd succeeded but their idToEntry insert
             // hasn't landed yet -- spin briefly. In practice this window is
             // sub-microsecond; the spin terminates quickly.
         }
@@ -693,7 +758,13 @@ internal sealed class SegmentIdRegistry
     public string? TryGetUrl(string id)
     {
         if (string.IsNullOrEmpty(id)) return null;
-        return _idToUrl.TryGetValue(id, out var url) ? url : null;
+        return _idToEntry.TryGetValue(id, out var entry) ? entry.Url : null;
+    }
+
+    public SegmentEntry? TryGetEntry(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        return _idToEntry.TryGetValue(id, out var entry) ? entry : null;
     }
 
     // Drop oldest entries down to soft cap when the registry has grown
@@ -701,19 +772,19 @@ internal sealed class SegmentIdRegistry
     // past the hard cap, not on every insert.
     private void EvictIfOver()
     {
-        int over = _idToUrl.Count - _hardCap;
+        int over = _idToEntry.Count - _hardCap;
         if (over <= 0) return;
 
-        int target = _idToUrl.Count - _softCap;
+        int target = _idToEntry.Count - _softCap;
         for (int i = 0; i < target; i++)
         {
             if (!_insertionOrder.TryDequeue(out var oldId)) break;
-            if (_idToUrl.TryRemove(oldId, out var url))
+            if (_idToEntry.TryRemove(oldId, out var entry))
             {
                 // Only remove urlToId mapping if it still points at this
                 // specific id. Otherwise a concurrent re-registration of
                 // the same URL could be wiped.
-                _urlToId.TryRemove(new KeyValuePair<string, string>(url, oldId));
+                _urlToId.TryRemove(new KeyValuePair<string, string>(entry.Url, oldId));
             }
         }
     }
@@ -722,7 +793,7 @@ internal sealed class SegmentIdRegistry
     // the registry to 200k entries.
     public void ClearForTesting()
     {
-        _idToUrl.Clear();
+        _idToEntry.Clear();
         _urlToId.Clear();
         while (_insertionOrder.TryDequeue(out _)) { }
     }
