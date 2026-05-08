@@ -1,12 +1,12 @@
 # WKVRCProxy
 
+> **On hold.** Development is paused while server-side changes get worked out to resolve VRChat playability issues. Existing builds have been pulled; no supported releases are available right now.
+
 VRChat's in-world video players use yt-dlp under the hood. Vanilla yt-dlp is slow on cold starts, breaks against YouTube changes the moment they ship, and hands AVPro URLs that VRChat's trusted-host allowlist rejects in default-public worlds. WKVRCProxy fixes all three.
 
 A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build that asks a remote resolver (whyknot.dev) and routes the resulting stream URL through a local listener so AVPro accepts it everywhere. If the remote is unreachable or anything else goes wrong, the patched binary falls through to the vanilla yt-dlp it preserved at install time. Watchdog absent does not break VRChat.
 
-> **Status: alpha.** Works in production. Run it alongside VRChat; close it when done.
-
-**[Latest release](https://github.com/RealWhyKnot/WKVRCProxy/releases/latest)** | **[Wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki)** | **[Report a bug](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml)**
+**[Wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki)** | **[Report a bug](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml)**
 
 ---
 
