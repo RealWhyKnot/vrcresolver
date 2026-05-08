@@ -14,23 +14,23 @@ How to build WKVRCProxy from source and iterate. For *why* the build looks the w
 | Project | Output | Role |
 | --- | --- | --- |
 | `WKVRCProxy.Shared` | DLL | Wire DTOs (`Protocol.cs`), `WkvrcPaths`, `Logger`, `CrashHandler`, `LogUtil`, `ToolsDirSweeper` -- referenced by all four exes |
-| `WKVRCProxy` | `WKVRCProxy.exe` (~80 MB) | Watchdog daemon -- patches yt-dlp.exe, named-pipe IPC server, persistent WS to mesh server, hosts ticker, heartbeat |
-| `WKVRCProxy.Updater` | `WKVRCProxy.Updater.exe` (~80 MB) | Standalone update check + apply |
-| `WKVRCProxy.Uninstaller` | `WKVRCProxy.Uninstaller.exe` (~80 MB) | Standalone teardown |
+| `WKVRCProxy` | `dist/WKVRCProxy.exe` (~9 MB) | Watchdog daemon -- patches yt-dlp.exe, named-pipe IPC server, persistent WS to mesh server, hosts ticker, heartbeat |
+| `WKVRCProxy.Updater` | `dist/WKVRCProxy.Updater.exe` (~6 MB) | Standalone update check + apply |
+| `WKVRCProxy.Uninstaller` | `dist/WKVRCProxy.Uninstaller.exe` (~2 MB) | Standalone teardown |
 | `WKVRCProxy.YtDlp` | `dist/tools/yt-dlp.exe` (~3.27 MB) | Patched yt-dlp wrapper. **AOT-published**, native code, no embedded runtime. `<AssemblyName>yt-dlp</AssemblyName>` so it deploys as `yt-dlp.exe` directly |
 | `WKVRCProxy.Tests` | xUnit DLL | 80+ tests covering protocol round-trip, atomic copy / SHA, hosts parser, sweeper, heartbeat formatting, etc. |
 
-All target `net10.0`. The watchdog/Updater/Uninstaller publish self-contained single-file with R2R; the YtDlp wrapper publishes AOT (single native exe, no runtime needed).
+All target `net10.0`. Every shipped exe is AOT-published as a single native binary; no .NET runtime install is required on the user's machine.
 
-## Build a release zip
+## Build locally
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1
-# or, faster local rebuilds:
-powershell -ExecutionPolicy Bypass -File build.ps1 -SkipZip
 ```
 
-Output: `dist/` (the layout that goes into the zip) and `release/WKVRCProxy-v<version>.zip`. Phase-by-phase breakdown: [[Build Pipeline]].
+Output: `dist/`, which is the runnable layout and the exact content GitHub releases package. Phase-by-phase breakdown: [[Build Pipeline]].
+
+GitHub release builds add `-Package`, which writes `WKVRCProxy-v<version>.zip` and the manifest under `dist/` for the workflow to upload. Local builds do not create a repo-root `release/` folder.
 
 ## .NET iteration
 
@@ -40,7 +40,7 @@ dotnet run --project src/WKVRCProxy
 dotnet test src/WKVRCProxy.Tests
 ```
 
-`dotnet run` against source is the fastest dev loop for the watchdog. The watchdog looks for the patched yt-dlp at `<install>/tools/yt-dlp.exe` -- for iterating on watchdog plumbing (`MeshClient` / `LocalIpcServer` / `PatchManager`), build the wrapper once into `dist/tools/` via `build.ps1 -SkipZip` and then iterate the watchdog with `dotnet run`. The wrapper itself is invoked by VRChat as `Tools/yt-dlp.exe` with VRChat-specific argv shapes -- `dotnet run` against `src/WKVRCProxy.YtDlp` standalone won't be a useful dev loop.
+`dotnet run` against source is the fastest dev loop for the watchdog. The watchdog looks for the patched yt-dlp at `<install>/tools/yt-dlp.exe` -- for iterating on watchdog plumbing (`MeshClient` / `LocalIpcServer` / `PatchManager`), build the wrapper once into `dist/tools/` via `build.ps1` and then iterate the watchdog with `dotnet run`. The wrapper itself is invoked by VRChat as `Tools/yt-dlp.exe` with VRChat-specific argv shapes -- `dotnet run` against `src/WKVRCProxy.YtDlp` standalone won't be a useful dev loop.
 
 ## Runtime state in dev
 

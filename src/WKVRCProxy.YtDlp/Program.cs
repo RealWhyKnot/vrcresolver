@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO.Pipes;
-using System.Reflection;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
@@ -49,7 +48,7 @@ namespace WKVRCProxy.YtDlp;
 // with [<utc>] [<rid>] for grep correlation. URLs in argv are sanitized to
 // host-only when logged (no path/query — they may carry tokens).
 [SupportedOSPlatform("windows")]
-internal static class Program
+internal static partial class Program
 {
     private static readonly TimeSpan PipeConnectTimeout = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ResolveDeadline = TimeSpan.FromSeconds(18);
@@ -431,89 +430,6 @@ internal static class Program
         stdout.Flush();
     }
 
-    // Trust-gateway URL wrap (Phase 1, HTTP-only). The watchdog binds a
-    // local HTTP listener at 127.0.0.1:{ephemeral} and writes the port to
-    // %LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt. We rewrite the resolved
-    // URL to `http://localhost.youtube.com:{port}/play/manifest.<ext>?target=<base64>`
-    // so VRChat's AVPro allowlist (which has *.youtube.com) accepts it in
-    // default-public worlds. The hosts file pins
-    // `localhost.youtube.com -> 127.0.0.1` so the request lands on the
-    // watchdog's listener which forwards bytes to the real URL.
-    //
-    // The path component carries a static "manifest" placeholder plus the
-    // upstream URL's path extension. AVPro/MediaFoundation dispatches its
-    // byte-stream handler primarily on path extension (.m3u8 -> HLS, .mpd
-    // -> DASH); without a recognised extension, MF mis-dispatches and
-    // playback stalls. The relay ignores the path placeholder when target=
-    // is set and resolves the real upstream URL from the base64.
-    //
-    // Failure modes -- ALL fall through to the raw URL (today's behavior):
-    //   - port file missing (watchdog not running OR didn't bind)
-    //   - port file unreadable / malformed
-    //   - URL is already wrapped (defensive; avoid double-wrap)
-    //   - URL is one of AVPro's natively-allowlisted hosts (googlevideo,
-    //     vimeo, etc.) where wrapping costs latency for no gain
-    private static string TryWrapForTrustGateway(string url)
-    {
-        if (string.IsNullOrEmpty(url)) return url;
-
-        // Defensive: don't double-wrap. If the URL is already pointed at
-        // localhost.youtube.com it came from somewhere that already did
-        // the wrap (or someone manually constructed it).
-        if (url.IndexOf("localhost.youtube.com", StringComparison.OrdinalIgnoreCase) >= 0)
-            return url;
-
-        int? port = TryReadRelayPort();
-        if (!port.HasValue) return url;
-
-        string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(url))
-            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
-        string ext = ExtractPathExtension(url);
-        string suffix = string.IsNullOrEmpty(ext) ? "" : ("." + ext);
-        return "http://localhost.youtube.com:"
-            + port.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + "/play/manifest" + suffix + "?target=" + b64;
-    }
-
-    // Mirrors LocalRelayServer.ExtractPathExtension. Lowercase, no leading
-    // dot. Only emit when the upstream extension is on a small allowlist
-    // so unfamiliar suffixes don't end up advertised on the trust-gateway
-    // URL where they could mis-dispatch MF onto the wrong handler.
-    private static readonly HashSet<string> s_allowedPathExts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mp4", "m4s", "m4v", "ts", "m3u8", "mpd",
-        "webm", "mkv", "mov",
-        "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac",
-        "vtt", "srt",
-    };
-
-    private static string ExtractPathExtension(string upstreamUrl)
-    {
-        if (string.IsNullOrEmpty(upstreamUrl)) return "";
-        string path;
-        try { path = new Uri(upstreamUrl).AbsolutePath; }
-        catch { return ""; }
-        string ext = Path.GetExtension(path);
-        if (string.IsNullOrEmpty(ext) || ext.Length < 2) return "";
-        string trimmed = ext.Substring(1).ToLowerInvariant();
-        return s_allowedPathExts.Contains(trimmed) ? trimmed : "";
-    }
-
-    private static int? TryReadRelayPort()
-    {
-        try
-        {
-            string portFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_port.txt");
-            if (!File.Exists(portFile)) return null;
-            string text = File.ReadAllText(portFile).Trim();
-            if (int.TryParse(text, System.Globalization.NumberStyles.Integer,
-                    System.Globalization.CultureInfo.InvariantCulture, out int p)
-                && p > 1024 && p < 65536) return p;
-        }
-        catch { /* best-effort; missing port = no wrap */ }
-        return null;
-    }
-
     // First arg starting with http:// or https:// is the URL to resolve.
     // Quoted matches are stripped of surrounding quotes by the OS argv
     // parse before we see them.
@@ -565,123 +481,5 @@ internal static class Program
         }
         catch { /* best-effort */ }
         return "?";
-    }
-
-    // Truncate + escape a free-form string for inclusion in a single log
-    // line. Newlines are converted to literal "\n" so a multi-line yt-dlp
-    // stderr block doesn't fragment the log.
-    private static string Preview(string s, int maxLen)
-    {
-        string trimmed = s.Length > maxLen ? s[..maxLen] + "...(truncated)" : s;
-        return trimmed.Replace("\r", "").Replace("\n", "\\n");
-    }
-
-    private static void LogStartBanner(string[] args, string url, string? formatArg, string player)
-    {
-        string ver = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "?";
-        var sb = new StringBuilder();
-        sb.Append("START pid=").Append(Environment.ProcessId);
-        sb.Append(" ver=").Append(ver);
-        sb.Append(" argc=").Append(args.Length);
-        sb.Append(" url-host=").Append(string.IsNullOrEmpty(url) ? "<none>" : ExtractHost(url));
-        sb.Append(" player=").Append(player);
-        sb.Append(" -f=").Append(formatArg ?? "<none>");
-        // Args summary: drop any arg that's an absolute URL (host already
-        // logged separately) and any arg that looks like a multi-K-char
-        // host-allowlist (--exp-allow / --wild-allow) — those run into
-        // thousands of chars and aren't useful in the per-line log.
-        sb.Append(" flags=[");
-        bool first = true;
-        for (int i = 0; i < args.Length; i++)
-        {
-            string a = args[i];
-            if (a.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-                || a.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                continue;
-            if ((a == "--exp-allow" || a == "--wild-allow") && i + 1 < args.Length)
-            {
-                if (!first) sb.Append(',');
-                int hostCount = args[i + 1].Split(',').Length;
-                sb.Append(a).Append("[~").Append(hostCount).Append(" hosts]");
-                i++;
-                first = false;
-                continue;
-            }
-            if (!first) sb.Append(',');
-            sb.Append(a.Length > 64 ? a[..64] + "..." : a);
-            first = false;
-        }
-        sb.Append(']');
-        Log(sb.ToString());
-    }
-
-    // Best-effort single-file diagnostic. Log lands at
-    //   %LOCALAPPDATA%Low\WKVRCProxy\logs\yt-dlp-wrapper.log
-    // — must live under LocalLow because the wrapper runs at Low integrity
-    // (inherited from VRChat's Tools dir which sits in LocalLow). A
-    // Low-integrity process cannot write to Medium-integrity dirs, so the
-    // earlier %LOCALAPPDATA% path silently failed for every VRChat-invoked
-    // call. Watchdog reads from this same LocalLow path so log surfaces
-    // are unified across components. Failures are still swallowed — a
-    // yt-dlp invocation that can't log shouldn't break the resolve pipeline.
-    //
-    // Single FileStream cached for the lifetime of the invocation (~10-15
-    // Log calls per resolve). Earlier impl re-opened the file on every call
-    // via File.AppendAllText + Directory.CreateDirectory, costing 5-50 ms
-    // of avoidable I/O per resolve. Lazy-init on first call so a wrapper
-    // run that never logs (impossible today, but cheap to handle) doesn't
-    // touch disk. CloseLog() is invoked from Main's finally so the stream
-    // flushes before process exit; an exit that bypasses the finally still
-    // produces a useful tail because we Flush after every WriteLine.
-    private static readonly object s_logLock = new();
-    private static StreamWriter? s_logWriter;
-    private static bool s_logInitFailed;
-
-    private static void Log(string message)
-    {
-        try
-        {
-            string line = "[" + DateTime.UtcNow.ToString("o") + "] [" + s_rid + "] " + message;
-            lock (s_logLock)
-            {
-                var w = s_logWriter ?? OpenLogWriter();
-                if (w == null) return;
-                w.WriteLine(line);
-                w.Flush();
-            }
-        }
-        catch { /* best-effort */ }
-    }
-
-    private static StreamWriter? OpenLogWriter()
-    {
-        if (s_logInitFailed) return null;
-        try
-        {
-            string logDir = WkvrcPaths.LogsDir();
-            Directory.CreateDirectory(logDir);
-            string logPath = Path.Combine(logDir, "yt-dlp-wrapper.log");
-            var fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-            s_logWriter = new StreamWriter(fs, Encoding.UTF8) { AutoFlush = false, NewLine = "\n" };
-            return s_logWriter;
-        }
-        catch
-        {
-            // Disk full / permissions / unexpected layout. Set the failure
-            // flag so the next Log() doesn't keep retrying syscalls each
-            // call — that's the exact loss the refactor is meant to avoid.
-            s_logInitFailed = true;
-            return null;
-        }
-    }
-
-    private static void CloseLog()
-    {
-        lock (s_logLock)
-        {
-            try { s_logWriter?.Flush(); } catch { /* best-effort */ }
-            try { s_logWriter?.Dispose(); } catch { /* best-effort */ }
-            s_logWriter = null;
-        }
     }
 }

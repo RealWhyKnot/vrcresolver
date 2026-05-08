@@ -434,7 +434,7 @@ if ($Repo -and $prevTag) {
 # --- File integrity ---
 # Composes a code-block with the release zip on the first line and indented
 # inner-file rows below. Inner-file hashes come from the manifest emitted by
-# build.ps1 (release/<zip-name>.manifest.tsv); the zip itself is hashed by the
+# build.ps1 (dist/<zip-name>.manifest.tsv); the zip itself is hashed by the
 # workflow's "Locate release zip" step and passed in via -ZipPath/-ZipSha256/-ZipSize.
 # If any of those are missing (running locally without a build, or the workflow
 # wiring is incomplete), the section is skipped with a warning so the operator

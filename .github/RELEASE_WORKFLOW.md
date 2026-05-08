@@ -8,6 +8,10 @@ current tag -- there is no hand-written narrative path. If a release needs
 content that the auto-generator can't produce, the only supported path is
 the [extras file](#extras-file).
 
+The workflow calls `build.ps1 -Package`; local builds do not create a
+repo-root `release/` directory. The zip and manifest are emitted under
+`dist/` for the workflow to upload.
+
 ## Tag shapes
 
 | Form | When | Example |

@@ -1,12 +1,12 @@
 # Build Pipeline
 
-`build.ps1` orchestrates the build: version stamping, bundled-fallback fetch, .NET publish, release zip. Run from the repo root:
+`build.ps1` orchestrates the build: version stamping, bundled-fallback fetch, .NET publish, and optional GitHub release packaging. Run from the repo root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-Pass `-SkipZip` to short-circuit the `release/`-zip step on local rebuilds. Pass `-Version YYYY.M.D.N` (release shape) or `-Version YYYY.M.D.N-XXXX` (dev shape, `XXXX` = 4 hex chars) to override the auto-derived stamp -- release.yml does this so the published tag, zip filename, and embedded assembly version stay in sync.
+Local builds produce `dist/` only. Pass `-Package` when a zip and manifest are needed for GitHub release upload; those artifacts are written under `dist/` by default. Pass `-Version YYYY.M.D.N` (release shape) or `-Version YYYY.M.D.N-XXXX` (dev shape, `XXXX` = 4 hex chars) to override the auto-derived stamp -- release.yml does this so the published tag, zip filename, and embedded assembly version stay in sync.
 
 ## Phases
 
@@ -30,19 +30,14 @@ The fallback is what the watchdog drops back into VRChat's Tools dir as `yt-dlp-
 
 Six projects total: `WKVRCProxy.Shared` (DLL referenced by all four exes) + `WKVRCProxy` (watchdog) + `WKVRCProxy.Updater` + `WKVRCProxy.Uninstaller` + `WKVRCProxy.YtDlp` (patched wrapper) + `WKVRCProxy.Tests`. All target `net10.0`.
 
-The four exes split into two publish profiles:
+All four shipped exes use the AOT publish profile:
 
-**Self-contained, single-file, R2R (Updater / Uninstaller / Watchdog):**
-- `WKVRCProxy` -> `dist/WKVRCProxy.exe` (~80 MB)
-- `WKVRCProxy.Updater` -> `dist/WKVRCProxy.Updater.exe` (~80 MB)
-- `WKVRCProxy.Uninstaller` -> `dist/WKVRCProxy.Uninstaller.exe` (~80 MB)
-
-These embed the .NET 10 runtime + R2R-precompiled images. R2R is enabled for `OutputType=Exe AND IsTestProject!=true` projects via `src/Directory.Build.targets`.
-
-**AOT, native, single-binary (the patched yt-dlp wrapper):**
+- `WKVRCProxy` -> `dist/WKVRCProxy.exe` (~9 MB)
+- `WKVRCProxy.Updater` -> `dist/WKVRCProxy.Updater.exe` (~6 MB)
+- `WKVRCProxy.Uninstaller` -> `dist/WKVRCProxy.Uninstaller.exe` (~2 MB)
 - `WKVRCProxy.YtDlp` -> `dist/tools/yt-dlp.exe` (~3.27 MB)
 
-`<PublishAot>true</PublishAot>` + `<PublishTrimmed>true</PublishTrimmed>` + `<TrimMode>full</TrimMode>` + `<InvariantGlobalization>true</InvariantGlobalization>`. JSON serialization goes through the `WrapperJsonContext` source-gen at `src/WKVRCProxy.YtDlp/WrapperJsonContext.cs` -- `ResolveRequest` and `ResolveResponse` only. **Don't widen the context** to types the wrapper doesn't actually serialize; the trimmer can't drop them once they're listed.
+`<PublishAot>true</PublishAot>` + `<PublishTrimmed>true</PublishTrimmed>` + `<TrimMode>full</TrimMode>` + `<InvariantGlobalization>true</InvariantGlobalization>`. JSON serialization goes through source-gen contexts (`MeshJsonContext`, `MeshFallbackJsonContext`, and `WrapperJsonContext`). **Don't add reflection-based serializer, regex, or MessagePack paths**; AOT builds must stay source-generated.
 
 **AOT prerequisites**: Visual Studio Build Tools "Desktop development with C++" workload. The AOT publish step calls MSVC's `link.exe`. `build.ps1` prepends the VS Installer dir (where `vswhere.exe` lives) to PATH so the AOT target can locate the toolchain. CI uses `windows-latest` which already has the workload installed; local devs need to install it once.
 
@@ -51,8 +46,13 @@ These embed the .NET 10 runtime + R2R-precompiled images. R2R is enabled for `Ou
 - `dist/tools/yt-dlp-og-fallback.version.txt` -- version tag of the bundled vanilla yt-dlp
 - `dist/tools/yt-dlp.exe` -- the patched yt-dlp wrapper (built FROM this repo -- `WKVRCProxy.YtDlp` with `<AssemblyName>yt-dlp</AssemblyName>` so the AOT publish lands the binary as `yt-dlp.exe`).
 
-### 6. Release zip
-- `release/WKVRCProxy-v<version>.zip` containing the contents of `dist/`.
+### 6. Optional package artifacts
+Only runs when `-Package` is passed.
+
+- `dist/WKVRCProxy-v<version>.zip` containing the runnable contents of `dist/`.
+- `dist/WKVRCProxy-v<version>.manifest.tsv` with SHA256 + size for every file inside the zip.
+
+Local builds do not create a repo-root `release/` directory. GitHub releases are the only path that needs packaging artifacts.
 
 ## CI pipeline
 
@@ -68,7 +68,7 @@ CI deliberately skips `build.ps1` -- the smoke check is `dotnet build`. The actu
 
 `.github/workflows/release.yml` runs on tag push matching `v*`:
 
-- `windows-latest`, full `build.ps1 -Version <stripped-tag>`
+- `windows-latest`, full `build.ps1 -Version <stripped-tag> -Package`
 - Promotes the `## Unreleased` section in `CHANGELOG.md` and `wiki/Changelog.md` to the tagged version before the build.
 - `gh release create $tag $zip --title $tag --notes "...SHA256: <hash>..."` -- release notes carry the curated changelog excerpt plus an auto-generated commit list.
 - Opens a `release/promote-changelog-<tag>` PR with auto-merge so `main` eventually carries the promotion.

@@ -4,8 +4,16 @@ param(
     # leave this empty and get an auto-derived YYYY.M.D.N-XXXX dev stamp.
     [string]$Version = "",
 
-    # Skip building the release/ zip. dist/ is still produced.
-    [switch]$SkipZip
+    # Build the GitHub release zip + manifest. Local builds leave this off so
+    # the repo root stays clean and only dist/ is refreshed.
+    [switch]$Package,
+
+    # Deprecated compatibility switch. Equivalent to leaving -Package off.
+    [switch]$SkipZip,
+
+    # Optional directory for package artifacts. Defaults to dist/ so all local
+    # build output stays under one ignored tree.
+    [string]$ArtifactsDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,9 +24,9 @@ Set-Location $PSScriptRoot
 try { & git config --local core.hooksPath .githooks 2>$null } catch {}
 
 $BuildDir     = Join-Path $PSScriptRoot "dist"
-$ReleaseDir   = Join-Path $PSScriptRoot "release"
 $ToolsStage   = Join-Path $PSScriptRoot "_tools_staging"
 $StateFile    = Join-Path $PSScriptRoot ".local_build_state.json"
+$CreatePackage = $Package -and -not $SkipZip
 
 # --- Versioning ---
 if ($Version) {
@@ -189,29 +197,37 @@ if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.YtDlp publish failed" }
 # --- Trim debug symbols we don't ship ---
 Get-ChildItem $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
 
-# --- Manifest (per-file SHA256 + size for the release-body File Integrity section) ---
-# Tab-separated: <sha256>\t<size_bytes>\t<relative_path>. One file per line,
-# sorted by path. Generate-ReleaseNotes.ps1 reads this to compose the inner-file
-# hash table without needing to unzip the artifact.
-if (-not $SkipZip) {
-    if (-not (Test-Path $ReleaseDir)) { New-Item -ItemType Directory $ReleaseDir -Force | Out-Null }
-    $ManifestPath = Join-Path $ReleaseDir "WKVRCProxy-v$FullVersion.manifest.tsv"
-    $manifestLines = Get-ChildItem $BuildDir -Recurse -File |
-        Sort-Object FullName |
-        ForEach-Object {
-            $relPath = $_.FullName.Substring($BuildDir.Length + 1) -replace '\\', '/'
-            $sha = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
-            "$sha`t$($_.Length)`t$relPath"
-        }
+# --- Package artifacts for GitHub releases ---
+# Local builds stop at dist/. GitHub release builds pass -Package, which writes
+# the zip + manifest into dist/ (or -ArtifactsDir) without creating a repo-root
+# release/ directory.
+if ($CreatePackage) {
+    $ArtifactRoot = if ($ArtifactsDir) { $ArtifactsDir } else { $BuildDir }
+    if (-not [System.IO.Path]::IsPathRooted($ArtifactRoot)) {
+        $ArtifactRoot = Join-Path $PSScriptRoot $ArtifactRoot
+    }
+    if (-not (Test-Path $ArtifactRoot)) { New-Item -ItemType Directory $ArtifactRoot -Force | Out-Null }
+
+    $ManifestPath = Join-Path $ArtifactRoot "WKVRCProxy-v$FullVersion.manifest.tsv"
+    $ZipPath = Join-Path $ArtifactRoot "WKVRCProxy-v$FullVersion.zip"
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+
+    # Manifest is tab-separated: <sha256>\t<size_bytes>\t<relative_path>.
+    # Generate-ReleaseNotes.ps1 reads this to compose the inner-file hash table
+    # without needing to unzip the artifact. Capture package inputs before
+    # writing the manifest so the manifest itself never appears in the zip.
+    $PackageFiles = Get-ChildItem $BuildDir -Recurse -File |
+        Sort-Object FullName
+    $manifestLines = $PackageFiles | ForEach-Object {
+        $relPath = $_.FullName.Substring($BuildDir.Length + 1) -replace '\\', '/'
+        $sha = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+        "$sha`t$($_.Length)`t$relPath"
+    }
+    $PackageInputs = Get-ChildItem $BuildDir -Force | ForEach-Object { $_.FullName }
     [System.IO.File]::WriteAllLines($ManifestPath, [string[]]$manifestLines, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Manifest: $ManifestPath ($($manifestLines.Count) files)" -ForegroundColor Cyan
-}
 
-# --- Zip ---
-if (-not $SkipZip) {
-    $ZipPath = Join-Path $ReleaseDir "WKVRCProxy-v$FullVersion.zip"
-    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
-    Compress-Archive -Path (Join-Path $BuildDir "*") -DestinationPath $ZipPath
+    Compress-Archive -Path $PackageInputs -DestinationPath $ZipPath
     Write-Host "`nRelease zip: $ZipPath" -ForegroundColor Green
 }
 

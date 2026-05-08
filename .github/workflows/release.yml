@@ -7,8 +7,8 @@ name: Release
 # build's version: it's passed to build.ps1 -Version so the assembly version, version.txt, and the
 # zip filename all match the tag. build.ps1 validates the shape and fails fast on a malformed tag.
 # Builds the full distribution via build.ps1 on a Windows runner — required because the build
-# produces win-x64 single-file exes and uses PowerShell-only cmdlets — then attaches the zip
-# from release/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
+# produces win-x64 exes and uses PowerShell-only cmdlets — then attaches the zip
+# from dist/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
 #
 # Changelog promotion: before the build runs, .github/scripts/Update-Changelog.ps1 renames the
 # "## Unreleased" heading in CHANGELOG.md and wiki/Changelog.md to "## [vTAG] - DATE", linking
@@ -74,17 +74,17 @@ jobs:
           # Strip the leading "v" so the version baked into the build matches the tag.
           # build.ps1 validates the shape (YYYY.M.D.N-XXXX) and fails fast on a bad tag.
           $version = $env:TAG_NAME -replace '^v', ''
-          ./build.ps1 -Version $version
+          ./build.ps1 -Version $version -Package
 
       - name: Locate release artifacts
         id: zip
         shell: pwsh
         run: |
-          $zip = Get-ChildItem release/WKVRCProxy-*.zip | Select-Object -First 1
-          if (-not $zip) { throw "No release zip found in release/ -- build.ps1 did not produce one." }
+          $zip = Get-ChildItem dist/WKVRCProxy-*.zip | Select-Object -First 1
+          if (-not $zip) { throw "No release zip found in dist/ -- build.ps1 -Package did not produce one." }
           $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash
-          $manifest = Get-ChildItem release/WKVRCProxy-*.manifest.tsv | Select-Object -First 1
-          if (-not $manifest) { throw "No manifest found in release/ -- build.ps1 did not produce one. Generate-ReleaseNotes.ps1 needs it for the File integrity section." }
+          $manifest = Get-ChildItem dist/WKVRCProxy-*.manifest.tsv | Select-Object -First 1
+          if (-not $manifest) { throw "No manifest found in dist/ -- build.ps1 -Package did not produce one. Generate-ReleaseNotes.ps1 needs it for the File integrity section." }
           "path=$($zip.FullName)"           >> $env:GITHUB_OUTPUT
           "name=$($zip.Name)"               >> $env:GITHUB_OUTPUT
           "size=$($zip.Length)"             >> $env:GITHUB_OUTPUT
