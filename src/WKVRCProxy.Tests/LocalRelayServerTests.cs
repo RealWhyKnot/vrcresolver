@@ -587,6 +587,106 @@ public class LocalRelayServerTests
         Assert.Null(r.TryGetEntry(null!));
     }
 
+    // ---- ComputeHlsRedirect (server extension/body mismatch defense) --------
+
+    [Fact]
+    public void ComputeHlsRedirect_Mp4PathOnHlsBody_RedirectsToM3u8()
+    {
+        // The trigger case: server emits a /play/manifest.mp4 URL (its mesh
+        // handler picked the .mp4 extension because yt-dlp reported
+        // protocol=https for the merged format, but the proxy's later
+        // re-resolve picked an HLS variant whose body is HLS playlist text).
+        // Without redirect, AVPro/MediaFoundation dispatches the fmp4 byte-
+        // stream handler against an HLS playlist and stalls.
+        string? redirect = LocalRelayServer.ComputeHlsRedirect(
+            "/play/manifest.mp4", "?target=AAAA");
+        Assert.Equal("/play/manifest.m3u8?target=AAAA", redirect);
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_HexSegmentMp4_RedirectsToM3u8()
+    {
+        // Same defense for segment-form URLs: a sub-playlist sitting at a
+        // /play/<hex>.mp4 URL needs the .m3u8 redirect too.
+        string? redirect = LocalRelayServer.ComputeHlsRedirect(
+            "/play/abcdef012345.mp4", "");
+        Assert.Equal("/play/abcdef012345.m3u8", redirect);
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_TsExtension_RedirectsToM3u8()
+    {
+        // .ts extension on an HLS body (rare but possible) also needs a
+        // redirect. AVPro's TS handler isn't set up to consume an HLS
+        // playlist; the .m3u8 hint kicks it back to the HLS source.
+        string? redirect = LocalRelayServer.ComputeHlsRedirect(
+            "/play/abcdef012345.ts", "?id=abcdef012345");
+        Assert.Equal("/play/abcdef012345.m3u8?id=abcdef012345", redirect);
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_AlreadyM3u8_NoRedirect()
+    {
+        // Path already ends in .m3u8 -- no redirect needed; null tells the
+        // caller to proceed with the in-place HLS rewrite.
+        Assert.Null(LocalRelayServer.ComputeHlsRedirect("/play/manifest.m3u8", "?target=AAAA"));
+        Assert.Null(LocalRelayServer.ComputeHlsRedirect("/play/abcdef012345.m3u8", ""));
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_AlreadyMpd_NoRedirect()
+    {
+        // .mpd is also an acceptable manifest extension (MF dispatches the
+        // DASH handler). HLS body served at a .mpd URL is uncommon -- still
+        // accept it without redirecting; the secondary MIME signal handles
+        // the tie-break and forcing HLS would break legitimate DASH-styled
+        // routes if any exist.
+        Assert.Null(LocalRelayServer.ComputeHlsRedirect("/play/manifest.mpd", "?target=AAAA"));
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_NoExtension_AppendsM3u8()
+    {
+        // Bare path with no extension. MF would fall back to MIME-based
+        // dispatch and probably succeed, but the explicit .m3u8 makes the
+        // hint match and removes the corner case.
+        string? redirect = LocalRelayServer.ComputeHlsRedirect(
+            "/play/abcdef012345", "?id=abcdef012345");
+        Assert.Equal("/play/abcdef012345.m3u8?id=abcdef012345", redirect);
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_LegacyBarePlay_ReturnsNull()
+    {
+        // The legacy /play?target= / /play?id= query-only forms have no
+        // path segment to rewrite -- old watchdog binaries in the wild
+        // emit them. The HLS rewrite path runs in-place for these and the
+        // wrapper-emitted path-form supersedes them on fresh installs.
+        Assert.Null(LocalRelayServer.ComputeHlsRedirect("/play", "?target=AAAA"));
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_NotPlayPath_ReturnsNull()
+    {
+        // Defensive: ComputeHlsRedirect only acts on the /play/* family.
+        // Anything else passes through unchanged.
+        Assert.Null(LocalRelayServer.ComputeHlsRedirect("/foo/bar.mp4", ""));
+        Assert.Null(LocalRelayServer.ComputeHlsRedirect("", ""));
+        Assert.Null(LocalRelayServer.ComputeHlsRedirect(null!, ""));
+    }
+
+    [Fact]
+    public void ComputeHlsRedirect_PreservesQueryString()
+    {
+        // The query string carries target=<b64> (manifest URL form) or
+        // id=<hex> (segment URL form). Either must survive the redirect
+        // verbatim so the relay can resolve the upstream on the re-fetch.
+        string longB64 = "aHR0cHM6Ly9ub2RlMS53aHlrbm90LmRldi9hcGkvcHJveHkvbWFuaWZlc3QubXA0P3E9WTdCZw";
+        string? redirect = LocalRelayServer.ComputeHlsRedirect(
+            "/play/manifest.mp4", "?target=" + longB64);
+        Assert.Equal("/play/manifest.m3u8?target=" + longB64, redirect);
+    }
+
     // ---- ExtractPathExtension shape recognition ------------------------------
 
     [Fact]

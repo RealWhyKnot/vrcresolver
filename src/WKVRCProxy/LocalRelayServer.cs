@@ -282,6 +282,28 @@ internal sealed partial class LocalRelayServer : IDisposable
             bool isHls = LooksLikeHls(contentType, targetUrl);
             if (isHls && resp.StatusCode == HttpStatusCode.OK)
             {
+                // AVPro/MediaFoundation dispatches its byte-stream handler on
+                // URL path extension as the primary signal; Content-Type is
+                // only a fallback. If the inbound request URL's extension
+                // isn't .m3u8 / .mpd but the body is HLS (e.g. upstream
+                // mis-classified the protocol and emitted a .mp4 path on what
+                // is actually an HLS manifest), MF locks onto fmp4 dispatch,
+                // fails to parse the HLS playlist as boxes, and stalls.
+                // Detected mismatch -> 302 to the same path with .m3u8
+                // suffix. AVPro re-issues with the corrected extension and
+                // MF picks the HLS source. Preserves the query string so
+                // ?target= / ?id= survives the redirect.
+                string? redirectTo = ComputeHlsRedirect(path, ctx.Request.Url?.Query ?? "");
+                if (redirectTo != null)
+                {
+                    if (s_verbose) Console.WriteLine("[relay] req=" + reqId
+                        + " hls-extension-mismatch path=" + path + " -> 302 " + redirectTo);
+                    ctx.Response.StatusCode = 302;
+                    try { ctx.Response.Headers["Location"] = redirectTo; } catch { }
+                    ctx.Response.Close();
+                    return;
+                }
+
                 // Read manifest, rewrite segment URLs through this listener,
                 // emit. Cancel the body-deadline timer so a slow manifest
                 // doesn't false-trip the idle watchdog (they're small).
@@ -444,6 +466,36 @@ internal sealed partial class LocalRelayServer : IDisposable
         }
         if (url.Contains(".m3u8", StringComparison.OrdinalIgnoreCase)) return true;
         return false;
+    }
+
+    // Returns the redirect target (path + query) if the inbound request URL
+    // path's extension disagrees with the HLS body the upstream is serving,
+    // or null when the path already carries a manifest-shape extension and no
+    // redirect is needed. Inbound paths are exclusively /play[/...] forms;
+    // anything else (the legacy /play?target= / /play?id= query-only forms)
+    // returns null because there's no path segment to rewrite. The trailing
+    // .m3u8 makes AVPro/MF dispatch the HLS source on the next fetch.
+    internal static string? ComputeHlsRedirect(string path, string query)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+        if (!path.StartsWith("/play/", StringComparison.OrdinalIgnoreCase)) return null;
+
+        int lastSlash = path.LastIndexOf('/');
+        string lastSegment = path.Substring(lastSlash + 1);
+        if (lastSegment.Length == 0) return null;
+
+        int dotIdx = lastSegment.LastIndexOf('.');
+        string ext = dotIdx >= 0
+            ? lastSegment.Substring(dotIdx + 1).ToLowerInvariant()
+            : "";
+        if (string.Equals(ext, "m3u8", StringComparison.OrdinalIgnoreCase)) return null;
+        if (string.Equals(ext, "mpd", StringComparison.OrdinalIgnoreCase)) return null;
+
+        string baseName = dotIdx >= 0
+            ? lastSegment.Substring(0, dotIdx)
+            : lastSegment;
+        string newPath = path.Substring(0, lastSlash + 1) + baseName + ".m3u8";
+        return newPath + (query ?? "");
     }
 
     private static string DecodeTargetParam(string targetParam)
