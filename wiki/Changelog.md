@@ -67,6 +67,7 @@ The most recent release is at the top.
 - Bump Microsoft.NET.Test.Sdk from 17.14.1 to 18.5.1 (#56) (7a7d755)
 - ux(watchdog): centralised console formatter -- per-component colour, fixed-column resolve line, boxed banner (b090c0d)
 - Split proxy modules and keep local builds in dist (a925637)
+- **relay:** Lighten localhost trust gateway (9f8c6d4)
 
 ### Fixed
 - **patch:** Atomic file ops in PatchManager (no partial-file windows) (038359d)
