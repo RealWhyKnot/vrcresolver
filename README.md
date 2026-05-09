@@ -74,7 +74,7 @@ whyknot.dev /mesh         (remote resolver)
    |  resolves URL
    v
 ... resolved URL streamed back through the watchdog's local listener
-... AVPro fetches via http://localhost.youtube.com:{port}/play?target=...
+... AVPro fetches via http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=...
 ... and plays.
 ```
 

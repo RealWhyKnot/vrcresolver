@@ -230,13 +230,13 @@ internal static class Program
         // Local-relay HTTP listener (Phase 1 trust gateway). Binds 127.0.0.1
         // on an ephemeral high port; the patched yt-dlp wrapper reads the
         // port file and rewrites resolved URLs to
-        // `http://localhost.youtube.com:{port}/play?target=<base64>` so
-        // AVPro's allowlist (which has *.youtube.com) accepts them in
-        // default-public worlds. Failure to bind is non-fatal: the wrapper
-        // falls through to emitting the raw server URL on missing port file
-        // (today's behavior; works in trust-disabled worlds, fails in
-        // default-public). HTTPS + per-machine cert lifecycle is a planned
-        // follow-up.
+        // `http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>`
+        // so AVPro's allowlist (which has *.youtube.com) accepts them in
+        // default-public worlds. The relay forwards bytes to WhyKnot.dev
+        // without parsing manifests; WhyKnot.dev owns compatibility and
+        // transcode decisions. Failure to bind is non-fatal: the wrapper
+        // falls through to emitting the raw server URL on missing port file.
+        // HTTPS + per-machine cert lifecycle is a planned follow-up.
         s_relayPort = new RelayPortManager();
         if (s_relayPort.Initialize())
         {

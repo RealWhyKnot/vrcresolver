@@ -9,7 +9,7 @@ namespace WKVRCProxy;
 // Picks an ephemeral high port on 127.0.0.1 for the local-relay HTTP
 // listener and writes it to %LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt
 // so the patched yt-dlp wrapper can read it and emit the trust-gateway
-// URL (`http://localhost.youtube.com:{port}/play?target=<base64>`) to
+// URL (`http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>`) to
 // VRChat instead of the raw server URL that AVPro's allowlist rejects.
 //
 // Port-persistence behavior across watchdog restarts: read the previous

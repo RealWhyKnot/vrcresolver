@@ -13,7 +13,7 @@ VRChat's video players invoke `Tools/yt-dlp.exe` per playback request. Vanilla y
 +-----------------+        +--------+---------+        +-----------------+
                                     |
                                     |  resolved URL wrapped through
-                                    v  http://localhost.youtube.com:{port}/play?target=...
+                                    v  http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=...
                            +------------------+
                            | Local listener   |  proxies bytes back to AVPro
                            | 127.0.0.1:{port} |  AVPro's trust list passes

@@ -19,15 +19,15 @@ Hosts file entry on every install:
 `localhost.youtube.com` matches the `*.youtube.com` allowlist pattern. The watchdog binds an HTTP listener on `127.0.0.1:{ephemeral-port}` and writes the port number to `%LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt`. The patched yt-dlp wrapper reads the port and rewrites every resolved URL to:
 
 ```
-http://localhost.youtube.com:{port}/play?target=<base64-of-real-resolved-url>
+http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64-of-real-resolved-url>
 ```
 
-The hosts entry routes the AVPro fetch to `127.0.0.1:{port}`. The listener decodes the base64, fetches the real URL via HttpClient, and streams bytes back to AVPro with the original headers preserved. AVPro sees a hostname it trusts and a working stream, never knows it took a detour.
+The hosts entry routes the AVPro fetch to `127.0.0.1:{port}`. The listener decodes the base64, fetches the real URL via HttpClient, and streams bytes back to AVPro with the original headers preserved. The `<session>` path namespace gives relative playlist subrequests a stable local base path. AVPro sees a hostname it trusts and a working stream, never knows it took a detour.
 
 ## Request flow
 
 ```
-AVPro:  GET http://localhost.youtube.com:51234/play?target=aHR0cHM6Ly9ub2RlMS53aHlrbm90LmRldi9hcGk...
+AVPro:  GET http://localhost.youtube.com:51234/play/7f8a9b0c1d2e/manifest.m3u8?target=aHR0cHM6Ly9ub2RlMS53aHlrbm90LmRldi9hcGk...
         (Range: bytes=0-1023)
               |
               v  (DNS via hosts file)
@@ -39,18 +39,20 @@ AVPro:  GET http://localhost.youtube.com:51234/play?target=aHR0cHM6Ly9ub2RlMS53a
 | LocalRelayServer (watchdog) |  base64-decode target -> https://node1.whyknot.dev/api/proxy?q=...
 | - HttpListener              |  HttpClient.SendAsync (forwards Range, If-*, User-Agent)
 | - HttpClient                |  reads response headers
-| - HlsManifestRewriter       |  if Content-Type is mpegurl or URL contains .m3u8:
-+-----------------------------+    parse manifest, rewrite every segment URL through this listener
+| - relative-prefix map       |  /play/<session>/seg.ts -> upstream base + seg.ts
++-----------------------------+  no manifest parsing or body rewriting
               |
               v
         Stream bytes back to AVPro with status + Content-Type + Content-Length + Content-Range mirrored.
 ```
 
-## HLS rewriting
+## HLS handling
 
-For HLS (`Content-Type: application/vnd.apple.mpegurl` or `.m3u8` in URL), the listener reads the manifest as text and rewrites every segment URL through the same `/play?target=...` shape. Without this, AVPro fetches the manifest from the listener (passes the trust check) but then fetches each segment from `https://node1.whyknot.dev/api/proxy?url=...` directly (fails the trust check the same way the manifest URL would). `EXT-X-MAP URI=`, `EXT-X-MEDIA URI=`, `EXT-X-I-FRAME-STREAM-INF URI=` all get the same wrap.
+The client no longer parses or rewrites HLS manifests. WhyKnot.dev owns HLS compatibility, tier routing, and server-side transcode output.
 
-Relative segment URLs are resolved against the manifest's base URL before wrapping. Six unit tests in `LocalRelayServerTests` pin the rewriter behavior.
+When the first local URL includes `target=`, the listener records `/play/<session>/` against the upstream manifest directory. If the playlist body contains relative subresource URLs, AVPro resolves them under the same local namespace and the listener forwards them relative to that upstream directory.
+
+Absolute playlist URLs are a server-side contract. The client will not rewrite them back onto `localhost.youtube.com`; WhyKnot.dev must emit client-compatible playlist bodies for the trust-gateway path.
 
 ## Failure modes
 
@@ -65,7 +67,7 @@ Relative segment URLs are resolved against the manifest's base URL before wrappi
 ## What the gateway does NOT do
 
 - Does not rewrite URLs the wrapper didn't see (e.g. URLs hand-typed in VRChat for hosts that VRChat itself recognizes via its own player URL handling -- those go straight to AVPro and we're not in the path).
-- Does not modify request/response bodies for non-HLS content. Binary mp4 / mp3 / webm pass through verbatim.
+- Does not modify request/response bodies. Manifests, binary mp4 / mp3 / webm, and segment bytes pass through verbatim.
 - Does not attempt to handle DRM. Encrypted streams go through whatever DRM negotiation AVPro does directly with the upstream.
 - Does not require VRChat to be running. The listener binds at watchdog startup and stays up until shutdown.
 
@@ -90,8 +92,8 @@ If any of those fire, see the parked design notes in the project memory.
 
 ## Source pointers
 
-- `src/WKVRCProxy/LocalRelayServer.cs` -- the HttpListener loop, request handler, HLS rewriter, idle timeout + disconnect propagation.
+- `src/WKVRCProxy/LocalRelayServer.cs` -- the HttpListener loop, request handler, relative playlist namespace map, idle timeout + disconnect propagation.
 - `src/WKVRCProxy/RelayPortManager.cs` -- ephemeral port allocation, port file persistence, reuse across restarts.
 - `src/WKVRCProxy/HostsManager.cs` + `src/WKVRCProxy/HostsTicker.cs` -- the hosts entry add/remove + 60-second re-check ticker.
 - `src/WKVRCProxy.YtDlp/Program.cs::TryWrapForTrustGateway` -- the wrapper-side URL rewrite that emits the gateway URL.
-- `src/WKVRCProxy.Tests/LocalRelayServerTests.cs` -- 6 regression tests pinning the HLS rewriter behavior.
+- `src/WKVRCProxy.Tests/LocalRelayServerTests.cs` -- regression tests for target encoding and relative namespace resolution.
