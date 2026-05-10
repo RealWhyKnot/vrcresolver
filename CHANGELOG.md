@@ -11,6 +11,12 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
+_No notable changes since the last release._
+
+---
+
+## [v2026.5.10.4](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.5.10.4) — 2026-05-10
+
 ### Added
 - Local WhyKnot trust gateway for VRChat video players, including `localhost.youtube.com` playback URLs that keep first-party WhyKnot streams inside the allowed playback path.
 - Direct handling for pasted `whyknot.dev` playback proxy URLs, so a first-party proxy URL in a video player resolves to a local manifest instead of recursively re-resolving itself.
