@@ -28,8 +28,9 @@
 
   Prev-tag resolution is layered for resilience against history rewrites that
   orphan the prior tag (rebase + force-push of main): describe + sanity gate,
-  then subject-match against the most recent published GitHub release, then
-  root-walk fallback. See Resolve-PrevTagForSlice for details.
+  then subject-match against the most recent published GitHub release. If no
+  prior tag or release exists, the body uses the curated CHANGELOG first-release
+  section instead of walking the repository's full pre-release history.
 
   Templates and the optional extras file run through the same scrub gates as
   commit subjects: ASCII normalisation pass, then non-ASCII fail, then a
@@ -133,7 +134,7 @@ if (-not $TemplateDir) {
 }
 
 # Resolve previous tag. Layered fallback so a history rewrite that orphans the
-# prior tag does not produce a giant slice walking from root:
+# prior tag does not produce a giant slice from pre-release history:
 #   1. `git describe --tags --abbrev=0 <tag>^` finds the most recent tag
 #      reachable from $Tag^ along the current line of history. Sanity gate:
 #      if the slice is more than 50 commits, treat the describe result as
@@ -147,8 +148,9 @@ if (-not $TemplateDir) {
 #   3. Date anchoring is NOT used: a force-push rebase rewrites every
 #      commit's committer-date, so --since against the prev release's
 #      publishedAt walks the full rewritten history instead of the slice.
-#   4. If layers 1+2 yield nothing, walk from the repo's root commit.
-#      First-release fallback.
+#   4. If layers 1+2 yield nothing, treat the tag as the first release and
+#      use the curated CHANGELOG section instead of walking the full repository
+#      history.
 # Surfaces a ::warning:: when layer 2 or 4 fires so the operator sees in
 # workflow logs that a fallback was used.
 function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
@@ -219,23 +221,24 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
                                 Source  = 'subject-match'
                             }
                         }
-                        Write-Host "::warning::Prev tag $candidatePrevTag subject '$orphanSubject' not found in current $Tag history. Falling back to root walk."
+                        Write-Host "::warning::Prev tag $candidatePrevTag subject '$orphanSubject' not found in current $Tag history. Falling back to first-release changelog notes."
                     }
                 }
             }
         } else {
-            Write-Host "::warning::'gh release list' produced no usable output (gh not authed or no releases yet). Falling back to root walk."
+            Write-Host "::warning::'gh release list' produced no usable output (gh not authed or no releases yet). Falling back to first-release changelog notes."
         }
     }
 
-    # Layer 3: root walk.
-    $root = (& git rev-list --max-parents=0 HEAD | Select-Object -First 1).Trim()
-    Write-Host "::warning::No prior tag matched; walking from root $root."
+    # Layer 3: first release. The repository may have a long pre-release commit
+    # history whose subjects are not suitable for public release notes. Use the
+    # curated CHANGELOG section for this case.
+    Write-Host "::warning::No prior tag or published release matched; treating $Tag as the first release."
     return @{
         Tag     = $null
-        LogArgs = @("$root..$Tag")
-        Display = "$root..$Tag (root walk)"
-        Source  = 'root'
+        LogArgs = @()
+        Display = "$Tag (first release)"
+        Source  = 'first-release'
     }
 }
 
@@ -244,11 +247,54 @@ $prevTag  = $prevInfo.Tag
 $logArgs  = $prevInfo.LogArgs
 $range    = $prevInfo.Display
 
+function Read-ChangelogNotes([string]$Version) {
+    $path = Join-Path -Path (Get-Location) -ChildPath 'CHANGELOG.md'
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+
+    $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ($Version) {
+        $escaped = [regex]::Escape($Version)
+        $versionPattern = "(?ms)^##\s+\[$escaped\][^\n]*\n(.*?)(?=^---\s*$|^##\s+|\z)"
+        $versionMatch = [regex]::Match($content, $versionPattern)
+        if ($versionMatch.Success) {
+            $notes = $versionMatch.Groups[1].Value.Trim()
+            if ($notes) { return $notes }
+        }
+    }
+
+    $unreleasedPattern = '(?ms)^##\s+Unreleased\s*\n(.*?)(?=^---\s*$|^##\s+|\z)'
+    $unreleasedMatch = [regex]::Match($content, $unreleasedPattern)
+    if ($unreleasedMatch.Success) {
+        $notes = $unreleasedMatch.Groups[1].Value.Trim()
+        if ($notes -and $notes -notmatch '^_No notable changes since the last release\._$') {
+            return $notes
+        }
+    }
+
+    return $null
+}
+
+$changelogNotes = $null
+if ($prevInfo.Source -eq 'first-release') {
+    $changelogNotes = Read-ChangelogNotes -Version $Tag
+    if (-not $changelogNotes) {
+        if ($AllowEmpty) {
+            $changelogNotes = '_First release; see commit log for details._'
+        } else {
+            throw "No prior tag or release exists, and CHANGELOG.md has no notes for $Tag or Unreleased. " +
+                  "For the first release, write curated public notes under ## Unreleased before tagging."
+        }
+    }
+}
+
 # %H = full sha, %h = short sha, %an = author name, %s = subject. Tabs as field
 # separator are safe -- git rejects literal tabs in author names and subjects
 # don't contain them in any of these repos.
-$raw = & git log @logArgs --no-merges --pretty=format:"%H`t%h`t%an`t%s" 2>$null
-if ($LASTEXITCODE -ne 0) { $raw = @() }
+$raw = @()
+if (-not $changelogNotes) {
+    $raw = & git log @logArgs --no-merges --pretty=format:"%H`t%h`t%an`t%s" 2>$null
+    if ($LASTEXITCODE -ne 0) { $raw = @() }
+}
 
 $lines = @()
 if ($raw) { $lines = $raw -split "`r?`n" | Where-Object { $_ } }
@@ -288,7 +334,7 @@ $entries = foreach ($line in $lines) {
 # means either the prev-tag detection is wrong, every commit was skipped,
 # or the tag was pushed from an empty branch. All three are operator
 # mistakes worth catching before publish.
-if (-not $entries -or $entries.Count -eq 0) {
+if (-not $changelogNotes -and (-not $entries -or $entries.Count -eq 0)) {
     if ($AllowEmpty) {
         # First-release escape hatch. Emit a stub body the workflow can still
         # publish; downstream consumers can reformat or replace.
@@ -319,21 +365,26 @@ function Get-Category([string] $subject) {
 # Conventional-commit coverage warning. Don't fail -- 'Other Changes' is the
 # documented bucket for non-conforming subjects -- but log to stderr so the
 # operator sees them in the workflow output and can amend if desired.
-$nonConforming = @($entries | Where-Object {
-    $_.Subject -notmatch '^(feat|fix|perf|refactor|revert|docs|style|test|ci|build|chore)(\(.+?\))?!?:'
-})
-if ($nonConforming.Count -gt 0) {
-    Write-Host "::warning::$($nonConforming.Count) commit(s) in range $range do not follow conventional-commit prefixes; bucketed under 'Other Changes':"
-    foreach ($e in $nonConforming) {
-        Write-Host "::warning::  $($e.Short)  $($e.Subject)"
+$nonConforming = @()
+if (-not $changelogNotes) {
+    $nonConforming = @($entries | Where-Object {
+        $_.Subject -notmatch '^(feat|fix|perf|refactor|revert|docs|style|test|ci|build|chore)(\(.+?\))?!?:'
+    })
+    if ($nonConforming.Count -gt 0) {
+        Write-Host "::warning::$($nonConforming.Count) commit(s) in range $range do not follow conventional-commit prefixes; bucketed under 'Other Changes':"
+        foreach ($e in $nonConforming) {
+            Write-Host "::warning::  $($e.Short)  $($e.Subject)"
+        }
     }
 }
 
 $useGroups = $false
-foreach ($e in $entries) {
-    if ($e.Subject -match '^(feat|fix|perf|refactor|revert|docs|style|test|ci|build|chore)(\(.+?\))?!?:') {
-        $useGroups = $true
-        break
+if (-not $changelogNotes) {
+    foreach ($e in $entries) {
+        if ($e.Subject -match '^(feat|fix|perf|refactor|revert|docs|style|test|ci|build|chore)(\(.+?\))?!?:') {
+            $useGroups = $true
+            break
+        }
     }
 }
 
@@ -352,10 +403,16 @@ if ($Repo -and ($Repo -match '/')) {
 }
 $tagCommitSha = ''
 $tagCommitShort = ''
-$tagSha = & git rev-parse "$Tag^{}" 2>$null
-if ($LASTEXITCODE -eq 0 -and $tagSha) {
-    $tagCommitSha = $tagSha.Trim()
-    if ($tagCommitSha.Length -ge 12) { $tagCommitShort = $tagCommitSha.Substring(0, 12) }
+$prevErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $tagSha = & git rev-parse "$Tag^{}" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $tagSha) {
+        $tagCommitSha = $tagSha.Trim()
+        if ($tagCommitSha.Length -ge 12) { $tagCommitShort = $tagCommitSha.Substring(0, 12) }
+    }
+} finally {
+    $ErrorActionPreference = $prevErrorActionPreference
 }
 $priorTagToken = if ($prevTag) { $prevTag } else { '' }
 $zipNameToken  = if ($ZipName) { $ZipName } elseif ($ZipPath) { (Split-Path -Leaf $ZipPath) } else { '' }
@@ -406,7 +463,10 @@ if ($repoShort) {
 [void]$sb.AppendLine("## What's Changed")
 [void]$sb.AppendLine()
 
-if ($useGroups) {
+if ($changelogNotes) {
+    [void]$sb.AppendLine($changelogNotes)
+    [void]$sb.AppendLine()
+} elseif ($useGroups) {
     $tagged = foreach ($e in $entries) {
         $cat = Get-Category $e.Subject
         [pscustomobject]@{ Order = $cat.Order; Name = $cat.Name; Entry = $e }
