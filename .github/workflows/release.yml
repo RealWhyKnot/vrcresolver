@@ -301,18 +301,28 @@ jobs:
           git commit -m "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]"
           git push origin "$branch"
 
-          pr_url="$(gh pr create \
+          pr_body="Promotion PR opened by .github/workflows/release.yml after publishing **${TAG_NAME}**. Mirrors the embedded \`CHANGELOG.md\` (and \`wiki/Changelog.md\`) that shipped inside the exe back onto \`main\` so the next push starts with a fresh \`## Unreleased\` section. Auto-merge enabled -- will squash once \`dotnet build + test\` passes."
+          if pr_url="$(gh pr create \
             --base main \
             --head "$branch" \
             --title "docs(changelog): promote Unreleased -> ${TAG_NAME}" \
-            --body "Promotion PR opened by .github/workflows/release.yml after publishing **${TAG_NAME}**. Mirrors the embedded \`CHANGELOG.md\` (and \`wiki/Changelog.md\`) that shipped inside the exe back onto \`main\` so the next push starts with a fresh \`## Unreleased\` section. Auto-merge enabled -- will squash once \`dotnet build + test\` passes.")"
-          echo "Opened: $pr_url"
+            --body "$pr_body" \
+            2>pr-create.err)"; then
+            echo "Opened: $pr_url"
 
-          # --auto queues the merge; it actually fires once required checks pass.
-          # Use --subject so the squash commit subject keeps the [skip changelog]
-          # marker (the appender also filters by bot actor, but belt-and-braces).
-          gh pr merge "$pr_url" \
-            --auto \
-            --squash \
-            --delete-branch \
-            --subject "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]"
+            # --auto queues the merge; it actually fires once required checks pass.
+            # Use --subject so the squash commit subject keeps the [skip changelog]
+            # marker (the appender also filters by bot actor, but belt-and-braces).
+            if ! gh pr merge "$pr_url" \
+              --auto \
+              --squash \
+              --delete-branch \
+              --subject "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]" \
+              2>pr-merge.err; then
+              cat pr-merge.err >&2
+              echo "::warning::Release published, but auto-merge could not be enabled for promotion PR $pr_url."
+            fi
+          else
+            cat pr-create.err >&2
+            echo "::warning::Release published, but GitHub Actions could not create the promotion PR. Branch '$branch' was pushed; promote CHANGELOG.md and wiki/Changelog.md manually."
+          fi
