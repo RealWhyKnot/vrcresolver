@@ -140,18 +140,24 @@ internal sealed class HelperAppSettings
     [JsonPropertyName("allow_on_battery")]
     public bool AllowOnBattery { get; set; }
 
+    [JsonPropertyName("encoding_quality")]
+    public string EncodingQuality { get; set; } = HelperEncodingQualityNames.Auto;
+
     public HelperAppSettings Clone() => new()
     {
         GpuSharing = GpuSharing,
         GpuLimitPercent = GpuLimitPercent,
         UploadLimitMbps = UploadLimitMbps,
         AllowOnBattery = AllowOnBattery,
+        EncodingQuality = EncodingQuality,
     };
 
     public void Normalize()
     {
         GpuLimitPercent = Math.Clamp(GpuLimitPercent, 5, 75);
         UploadLimitMbps = Math.Clamp(UploadLimitMbps, 0, 500);
+        EncodingQuality = HelperEncodingQualityNames.Format(
+            HelperEncodingQualityNames.ParseOrAuto(EncodingQuality));
     }
 }
 

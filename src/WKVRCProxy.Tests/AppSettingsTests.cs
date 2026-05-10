@@ -16,6 +16,7 @@ public class AppSettingsTests
         Assert.Equal(25, settings.Helper.GpuLimitPercent);
         Assert.Equal(0, settings.Helper.UploadLimitMbps);
         Assert.False(settings.Helper.AllowOnBattery);
+        Assert.Equal("auto", settings.Helper.EncodingQuality);
         Assert.True(settings.Terminal.StatusLine);
         Assert.True(settings.Terminal.Animations);
     }
@@ -89,5 +90,30 @@ public class AppSettingsTests
         Assert.Equal("off", setting.Get(settings));
         Assert.True(setting.TrySet(settings, "on", out string onError), onError);
         Assert.Equal("on", setting.Get(settings));
+    }
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("fast")]
+    [InlineData("balanced")]
+    [InlineData("quality")]
+    public void Settings_AcceptEncodingQuality(string value)
+    {
+        Assert.True(AppSettingsRegistry.TryFind("encoding-quality", out var setting));
+        var settings = new AppSettings().Normalize();
+
+        Assert.True(setting!.TrySet(settings, value, out string error), error);
+
+        Assert.Equal(value, setting.Get(settings));
+    }
+
+    [Fact]
+    public void Settings_RejectUnknownEncodingQuality()
+    {
+        Assert.True(AppSettingsRegistry.TryFind("encoding-quality", out var setting));
+        var settings = new AppSettings().Normalize();
+
+        Assert.False(setting!.TrySet(settings, "ultra", out string error));
+        Assert.Contains("expected auto", error);
     }
 }

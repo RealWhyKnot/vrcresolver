@@ -259,6 +259,7 @@ internal sealed class TerminalRenderer
             ("settings reset all", "reset every setting"),
             ("example", "settings sharing off"),
             ("example", "settings gpu-limit 25"),
+            ("example", "settings encoding-quality auto"),
             ("example", "settings upload-limit 0"),
         });
     }
@@ -404,8 +405,11 @@ internal sealed class TerminalRenderer
             ? "upload automatic"
             : "upload up to " + settings.Helper.UploadLimitMbps.ToString(CultureInfo.InvariantCulture) + " MB/s";
         string battery = settings.Helper.AllowOnBattery ? "battery allowed" : "battery paused";
+        string quality = settings.Helper.EncodingQuality == HelperEncodingQualityNames.Auto
+            ? "quality auto"
+            : "quality " + settings.Helper.EncodingQuality;
         return "GPU " + settings.Helper.GpuLimitPercent.ToString(CultureInfo.InvariantCulture)
-            + "%, " + upload + ", " + battery;
+            + "%, " + quality + ", " + upload + ", " + battery;
     }
 
     private static string DescribeTerminal(AppSettings settings)

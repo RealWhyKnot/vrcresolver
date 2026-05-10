@@ -37,7 +37,8 @@ internal static class TranscodeWorkerProcess
         int targetHeight,
         int targetBitrateKbps,
         bool hasAudio = true,
-        int audioBitrateKbps = 128)
+        int audioBitrateKbps = 128,
+        HelperEncodingQuality quality = HelperEncodingQuality.Fast)
     {
         if (string.IsNullOrWhiteSpace(ffmpegPath))
             throw new ArgumentException("FFmpeg path is required.", nameof(ffmpegPath));
@@ -107,7 +108,7 @@ internal static class TranscodeWorkerProcess
             encoder.EncoderName,
         });
 
-        AddBackendOptions(args, encoder);
+        AddBackendOptions(args, encoder, NormalizeQuality(quality));
 
         args.AddRange(new[]
         {
@@ -167,18 +168,61 @@ internal static class TranscodeWorkerProcess
             : "yuv420p";
     }
 
-    private static void AddBackendOptions(List<string> args, HardwareEncoderCapability encoder)
+    internal static HelperEncodingQuality NormalizeQuality(HelperEncodingQuality quality)
+    {
+        return quality is HelperEncodingQuality.Balanced or HelperEncodingQuality.Quality
+            ? quality
+            : HelperEncodingQuality.Fast;
+    }
+
+    internal static IReadOnlyList<string> BackendOptionsFor(HardwareEncoderCapability encoder, HelperEncodingQuality quality)
+    {
+        var args = new List<string>(10);
+        AddBackendOptions(args, encoder, NormalizeQuality(quality));
+        return args;
+    }
+
+    private static void AddBackendOptions(List<string> args, HardwareEncoderCapability encoder, HelperEncodingQuality quality)
     {
         switch (encoder.Backend)
         {
             case HardwareEncoderBackend.Nvenc:
-                args.AddRange(new[] { "-preset", "p2", "-tune", "ll", "-rc", "cbr", "-rc-lookahead", "0", "-forced-idr", "1" });
+                args.AddRange(new[]
+                {
+                    "-preset", quality switch
+                    {
+                        HelperEncodingQuality.Quality => "p5",
+                        HelperEncodingQuality.Balanced => "p4",
+                        _ => "p2",
+                    },
+                    "-tune", "ll",
+                    "-rc", "cbr",
+                    "-rc-lookahead", quality == HelperEncodingQuality.Quality ? "8" : "0",
+                    "-forced-idr", "1",
+                });
                 break;
             case HardwareEncoderBackend.Qsv:
-                args.AddRange(new[] { "-preset", "veryfast", "-low_power", "1" });
+                args.AddRange(new[]
+                {
+                    "-preset", quality switch
+                    {
+                        HelperEncodingQuality.Quality => "medium",
+                        HelperEncodingQuality.Balanced => "fast",
+                        _ => "veryfast",
+                    },
+                    "-low_power", quality == HelperEncodingQuality.Fast ? "1" : "0",
+                });
                 break;
             case HardwareEncoderBackend.Amf:
-                args.AddRange(new[] { "-quality", "speed" });
+                args.AddRange(new[]
+                {
+                    "-quality", quality switch
+                    {
+                        HelperEncodingQuality.Quality => "quality",
+                        HelperEncodingQuality.Balanced => "balanced",
+                        _ => "speed",
+                    },
+                });
                 break;
             case HardwareEncoderBackend.MediaFoundation:
                 args.AddRange(new[] { "-hw_encoding", "1", "-rate_control", "cbr" });

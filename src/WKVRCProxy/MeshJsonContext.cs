@@ -54,6 +54,7 @@ namespace WKVRCProxy;
 [JsonSerializable(typeof(RelayAppSettings))]
 [JsonSerializable(typeof(MaintenanceAppSettings))]
 [JsonSerializable(typeof(HelperAppSettings))]
+[JsonSerializable(typeof(HelperBenchmarkRecord))]
 // ReportingService outbound /report frames (anonymous failure
 // telemetry; gated by WKVRCPROXY_ANONYMOUS_REPORTING).
 [JsonSerializable(typeof(ReportingService.ReportPayload))]

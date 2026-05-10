@@ -159,6 +159,99 @@ public class FfmpegHelperTests
     }
 
     [Fact]
+    public void TranscodeWorkerProcess_UsesHigherNvencPresetForQuality()
+    {
+        var lease = NewLease();
+        var encoder = new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC");
+
+        TranscodeFfmpegCommand command = TranscodeWorkerProcess.BuildSegmentCommand(
+            "ffmpeg.exe",
+            lease,
+            encoder,
+            "seg_000042.ts",
+            targetWidth: 1280,
+            targetHeight: 720,
+            targetBitrateKbps: 2800,
+            quality: HelperEncodingQuality.Quality);
+
+        int presetIndex = command.Arguments.ToList().IndexOf("-preset");
+        Assert.True(presetIndex >= 0);
+        Assert.Equal("p5", command.Arguments[presetIndex + 1]);
+    }
+
+    [Fact]
+    public void HelperBenchmark_SelectsHighestPassingQuality()
+    {
+        var attempts = new[]
+        {
+            new HelperBenchmarkAttempt(HelperEncodingQuality.Quality, true, 1.70, "ok"),
+            new HelperBenchmarkAttempt(HelperEncodingQuality.Balanced, true, 1.40, "ok"),
+            new HelperBenchmarkAttempt(HelperEncodingQuality.Fast, true, 2.00, "ok"),
+        };
+
+        Assert.Equal(HelperEncodingQuality.Quality, HelperBenchmarkService.SelectQuality(attempts));
+    }
+
+    [Fact]
+    public void HelperBenchmark_FallsBackWhenQualityIsTooSlow()
+    {
+        var attempts = new[]
+        {
+            new HelperBenchmarkAttempt(HelperEncodingQuality.Quality, true, 1.10, "ok"),
+            new HelperBenchmarkAttempt(HelperEncodingQuality.Balanced, true, 1.30, "ok"),
+            new HelperBenchmarkAttempt(HelperEncodingQuality.Fast, true, 2.00, "ok"),
+        };
+
+        Assert.Equal(HelperEncodingQuality.Balanced, HelperBenchmarkService.SelectQuality(attempts));
+    }
+
+    [Fact]
+    public void HelperBenchmark_FingerprintChangesWithGpuInventory()
+    {
+        var location = new FfmpegLocation("ffmpeg.exe", FfmpegLocationKind.Bundled);
+        var probe = FfmpegCapabilityProbe.FromOutputs(
+            location,
+            "ffmpeg version 7.1.1",
+            "Encoders:\n V....D h264_nvenc NVIDIA NVENC H.264 encoder");
+
+        string first = HelperBenchmarkService.BuildFingerprint(probe, "gpu-a");
+        string second = HelperBenchmarkService.BuildFingerprint(probe, "gpu-b");
+
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void HelperBenchmarkCache_LoadsOnlyMatchingGpuFingerprint()
+    {
+        string temp = Path.Combine(Path.GetTempPath(), "wkvrcproxy-benchmark-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+        string path = Path.Combine(temp, "helper-benchmark.json");
+
+        try
+        {
+            var cache = new HelperBenchmarkCache(path);
+            cache.Save(new HelperBenchmarkRecord
+            {
+                Fingerprint = "gpu-a",
+                SelectedQuality = "quality",
+                RealtimeFactor = 2.0,
+                Encoder = "h264_nvenc",
+                EncoderBackend = "nvenc",
+                FfmpegVersion = "7.1.1",
+                TestedAtUtc = DateTime.UtcNow.ToString("o"),
+            });
+
+            Assert.True(cache.TryLoad("gpu-a", out HelperBenchmarkRecord matching));
+            Assert.Equal("quality", matching.SelectedQuality);
+            Assert.False(cache.TryLoad("gpu-b", out _));
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
     public void HelperSelfThrottle_PausesOnBatteryByDefault()
     {
         var settings = new AppSettings().Normalize();

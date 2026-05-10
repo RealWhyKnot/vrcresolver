@@ -67,6 +67,23 @@ internal static class AppSettingsRegistry
             aliases: ["battery", "helper.allow-on-battery"]),
 
         new AppSettingDefinition(
+            "encoding-quality",
+            "Video repair quality used by this PC.",
+            ["auto, fast, balanced, quality"],
+            static s => s.Helper.EncodingQuality == HelperEncodingQualityNames.Auto
+                ? "auto"
+                : s.Helper.EncodingQuality,
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!HelperEncodingQualityNames.TryParseUserValue(value, out HelperEncodingQuality parsed, out error))
+                    return false;
+                s.Helper.EncodingQuality = HelperEncodingQualityNames.Format(parsed);
+                return true;
+            },
+            static s => s.Helper.EncodingQuality = s_defaults.Helper.EncodingQuality,
+            aliases: ["quality", "preset", "encoder-quality", "helper.encoding-quality"]),
+
+        new AppSettingDefinition(
             "status-line",
             "Show the live status line at the prompt.",
             ["on", "off"],

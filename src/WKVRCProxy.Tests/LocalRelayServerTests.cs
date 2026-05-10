@@ -299,6 +299,72 @@ public class LocalRelayServerTests
         Assert.Equal(expected, LocalRelayManifestLocalizer.IsLikelyManifest(localPath, targetUrl, contentType));
     }
 
+    [Fact]
+    public void HitchDetector_ParsesLazyHlsSegments()
+    {
+        bool ok = LocalRelayHitchDetector.TryParseLazyHlsSegment(
+            "https://node1.whyknot.dev/api/proxy/lazy-hls/wk_abc/seg_000291.ts",
+            out string streamId,
+            out int segment);
+
+        Assert.True(ok);
+        Assert.Equal("wk_abc", streamId);
+        Assert.Equal(291, segment);
+    }
+
+    [Fact]
+    public void HitchDetector_FlagsSlowSegmentResponses()
+    {
+        LocalRelayHitchDetector.ResetForTests();
+
+        LocalRelayHitchDiagnostic? diagnostic = LocalRelayHitchDetector.AnalyzeForTests(
+            new LocalRelayTimingSample(
+                "GET",
+                "/play/a/seg_000001.ts",
+                "https://node1.whyknot.dev/api/proxy/lazy-hls/wk_abc/seg_000001.ts",
+                206,
+                HeaderMilliseconds: 1800,
+                TotalMilliseconds: 3200,
+                BytesOut: 128,
+                LazyHlsState: "HIT",
+                LazyHlsWaitMilliseconds: -1,
+                LazyHlsGenerator: null,
+                Failure: null),
+            new DateTime(2026, 5, 10, 23, 0, 0, DateTimeKind.Utc));
+
+        Assert.NotNull(diagnostic);
+        Assert.Contains("slow-upstream-headers", diagnostic!.Value.Reasons);
+        Assert.Contains("slow-segment-total", diagnostic.Value.Reasons);
+    }
+
+    [Fact]
+    public void HitchDetector_FlagsSegmentRetries()
+    {
+        LocalRelayHitchDetector.ResetForTests();
+        var now = new DateTime(2026, 5, 10, 23, 0, 0, DateTimeKind.Utc);
+        var sample = new LocalRelayTimingSample(
+            "GET",
+            "/play/a/seg_000042.ts",
+            "https://node1.whyknot.dev/api/proxy/lazy-hls/wk_abc/seg_000042.ts",
+            206,
+            HeaderMilliseconds: 20,
+            TotalMilliseconds: 40,
+            BytesOut: 128,
+            LazyHlsState: "HIT",
+            LazyHlsWaitMilliseconds: -1,
+            LazyHlsGenerator: null,
+            Failure: null);
+
+        Assert.Null(LocalRelayHitchDetector.AnalyzeForTests(sample, now));
+        LocalRelayHitchDiagnostic? retry = LocalRelayHitchDetector.AnalyzeForTests(
+            sample,
+            now.AddSeconds(2));
+
+        Assert.NotNull(retry);
+        Assert.Contains("segment-retry", retry!.Value.Reasons);
+        Assert.Equal(42, retry.Value.PreviousSegment);
+    }
+
     private static string ExtractTargetParam(string localized)
     {
         const string marker = "?target=";

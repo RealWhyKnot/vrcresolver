@@ -214,6 +214,7 @@ internal sealed partial class MeshClient
             DateTime sentAt = DateTime.UtcNow;
             try { await SendTextFrameAsync(PingFrame, ct).ConfigureAwait(false); }
             catch { return; }
+            QueueHelperStatusRefresh();
 
             try { await Task.Delay(PongDeadline, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }

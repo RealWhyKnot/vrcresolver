@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text;
 using WKVRCProxy.Shared;
@@ -121,15 +122,24 @@ internal sealed partial class LocalRelayServer : IDisposable
         using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         reqCts.CancelAfter(UpstreamHeaderDeadline);
         string targetUrl = "";
+        string path = "";
+        string method = "?";
+        int upstreamStatusCode = 0;
+        string? lazyHlsState = null;
+        long lazyHlsWaitMs = -1;
+        string? lazyHlsGenerator = null;
+        string? failure = null;
+        var sw = Stopwatch.StartNew();
         string reqId = s_verbose
             ? Interlocked.Increment(ref s_reqCounter).ToString("x6", System.Globalization.CultureInfo.InvariantCulture)
             : "";
         long t0 = s_verbose ? Environment.TickCount64 : 0;
+        long upstreamHeaderMs = -1;
         long bytesOut = 0;
         try
         {
-            string path = ctx.Request.Url?.AbsolutePath ?? "";
-            string method = ctx.Request.HttpMethod ?? "?";
+            path = ctx.Request.Url?.AbsolutePath ?? "";
+            method = ctx.Request.HttpMethod ?? "?";
             if (s_verbose)
             {
                 string rawUrl = ctx.Request.RawUrl ?? "";
@@ -197,6 +207,11 @@ internal sealed partial class LocalRelayServer : IDisposable
                 outboundReq,
                 HttpCompletionOption.ResponseHeadersRead,
                 reqCts.Token).ConfigureAwait(false);
+            upstreamHeaderMs = sw.ElapsedMilliseconds;
+            upstreamStatusCode = (int)resp.StatusCode;
+            lazyHlsState = FirstHeader(resp, "X-Lazy-HLS");
+            lazyHlsWaitMs = ParseLongHeader(resp, "X-Lazy-HLS-Wait-Ms");
+            lazyHlsGenerator = FirstHeader(resp, "X-Lazy-HLS-Generator");
 
             if (s_verbose)
             {
@@ -308,6 +323,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                 try { n = await upstream.ReadAsync(buf.AsMemory(), idle.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (!_cts.IsCancellationRequested && idle.IsCancellationRequested)
                 {
+                    failure = "body_idle_timeout";
                     ConsoleUx.Warn(LogComponent.Relay, "stream idle timeout for " + ShortUrl(targetUrl));
                     return;
                 }
@@ -321,21 +337,40 @@ internal sealed partial class LocalRelayServer : IDisposable
         }
         catch (HttpListenerException hle)
         {
+            failure = "client_disconnect";
             if (s_verbose) Verbose("req=" + reqId + " client-disconnect (HttpListenerException ec=" + hle.ErrorCode + ") bytes-out=" + bytesOut);
         }
         catch (System.IO.IOException ioe)
         {
+            failure = "client_disconnect";
             if (s_verbose) Verbose("req=" + reqId + " client-disconnect (IOException: " + ioe.Message + ") bytes-out=" + bytesOut);
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* shutdown */ }
         catch (Exception ex)
         {
+            failure = ex.GetType().Name;
             ConsoleUx.Warn(LogComponent.Relay, "request failed for " + ShortUrl(targetUrl)
                 + ": " + ex.GetType().Name + ": " + ex.Message);
             try { ctx.Response.StatusCode = 502; } catch { }
         }
         finally
         {
+            if (!string.IsNullOrWhiteSpace(targetUrl))
+            {
+                LocalRelayHitchDetector.Record(new LocalRelayTimingSample(
+                    method,
+                    path,
+                    targetUrl,
+                    upstreamStatusCode,
+                    upstreamHeaderMs,
+                    sw.ElapsedMilliseconds,
+                    bytesOut,
+                    lazyHlsState,
+                    lazyHlsWaitMs,
+                    lazyHlsGenerator,
+                    failure));
+            }
+
             try { ctx.Response.Close(); } catch { /* best-effort */ }
         }
     }
@@ -421,6 +456,23 @@ internal sealed partial class LocalRelayServer : IDisposable
             if (val.Length > 200) val = val.Substring(0, 200) + "...";
             Logger.WriteFileOnly(prefix + " " + h.Key + ": " + val);
         }
+    }
+
+    private static string? FirstHeader(HttpResponseMessage response, string name)
+    {
+        if (response.Headers.TryGetValues(name, out var values))
+            return values.FirstOrDefault();
+        if (response.Content.Headers.TryGetValues(name, out values))
+            return values.FirstOrDefault();
+        return null;
+    }
+
+    private static long ParseLongHeader(HttpResponseMessage response, string name)
+    {
+        string? value = FirstHeader(response, name);
+        return long.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out long parsed)
+            ? parsed
+            : -1;
     }
 
     private static void Verbose(string message)

@@ -172,7 +172,7 @@ internal sealed partial class MeshClient
                     }
                 }
                 _welcomeTcs?.TrySetResult(welcome);
-                QueueHelperStatusRefresh();
+                QueueHelperStatusRefresh(force: true);
                 doc.Dispose();
                 return;
             }
@@ -254,7 +254,7 @@ internal sealed partial class MeshClient
                 // here. ResolveAsync waiters key off _serverProtocolVersion
                 // and _serverFeatures, both of which are now set.
                 _welcomeTcs?.TrySetResult(null);
-                QueueHelperStatusRefresh();
+                QueueHelperStatusRefresh(force: true);
                 doc.Dispose();
                 return;
             }

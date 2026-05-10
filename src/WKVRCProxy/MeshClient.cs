@@ -39,6 +39,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
     private static readonly Uri ApexUrl = new("https://whyknot.dev/");
     private static readonly TimeSpan ApexAttemptTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan HelperStatusRefreshInterval = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan PongDeadline = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ApexReResolveAfter = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan WelcomeTimeout = TimeSpan.FromSeconds(1);
@@ -115,6 +116,8 @@ internal sealed partial class MeshClient : IAsyncDisposable
     private Task? _runner;
     private DateTime _firstReconnectFailureUtc = DateTime.MinValue;
     private DateTime _lastPongUtc = DateTime.MinValue;
+    private long _lastHelperStatusRefreshTicks;
+    private int _helperStatusRefreshRunning;
     private int _reconnectAttempt;
     private bool _wasConnected;
 
@@ -236,10 +239,18 @@ internal sealed partial class MeshClient : IAsyncDisposable
             + " hash=" + (cachedHash ?? "null"));
     }
 
-    private void QueueHelperStatusRefresh()
+    private void QueueHelperStatusRefresh(bool force = false)
     {
         if (!ServerSupportsFeature(WireConstants.FeatureHelperTranscode))
             return;
+
+        DateTime now = DateTime.UtcNow;
+        long lastTicks = Interlocked.Read(ref _lastHelperStatusRefreshTicks);
+        if (!force && lastTicks > 0 && now - new DateTime(lastTicks, DateTimeKind.Utc) < HelperStatusRefreshInterval)
+            return;
+        if (Interlocked.CompareExchange(ref _helperStatusRefreshRunning, 1, 0) != 0)
+            return;
+        Interlocked.Exchange(ref _lastHelperStatusRefreshTicks, now.Ticks);
 
         _ = Task.Run(async () =>
         {
@@ -249,6 +260,10 @@ internal sealed partial class MeshClient : IAsyncDisposable
                 FfmpegCapabilityProbeResult probe = await FfmpegCapabilityProbe.ProbeAsync(
                     AppContext.BaseDirectory,
                     FfmpegCapabilityProbe.DefaultTimeout,
+                    CancellationToken.None).ConfigureAwait(false);
+                HelperEncodingQuality quality = await HelperBenchmarkService.ResolveQualityAsync(
+                    settings,
+                    probe,
                     CancellationToken.None).ConfigureAwait(false);
 
                 var frame = new HelperStatusFrame
@@ -268,12 +283,17 @@ internal sealed partial class MeshClient : IAsyncDisposable
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperStatusFrame);
                 await SendTextFrameAsync(bytes, CancellationToken.None).ConfigureAwait(false);
                 Logger.WriteFileOnly("[mesh][helper] status sent status=" + frame.Status
-                    + " encoder=" + (frame.Encoder ?? "<none>"));
+                    + " encoder=" + (frame.Encoder ?? "<none>")
+                    + " quality=" + HelperEncodingQualityNames.Format(quality));
             }
             catch (Exception ex)
             {
                 Logger.WriteFileOnly("[mesh][helper] status send failed: "
                     + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _helperStatusRefreshRunning, 0);
             }
         });
     }

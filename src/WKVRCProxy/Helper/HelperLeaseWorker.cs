@@ -48,6 +48,10 @@ internal static class HelperLeaseWorker
             if (!probe.PreferredEncoder.HasValue)
                 return Result(false, "no_encoder", probe.Message);
 
+            HelperEncodingQuality quality = await HelperBenchmarkService.ResolveQualityAsync(
+                settings,
+                probe,
+                ct).ConfigureAwait(false);
             encoderName = probe.PreferredEncoder.Value.EncoderName;
             var lease = ToLease(leaseFrame);
             TranscodeFfmpegCommand command = TranscodeWorkerProcess.BuildSegmentCommand(
@@ -58,7 +62,8 @@ internal static class HelperLeaseWorker
                 leaseFrame.TargetWidth,
                 leaseFrame.TargetHeight,
                 leaseFrame.TargetBitrateKbps,
-                hasAudio: leaseFrame.HasAudio);
+                hasAudio: leaseFrame.HasAudio,
+                quality: quality);
 
             using var process = new Process { StartInfo = command.ToStartInfo() };
             process.Start();
