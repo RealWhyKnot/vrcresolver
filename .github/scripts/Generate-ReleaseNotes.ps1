@@ -352,7 +352,7 @@ if ($Repo -and ($Repo -match '/')) {
 }
 $tagCommitSha = ''
 $tagCommitShort = ''
-$tagSha = & git rev-parse $Tag 2>$null
+$tagSha = & git rev-parse "$Tag^{}" 2>$null
 if ($LASTEXITCODE -eq 0 -and $tagSha) {
     $tagCommitSha = $tagSha.Trim()
     if ($tagCommitSha.Length -ge 12) { $tagCommitShort = $tagCommitSha.Substring(0, 12) }

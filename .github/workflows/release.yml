@@ -48,6 +48,13 @@ jobs:
           # branch (not main) and uses gh to open + auto-merge the PR.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Fetch release tags
+        shell: pwsh
+        run: |
+          git fetch --force --tags origin
+          $tags = git tag --list 'v*'
+          if (-not $tags) { throw "No release tags available after fetch; release-note range would walk from root." }
+
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
         with:
