@@ -107,6 +107,7 @@ The most recent release is at the top.
 - **relay:** Recognise /api/proxy/<ext> token form when extracting extension (0dac0a6)
 - **release:** Retry release-body verify to tolerate GitHub API settle time (a4291aa)
 - **relay:** Redirect to .m3u8 path when HLS body served at non-HLS extension (158e266)
+- **relay:** Keep WhyKnot playback URLs local (341e1b0)
 
 ---
 
