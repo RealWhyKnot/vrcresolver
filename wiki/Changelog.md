@@ -13,6 +13,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ### Added
 - **watchdog:** Add interactive terminal and HTTPS relay bootstrap (b0475d0)
+- **watchdog:** Add advanced terminal renderer (11749d3)
 
 ---
 
