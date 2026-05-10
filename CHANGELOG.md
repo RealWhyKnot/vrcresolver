@@ -15,6 +15,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **watchdog:** Add interactive terminal and HTTPS relay bootstrap (b0475d0)
 - **watchdog:** Add advanced terminal renderer (11749d3)
 - **helper:** Ship ffmpeg and handle transcode leases (f150370)
+- **helper:** Add hitch diagnostics and benchmarked presets (036692e)
 
 ---
 
