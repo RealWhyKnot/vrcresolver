@@ -186,9 +186,14 @@ jobs:
             $delay = 2
             $lastActual = ''
             for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-              $raw = & gh release view $Tag --json body --jq '.body'
+              $raw = & gh release view $Tag --json body
               if ($LASTEXITCODE -ne 0) { throw "gh release view $Tag failed: $raw" }
-              $actual = ($raw -replace "`r`n","`n").TrimEnd("`n")
+              try {
+                $actual = [string](($raw | ConvertFrom-Json).body)
+              } catch {
+                throw "Failed to parse gh release view JSON for $Tag: $_"
+              }
+              $actual = ($actual -replace "`r`n","`n").TrimEnd("`n")
               $lastActual = $actual
               $actualSha = Get-StringSha256 -Text $actual
               if ($actualSha -eq $expectedSha) {
