@@ -73,6 +73,37 @@ public class WhyKnotUrlPolicyTests
     }
 
     [Fact]
+    public void TrustGatewayUrlBuilder_CanEmitHttpsGatewayUrls()
+    {
+        const string target = "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc";
+
+        bool ok = TrustGatewayUrlBuilder.TryBuild(
+            51234,
+            target,
+            "test-session",
+            "https",
+            out string localUrl);
+
+        Assert.True(ok);
+        Assert.StartsWith(
+            "https://localhost.youtube.com:51234/play/testsession/manifest.m3u8?target=",
+            localUrl);
+        Assert.True(TrustGatewayUrlBuilder.TryExtractTarget(localUrl, out string extracted));
+        Assert.Equal(target, extracted);
+    }
+
+    [Theory]
+    [InlineData("http", true)]
+    [InlineData("https", true)]
+    [InlineData("HTTPS", true)]
+    [InlineData("ftp", false)]
+    [InlineData("", false)]
+    public void TrustGatewayUrlBuilder_AllowsOnlyHttpAndHttpsGatewaySchemes(string scheme, bool expected)
+    {
+        Assert.Equal(expected, TrustGatewayUrlBuilder.IsAllowedGatewayScheme(scheme));
+    }
+
+    [Fact]
     public void TrustGatewayUrlBuilder_ExtractTargetRejectsNonGatewayUrls()
     {
         Assert.False(TrustGatewayUrlBuilder.TryExtractTarget(

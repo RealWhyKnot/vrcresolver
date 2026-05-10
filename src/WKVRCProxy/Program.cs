@@ -24,6 +24,7 @@ internal static class Program
     private static ResolveCache? s_resolveCache;
     private static RelayPortManager? s_relayPort;
     private static LocalRelayServer? s_relay;
+    private static InteractiveTerminal? s_terminal;
     private static readonly ManualResetEventSlim s_quitSignal = new(false);
     private static volatile bool s_fastShutdown;
 
@@ -83,6 +84,8 @@ internal static class Program
             {
                 case HostsManager.AddArg: return HostsManager.RunAddInElevatedChild();
                 case HostsManager.RemoveArg: return HostsManager.RunRemoveInElevatedChild();
+                case LocalRelayTlsManager.BootstrapArg: return LocalRelayTlsManager.RunBootstrapInElevatedChild(args);
+                case LocalRelayTlsManager.RemoveArg: return LocalRelayTlsManager.RunRemoveInElevatedChild();
             }
         }
 
@@ -241,17 +244,43 @@ internal static class Program
         s_relayPort = new RelayPortManager();
         if (s_relayPort.Initialize())
         {
+            string relayScheme = LocalRelayTlsManager.TryEnsureReadyForPort(s_relayPort.CurrentPort)
+                ? "https"
+                : "http";
+            s_relayPort.WriteSchemeFile(relayScheme);
             try
             {
-                s_relay = new LocalRelayServer(s_relayPort.CurrentPort);
+                s_relay = new LocalRelayServer(s_relayPort.CurrentPort, relayScheme);
                 s_relay.Start();
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[relay][warn] listener start failed: " + ex.Message
-                    + " -- public-instance trust gateway disabled");
-                s_relay = null;
-                s_relayPort.DeletePortFile();
+                if (string.Equals(relayScheme, "https", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("[relay][warn] HTTPS listener start failed: " + ex.Message
+                        + " -- retrying HTTP relay");
+                    try
+                    {
+                        relayScheme = "http";
+                        s_relayPort.WriteSchemeFile(relayScheme);
+                        s_relay = new LocalRelayServer(s_relayPort.CurrentPort, relayScheme);
+                        s_relay.Start();
+                    }
+                    catch (Exception httpEx)
+                    {
+                        Console.WriteLine("[relay][warn] HTTP listener start failed: " + httpEx.Message
+                            + " -- public-instance trust gateway disabled");
+                        s_relay = null;
+                        s_relayPort.DeletePortFile();
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("[relay][warn] listener start failed: " + ex.Message
+                        + " -- public-instance trust gateway disabled");
+                    s_relay = null;
+                    s_relayPort.DeletePortFile();
+                }
             }
         }
         else
@@ -312,6 +341,14 @@ internal static class Program
         // current with upstream releases. Once per 24 h. Never touches
         // VRChat's pinned yt-dlp-og.exe nor our patched yt-dlp.exe wrapper.
         YtDlpUpdater.StartBackgroundCheck();
+
+        // Interactive command surface. Kept after startup so the prompt does
+        // not fight the banner and one-shot setup lines. Falls back silently
+        // when stdin/stdout are redirected.
+        s_terminal = new InteractiveTerminal(
+            requestShutdown: () => s_quitSignal.Set(),
+            meshConnected: () => s_mesh?.IsConnected == true);
+        s_terminal.Start();
 
         s_quitSignal.Wait();
         Console.WriteLine("Shutting down...");
@@ -375,6 +412,16 @@ internal static class Program
         // shutdown to stay correct.
         if (!fast)
         {
+            if (s_terminal != null)
+            {
+                try
+                {
+                    int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
+                    await WithTimeout(s_terminal.StopAsync(), Math.Min(remain, 500), "terminal").ConfigureAwait(false);
+                }
+                catch (Exception ex) { Console.WriteLine("[shutdown][warn] terminal: " + ex.Message); }
+            }
+
             if (s_heartbeat != null)
             {
                 try
@@ -503,6 +550,7 @@ internal static class Program
             sb.AppendLine("patch:   <not constructed>");
         }
         sb.AppendLine("ipc:     " + (s_ipc != null ? "<running>" : "<not constructed>"));
+        sb.AppendLine("terminal:" + (s_terminal != null ? " <running>" : " <not constructed>"));
         sb.AppendLine("shutdown_started=" + s_shutdownStarted + " fast_shutdown=" + s_fastShutdown);
         return sb.ToString();
     }

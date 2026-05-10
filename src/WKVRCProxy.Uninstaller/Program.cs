@@ -15,9 +15,10 @@ namespace WKVRCProxy.Uninstaller;
 // 3. Remove the hosts entry (UAC re-exec via WKVRCProxy.exe
 //    --remove-hosts-entry, but only if the entry is actually present —
 //    avoids a UAC prompt for users who never enabled public-instance mode)
-// 4. Wipe %LOCALAPPDATA%Low\WKVRCProxy\ (current state root) AND the
+// 4. Remove the localhost.youtube.com HTTPS cert/bindings if present
+// 5. Wipe %LOCALAPPDATA%Low\WKVRCProxy\ (current state root) AND the
 //    legacy %LOCALAPPDATA%\WKVRCProxy\ tree
-// 5. Schedule install-dir self-deletion via cmd.exe /c, capturing the
+// 6. Schedule install-dir self-deletion via cmd.exe /c, capturing the
 //    rmdir output to %TEMP% so a stuck rmdir leaves a diagnostic trail
 //
 // Per-step start/ok/skipped breadcrumbs are emitted to the rolling log so
@@ -40,6 +41,7 @@ internal static class Program
         errors += RunStep("close-watchdog", () => CloseRunningWatchdog(installDir));
         errors += RunStep("restore-yt-dlp", () => RestoreYtDlp(installDir));
         errors += RunStep("remove-hosts", () => RemoveHostsEntry(watchdogExe));
+        errors += RunStep("remove-relay-tls", () => RemoveRelayTls(watchdogExe));
         errors += RunStep("wipe-state", WipeState);
         errors += RunStep("schedule-self-delete", () => ScheduleInstallDirDelete(installDir));
 
@@ -233,6 +235,35 @@ internal static class Program
         catch (System.ComponentModel.Win32Exception)
         {
             Console.WriteLine("UAC declined — hosts entry left in place. Remove it manually if desired.");
+        }
+    }
+
+    private static void RemoveRelayTls(string watchdogExe)
+    {
+        if (!File.Exists(watchdogExe))
+        {
+            Console.WriteLine("[uninstall] remove-relay-tls skipped: watchdog exe missing (can't re-exec elevated)");
+            return;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = watchdogExe,
+                Arguments = "--local-relay-tls-remove",
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            using var proc = Process.Start(psi);
+            proc?.WaitForExit(30000);
+            if (proc != null && !proc.HasExited)
+                Console.WriteLine("[uninstall] remove-relay-tls elevation child still running after 30s");
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            Console.WriteLine("UAC declined -- localhost.youtube.com HTTPS certificate/bindings may be left in place.");
         }
     }
 

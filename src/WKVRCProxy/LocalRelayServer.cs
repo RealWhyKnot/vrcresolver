@@ -5,11 +5,11 @@ using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
-// Local-relay HTTP listener at http://127.0.0.1:{port}/. Trust gateway
+// Local-relay listener at http(s)://127.0.0.1:{port}/. Trust gateway
 // for AVPro: VRChat's AVPro player ships a built-in trusted-host
 // allowlist that includes `*.youtube.com`. The hosts file maps
 // `localhost.youtube.com -> 127.0.0.1`, so AVPro fetches
-//   http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>
+//   http(s)://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>
 // AVPro's trust check passes on the localhost.youtube.com host; the listener
 // decodes target=, forwards to the real upstream (typically
 // `https://node1.whyknot.dev/api/proxy?...`), and streams bytes back.
@@ -25,9 +25,9 @@ namespace WKVRCProxy;
 // proxy URLs are accepted or localized, so localhost cannot become a general
 // open proxy for local processes.
 //
-// Phase 1: HTTP-only. HTTPS + per-machine cert lifecycle is a separate
-// follow-up. AVPro accepts plain http:// on a non-443 port for hostnames
-// matching its allowlist (legacy implementation proved this for years).
+// HTTPS is preferred when the per-machine certificate + Windows HTTP.sys
+// binding are available. HTTP remains a fallback so declining UAC does not
+// break playback on worlds that still allow plain local loopback URLs.
 //
 // AOT-clean: HttpListener + HttpClient + System.IO. No reflection, no dynamic codegen.
 [SupportedOSPlatform("windows")]
@@ -38,6 +38,7 @@ internal sealed partial class LocalRelayServer : IDisposable
     private const int CopyBufferSize = 80 * 1024;
 
     private readonly int _port;
+    private readonly string _scheme;
     private readonly HttpListener _listener;
     private readonly CancellationTokenSource _cts = new();
     private readonly HttpClient _http;
@@ -52,11 +53,14 @@ internal sealed partial class LocalRelayServer : IDisposable
     private static readonly bool s_verbose = BuildInfo.IsDevBuild;
     private static long s_reqCounter;
 
-    public LocalRelayServer(int port)
+    public LocalRelayServer(int port, string scheme = "http")
     {
         _port = port;
+        _scheme = TrustGatewayUrlBuilder.IsAllowedGatewayScheme(scheme)
+            ? scheme.ToLowerInvariant()
+            : "http";
         _listener = new HttpListener();
-        _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
+        _listener.Prefixes.Add(_scheme + "://127.0.0.1:" + port + "/");
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
@@ -76,7 +80,7 @@ internal sealed partial class LocalRelayServer : IDisposable
         catch (HttpListenerException ex)
         {
             Console.WriteLine("[relay][error] HttpListener.Start failed on port "
-                + _port + ": " + ex.Message);
+                + _port + " scheme=" + _scheme + ": " + ex.Message);
             throw;
         }
         _acceptLoop = Task.Run(AcceptLoopAsync);
@@ -183,6 +187,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                 return;
             }
             if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " kind=" + target.Kind + " target=" + ShortUrl(targetUrl));
+            WatchdogStats.RecordRelayRequest(targetUrl);
 
             using var outboundReq = new HttpRequestMessage(
                 new HttpMethod(method), targetUrl);
@@ -264,6 +269,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                 }
                 await ctx.Response.OutputStream.WriteAsync(body, _cts.Token).ConfigureAwait(false);
                 bytesOut = body.Length;
+                WatchdogStats.RecordRelayBytes(targetUrl, body.Length);
                 return;
             }
 
@@ -309,6 +315,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                 if (n == 0) break;
                 await ctx.Response.OutputStream.WriteAsync(buf.AsMemory(0, n), _cts.Token).ConfigureAwait(false);
                 bytesOut += n;
+                WatchdogStats.RecordRelayBytes(targetUrl, n);
             }
             if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> " + ctx.Response.StatusCode
                 + " stream bytes-out=" + bytesOut + " elapsed=" + (Environment.TickCount64 - t0) + "ms");

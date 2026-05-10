@@ -4,10 +4,10 @@ namespace WKVRCProxy.YtDlp;
 
 internal static partial class Program
 {
-    // Trust-gateway URL wrap (Phase 1, HTTP-only). The watchdog binds a
-    // local HTTP listener at 127.0.0.1:{ephemeral} and writes the port to
-    // %LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt. We rewrite the resolved
-    // URL to `http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>`
+    // Trust-gateway URL wrap. The watchdog binds a local listener at
+    // 127.0.0.1:{port} and writes relay_port.txt plus relay_scheme.txt to
+    // %LOCALAPPDATA%Low\WKVRCProxy\. We rewrite the resolved URL to
+    // `{scheme}://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>`
     // so VRChat's AVPro allowlist (which has *.youtube.com) accepts it in
     // default-public worlds. The hosts file pins
     // `localhost.youtube.com -> 127.0.0.1` so the request lands on the
@@ -32,8 +32,9 @@ internal static partial class Program
 
         int? port = TryReadRelayPort();
         if (!port.HasValue) return url;
+        string scheme = TryReadRelayScheme();
 
-        return TrustGatewayUrlBuilder.TryBuild(port.Value, url, session: null, out string localUrl)
+        return TrustGatewayUrlBuilder.TryBuild(port.Value, url, session: null, scheme, out string localUrl)
             ? localUrl
             : url;
     }
@@ -51,5 +52,18 @@ internal static partial class Program
         }
         catch { /* best-effort; missing port = no wrap */ }
         return null;
+    }
+
+    private static string TryReadRelayScheme()
+    {
+        try
+        {
+            string schemeFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_scheme.txt");
+            if (!File.Exists(schemeFile)) return "http";
+            string text = File.ReadAllText(schemeFile).Trim();
+            return TrustGatewayUrlBuilder.IsAllowedGatewayScheme(text) ? text.ToLowerInvariant() : "http";
+        }
+        catch { /* best-effort; bad scheme = existing http behaviour */ }
+        return "http";
     }
 }

@@ -7,9 +7,13 @@ namespace WKVRCProxy.Shared;
 public static class TrustGatewayUrlBuilder
 {
     public static bool TryBuild(int port, string targetUrl, string? session, out string localUrl)
+        => TryBuild(port, targetUrl, session, "http", out localUrl);
+
+    public static bool TryBuild(int port, string targetUrl, string? session, string scheme, out string localUrl)
     {
         localUrl = "";
         if (port <= 1024 || port >= 65536) return false;
+        if (!IsAllowedGatewayScheme(scheme)) return false;
         if (string.IsNullOrWhiteSpace(targetUrl)) return false;
         if (IsLocalTrustGatewayUrl(targetUrl)) return false;
         if (!WhyKnotUrlPolicy.IsWhyKnotPlaybackProxyUrl(targetUrl)) return false;
@@ -26,7 +30,7 @@ public static class TrustGatewayUrlBuilder
         string ext = WhyKnotUrlPolicy.PlaybackProxyExtensionForTrustGateway(targetUrl);
         string suffix = string.IsNullOrEmpty(ext) ? "" : "." + ext;
 
-        localUrl = "http://localhost.youtube.com:"
+        localUrl = scheme.ToLowerInvariant() + "://localhost.youtube.com:"
             + port.ToString(CultureInfo.InvariantCulture)
             + "/play/" + effectiveSession + "/manifest" + suffix
             + "?target=" + encoded;
@@ -94,6 +98,12 @@ public static class TrustGatewayUrlBuilder
     {
         return Uri.TryCreate(url, UriKind.Absolute, out var uri)
             && IsLocalTrustGatewayHost(uri.Host);
+    }
+
+    public static bool IsAllowedGatewayScheme(string? scheme)
+    {
+        return string.Equals(scheme, "http", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? FindQueryValue(string query, string name)

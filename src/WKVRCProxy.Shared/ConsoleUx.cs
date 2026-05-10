@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 
 namespace WKVRCProxy.Shared;
 
@@ -20,6 +21,7 @@ public enum LogComponent
     Wrapper,
     Heartbeat,
     Relay,
+    Terminal,
     Shutdown,
 }
 
@@ -35,6 +37,7 @@ public enum ResolveStatus
 public static class ConsoleUx
 {
     private static readonly object s_lock = new();
+    private static IConsoleOverlay? s_overlay;
 
     // Component palette. Picked for visual contrast across the default
     // Windows console + most terminals: each component lands on a
@@ -51,6 +54,7 @@ public static class ConsoleUx
         LogComponent.Wrapper   => ConsoleColor.DarkMagenta,
         LogComponent.Heartbeat => ConsoleColor.DarkGray,
         LogComponent.Relay     => ConsoleColor.DarkCyan,
+        LogComponent.Terminal  => ConsoleColor.Gray,
         LogComponent.Shutdown  => ConsoleColor.DarkRed,
         _                      => ConsoleColor.Gray,
     };
@@ -64,9 +68,28 @@ public static class ConsoleUx
         LogComponent.Wrapper   => "[wrapper]",
         LogComponent.Heartbeat => "[heartbeat]",
         LogComponent.Relay     => "[relay]",
+        LogComponent.Terminal  => "[terminal]",
         LogComponent.Shutdown  => "[shutdown]",
         _                      => "[?]",
     };
+
+    public static IDisposable UseOverlay(IConsoleOverlay overlay)
+    {
+        if (overlay == null) throw new ArgumentNullException(nameof(overlay));
+        lock (s_lock)
+        {
+            TryClearOverlayLocked();
+            s_overlay = overlay;
+            TryRenderOverlayLocked();
+        }
+        return new OverlayRegistration(overlay);
+    }
+
+    public static void WithConsoleLock(Action action)
+    {
+        if (action == null) throw new ArgumentNullException(nameof(action));
+        lock (s_lock) action();
+    }
 
     public static void Write(LogComponent c, string body)
     {
@@ -260,6 +283,7 @@ public static class ConsoleUx
     {
         lock (s_lock)
         {
+            TryClearOverlayLocked();
             ConsoleColor prev;
             try { prev = Console.ForegroundColor; }
             catch { prev = ConsoleColor.Gray; }
@@ -272,6 +296,47 @@ public static class ConsoleUx
             {
                 try { Console.ForegroundColor = prev; } catch { /* no-tty */ }
             }
+            TryRenderOverlayLocked();
         }
     }
+
+    private static void TryClearOverlayLocked()
+    {
+        try { s_overlay?.ClearLocked(); }
+        catch { s_overlay = null; }
+    }
+
+    private static void TryRenderOverlayLocked()
+    {
+        try { s_overlay?.RenderLocked(); }
+        catch { s_overlay = null; }
+    }
+
+    private sealed class OverlayRegistration : IDisposable
+    {
+        private readonly IConsoleOverlay _overlay;
+        private int _disposed;
+
+        public OverlayRegistration(IConsoleOverlay overlay)
+        {
+            _overlay = overlay;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            lock (s_lock)
+            {
+                if (!ReferenceEquals(s_overlay, _overlay)) return;
+                TryClearOverlayLocked();
+                s_overlay = null;
+            }
+        }
+    }
+}
+
+public interface IConsoleOverlay
+{
+    void ClearLocked();
+    void RenderLocked();
 }

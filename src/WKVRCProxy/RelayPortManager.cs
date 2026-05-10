@@ -8,8 +8,8 @@ namespace WKVRCProxy;
 
 // Picks an ephemeral high port on 127.0.0.1 for the local-relay HTTP
 // listener and writes it to %LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt
-// so the patched yt-dlp wrapper can read it and emit the trust-gateway
-// URL (`http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>`) to
+// plus relay_scheme.txt so the patched yt-dlp wrapper can read it and emit
+// the trust-gateway URL (`{scheme}://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>`) to
 // VRChat instead of raw WhyKnot playback proxy URLs that AVPro's allowlist rejects.
 //
 // Port-persistence behavior across watchdog restarts: read the previous
@@ -24,10 +24,14 @@ internal sealed class RelayPortManager
     public int CurrentPort { get; private set; }
 
     private readonly string _portFile;
+    private readonly string _lastPortFile;
+    private readonly string _schemeFile;
 
     public RelayPortManager()
     {
         _portFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_port.txt");
+        _lastPortFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_last_port.txt");
+        _schemeFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_scheme.txt");
     }
 
     public bool Initialize()
@@ -39,6 +43,7 @@ internal sealed class RelayPortManager
         {
             CurrentPort = prev.Value;
             WritePortFile(CurrentPort);
+            WriteLastPortFile(CurrentPort);
             Console.WriteLine("[relay] reusing previous port " + CurrentPort);
             return true;
         }
@@ -51,14 +56,24 @@ internal sealed class RelayPortManager
 
         CurrentPort = fresh;
         WritePortFile(CurrentPort);
+        WriteLastPortFile(CurrentPort);
         Console.WriteLine("[relay] listening port " + CurrentPort
             + (prev.HasValue ? " (previous " + prev.Value + " was busy)" : ""));
         return true;
     }
 
+    public void WriteSchemeFile(string scheme)
+    {
+        if (!TrustGatewayUrlBuilder.IsAllowedGatewayScheme(scheme))
+            scheme = "http";
+        TryWriteAtomic(_schemeFile, scheme.ToLowerInvariant());
+    }
+
     public void DeletePortFile()
     {
         try { if (File.Exists(_portFile)) File.Delete(_portFile); }
+        catch { /* best-effort cleanup */ }
+        try { if (File.Exists(_schemeFile)) File.Delete(_schemeFile); }
         catch { /* best-effort cleanup */ }
     }
 
@@ -66,8 +81,8 @@ internal sealed class RelayPortManager
     {
         try
         {
-            if (!File.Exists(_portFile)) return null;
-            string text = File.ReadAllText(_portFile).Trim();
+            if (!File.Exists(_lastPortFile)) return null;
+            string text = File.ReadAllText(_lastPortFile).Trim();
             if (int.TryParse(text, out int p) && p > 1024 && p < 65536)
                 return p;
         }
@@ -103,15 +118,25 @@ internal sealed class RelayPortManager
 
     private void WritePortFile(int port)
     {
+        TryWriteAtomic(_portFile, port.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private void WriteLastPortFile(int port)
+    {
+        TryWriteAtomic(_lastPortFile, port.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static void TryWriteAtomic(string path, string content)
+    {
         try
         {
-            string tmp = _portFile + ".tmp";
-            File.WriteAllText(tmp, port.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            File.Move(tmp, _portFile, overwrite: true);
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, content);
+            File.Move(tmp, path, overwrite: true);
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[relay][warn] could not write port file: " + ex.Message);
+            Console.WriteLine("[relay][warn] could not write " + Path.GetFileName(path) + ": " + ex.Message);
         }
     }
 }
