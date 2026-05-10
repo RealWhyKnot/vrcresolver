@@ -44,6 +44,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          fetch-tags: true
           # GITHUB_TOKEN is enough: the promotion-PR step pushes the bot's
           # branch (not main) and uses gh to open + auto-merge the PR.
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -51,9 +52,10 @@ jobs:
       - name: Fetch release tags
         shell: pwsh
         run: |
-          git fetch --force --tags origin
+          git fetch --force --prune origin '+refs/tags/*:refs/tags/*'
           $tags = git tag --list 'v*'
           if (-not $tags) { throw "No release tags available after fetch; release-note range would walk from root." }
+          $tags | Sort-Object | ForEach-Object { Write-Host "release-tag=$_" }
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
