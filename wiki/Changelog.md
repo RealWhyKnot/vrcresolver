@@ -15,7 +15,7 @@ _No notable changes since the last release._
 
 ---
 
-## [v2026.5.10.4](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.5.10.4) — 2026-05-10
+## [v2026.5.10.4](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.5.10.4) - 2026-05-10
 
 ### Added
 - Local WhyKnot trust gateway for VRChat video players, including `localhost.youtube.com` playback URLs that keep first-party WhyKnot streams inside the allowed playback path.

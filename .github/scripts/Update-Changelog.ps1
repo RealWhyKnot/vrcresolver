@@ -380,8 +380,7 @@ if ($Mode -eq 'Promote') {
     if (-not $Repo)    { throw "Promote mode requires -Repo or `$env:GITHUB_REPOSITORY (e.g. owner/repo)." }
 
     $today = (Get-Date -Format 'yyyy-MM-dd')
-    $emdash = [char]0x2014  # avoid embedding raw em-dash so the script parses identically on PS 5.1 (ANSI-default) and pwsh
-    $heading = "## [$Version](https://github.com/$Repo/releases/tag/$Version) $emdash $today"
+    $heading = "## [$Version](https://github.com/$Repo/releases/tag/$Version) - $today"
 
     foreach ($path in @($RootChangelog, $WikiChangelog)) {
         $content = Read-TextUtf8 -Path $path
