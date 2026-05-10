@@ -221,16 +221,23 @@ jobs:
           # both expected and actual so the operator can diagnose without
           # re-running anything.
           $diffPath = Join-Path $env:RUNNER_TEMP 'release-body-actual.md'
-          $recheck.Actual | Out-File -LiteralPath $diffPath -Encoding utf8 -NoNewline
+          $actualText = [string]$recheck.Actual
+          $actualText | Out-File -LiteralPath $diffPath -Encoding utf8 -NoNewline
+          $actualLength = $actualText.Length
+          $staleReadThreshold = [Math]::Min(256, [Math]::Floor($expected.Length / 2))
+          if ($actualLength -lt $staleReadThreshold) {
+            Write-Host "::warning::Release body still reads as a short/stale value after auto-correct. The edit request succeeded; continuing so a transient GitHub release-body read does not fail the published release."
+            return
+          }
           $headLen = [Math]::Min(200, $expected.Length)
           $tailStart = [Math]::Max(0, $expected.Length - 200)
           $expectedHead = $expected.Substring(0, $headLen)
           $expectedTail = $expected.Substring($tailStart)
-          $actHeadLen = [Math]::Min(200, $recheck.Actual.Length)
-          $actTailStart = [Math]::Max(0, $recheck.Actual.Length - 200)
-          $actualHead = $recheck.Actual.Substring(0, $actHeadLen)
-          $actualTail = $recheck.Actual.Substring($actTailStart)
-          Write-Host "Expected length $($expected.Length); got $($recheck.Actual.Length)."
+          $actHeadLen = [Math]::Min(200, $actualLength)
+          $actTailStart = [Math]::Max(0, $actualLength - 200)
+          $actualHead = $actualText.Substring(0, $actHeadLen)
+          $actualTail = $actualText.Substring($actTailStart)
+          Write-Host "Expected length $($expected.Length); got $actualLength."
           Write-Host "--- Expected head ---"
           Write-Host $expectedHead
           Write-Host "--- Expected tail ---"
@@ -240,11 +247,6 @@ jobs:
           Write-Host "--- Actual tail ---"
           Write-Host $actualTail
           Write-Host "Compare $inputPath vs $diffPath in the runner artifacts."
-          $staleReadThreshold = [Math]::Min(256, [Math]::Floor($expected.Length / 2))
-          if ($recheck.Actual.Length -lt $staleReadThreshold) {
-            Write-Host "::warning::Release body still reads as a short/stale value after auto-correct. The edit request succeeded; continuing so a transient GitHub release-body read does not fail the published release."
-            return
-          }
           throw "Release body still differs after auto-correct + retries."
 
       - name: Open promotion PR + enable auto-merge
