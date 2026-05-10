@@ -231,18 +231,23 @@ internal static class TerminalBlocks
     private static ConsoleColor StateColor(string value)
     {
         value = (value ?? "").Trim().ToLowerInvariant();
-        if (value.Contains("ready", StringComparison.Ordinal)
+        if (value == "on"
+            || value == "ready"
+            || value == "eligible"
             || value.Contains("online", StringComparison.Ordinal)
             || value.Contains("serving", StringComparison.Ordinal)
-            || value.Contains("pulling", StringComparison.Ordinal)
-            || value.Contains("on", StringComparison.Ordinal))
+            || value.Contains("pulling", StringComparison.Ordinal))
             return ConsoleColor.Green;
         if (value.Contains("reconnecting", StringComparison.Ordinal)
             || value.Contains("fallback", StringComparison.Ordinal)
-            || value.Contains("paused", StringComparison.Ordinal))
+            || value.Contains("paused", StringComparison.Ordinal)
+            || value.Contains("setup", StringComparison.Ordinal)
+            || value.Contains("timeout", StringComparison.Ordinal))
             return ConsoleColor.Yellow;
         if (value.Contains("failed", StringComparison.Ordinal)
-            || value.Contains("off", StringComparison.Ordinal))
+            || value.Contains("missing", StringComparison.Ordinal)
+            || value.Contains("not eligible", StringComparison.Ordinal)
+            || value == "off")
             return ConsoleColor.Red;
         return ConsoleColor.Gray;
     }

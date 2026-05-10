@@ -69,10 +69,13 @@ internal sealed class TerminalCommandRegistry
         registry.Add(
             "diagnostics",
             "Show useful support paths and session files.",
-            static (ctx, _, _) =>
+            static async (ctx, _, ct) =>
             {
-                ctx.Renderer.RenderDiagnostics(ctx.Session);
-                return Task.CompletedTask;
+                FfmpegCapabilityProbeResult helper = await FfmpegCapabilityProbe.ProbeAsync(
+                    AppContext.BaseDirectory,
+                    FfmpegCapabilityProbe.DefaultTimeout,
+                    ct).ConfigureAwait(false);
+                ctx.Renderer.RenderDiagnostics(ctx.Session, helper);
             },
             "diag",
             "paths");

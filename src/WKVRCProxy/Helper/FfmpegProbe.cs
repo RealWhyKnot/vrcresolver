@@ -48,7 +48,16 @@ internal static class FfmpegVersionProbe
         return new FfmpegVersionInfo(line, version);
     }
 
-    public static async Task<string> CaptureAsync(string ffmpegPath, string argument, TimeSpan timeout, CancellationToken ct)
+    public static Task<string> CaptureAsync(string ffmpegPath, string argument, TimeSpan timeout, CancellationToken ct)
+    {
+        return CaptureAsync(ffmpegPath, new[] { argument }, timeout, ct);
+    }
+
+    public static async Task<string> CaptureAsync(
+        string ffmpegPath,
+        IReadOnlyList<string> arguments,
+        TimeSpan timeout,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(ffmpegPath))
             throw new ArgumentException("FFmpeg path is required.", nameof(ffmpegPath));
@@ -59,14 +68,18 @@ internal static class FfmpegVersionProbe
         process.StartInfo.RedirectStandardOutput = true;
         process.StartInfo.RedirectStandardError = true;
         process.StartInfo.CreateNoWindow = true;
-        process.StartInfo.ArgumentList.Add(argument);
+        foreach (string argument in arguments ?? Array.Empty<string>())
+        {
+            if (!string.IsNullOrWhiteSpace(argument))
+                process.StartInfo.ArgumentList.Add(argument);
+        }
 
         process.Start();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
 
-        string stdoutTaskResult = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token).ConfigureAwait(false);
-        string stderrTaskResult = await process.StandardError.ReadToEndAsync(timeoutCts.Token).ConfigureAwait(false);
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
         try { await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false); }
         catch (OperationCanceledException)
         {
@@ -74,7 +87,9 @@ internal static class FfmpegVersionProbe
             throw;
         }
 
-        return stdoutTaskResult + "\n" + stderrTaskResult;
+        string stdout = await stdoutTask.ConfigureAwait(false);
+        string stderr = await stderrTask.ConfigureAwait(false);
+        return stdout + "\n" + stderr;
     }
 }
 

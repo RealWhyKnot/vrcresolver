@@ -35,7 +35,9 @@ internal static class TranscodeWorkerProcess
         string outputPath,
         int targetWidth,
         int targetHeight,
-        int targetBitrateKbps)
+        int targetBitrateKbps,
+        bool hasAudio = true,
+        int audioBitrateKbps = 128)
     {
         if (string.IsNullOrWhiteSpace(ffmpegPath))
             throw new ArgumentException("FFmpeg path is required.", nameof(ffmpegPath));
@@ -47,6 +49,7 @@ internal static class TranscodeWorkerProcess
         int safeWidth = Math.Clamp(targetWidth, 160, 3840);
         int safeHeight = Math.Clamp(targetHeight, 120, 2160);
         int bitrate = Math.Clamp(targetBitrateKbps, 300, 12000);
+        int audioBitrate = Math.Clamp(audioBitrateKbps, 64, 320);
         int gopSeconds = Math.Clamp(lease.OutputSpec.GopSeconds <= 0 ? 2 : lease.OutputSpec.GopSeconds, 1, 6);
         int gopFrames = gopSeconds * 30;
         string pixFmt = PixelFormatFor(encoder, lease.OutputSpec.PixelFormat);
@@ -60,19 +63,49 @@ internal static class TranscodeWorkerProcess
             "-y",
             "-ss",
             start,
-            "-t",
-            segment,
             "-i",
             lease.InputChunkUrl.ToString(),
+        };
+
+        if (!hasAudio)
+        {
+            args.AddRange(new[]
+            {
+                "-f",
+                "lavfi",
+                "-t",
+                segment,
+                "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=48000",
+            });
+        }
+
+        args.AddRange(new[]
+        {
+            "-t",
+            segment,
             "-map",
             "0:v:0",
+        });
+
+        if (hasAudio)
+        {
+            args.AddRange(new[] { "-map", "0:a:0?" });
+        }
+        else
+        {
+            args.AddRange(new[] { "-map", "1:a:0", "-shortest" });
+        }
+
+        args.AddRange(new[]
+        {
             "-vf",
             "scale=" + safeWidth.ToString(CultureInfo.InvariantCulture) + ":"
                 + safeHeight.ToString(CultureInfo.InvariantCulture)
                 + ":force_original_aspect_ratio=decrease,format=" + pixFmt,
             "-c:v",
             encoder.EncoderName,
-        };
+        });
 
         AddBackendOptions(args, encoder);
 
@@ -92,7 +125,18 @@ internal static class TranscodeWorkerProcess
             "expr:gte(t,n_forced*" + gopSeconds.ToString(CultureInfo.InvariantCulture) + ")",
             "-bf",
             "0",
-            "-an",
+            "-c:a",
+            "aac",
+            "-b:a",
+            audioBitrate.ToString(CultureInfo.InvariantCulture) + "k",
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+            "-output_ts_offset",
+            start,
+            "-avoid_negative_ts",
+            "disabled",
             "-f",
             "mpegts",
             outputPath,

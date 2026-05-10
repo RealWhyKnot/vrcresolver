@@ -212,7 +212,7 @@ internal sealed partial class MeshClient
             var ws = _ws;
             if (ws is not { State: WebSocketState.Open }) return;
             DateTime sentAt = DateTime.UtcNow;
-            try { await ws.SendAsync(PingFrame, WebSocketMessageType.Text, true, ct).ConfigureAwait(false); }
+            try { await SendTextFrameAsync(PingFrame, ct).ConfigureAwait(false); }
             catch { return; }
 
             try { await Task.Delay(PongDeadline, ct).ConfigureAwait(false); }

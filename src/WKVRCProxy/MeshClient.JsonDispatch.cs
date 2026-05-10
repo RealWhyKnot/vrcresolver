@@ -172,6 +172,7 @@ internal sealed partial class MeshClient
                     }
                 }
                 _welcomeTcs?.TrySetResult(welcome);
+                QueueHelperStatusRefresh();
                 doc.Dispose();
                 return;
             }
@@ -253,6 +254,21 @@ internal sealed partial class MeshClient
                 // here. ResolveAsync waiters key off _serverProtocolVersion
                 // and _serverFeatures, both of which are now set.
                 _welcomeTcs?.TrySetResult(null);
+                QueueHelperStatusRefresh();
+                doc.Dispose();
+                return;
+            }
+            case WireConstants.ActionHelperTranscodeLease:
+            {
+                HelperTranscodeLeaseFrame? lease = null;
+                try { lease = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperTranscodeLeaseFrame); }
+                catch (Exception ex)
+                {
+                    ConsoleUx.Warn(LogComponent.Mesh, "helper lease parse failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                }
+                if (lease != null)
+                    QueueHelperLease(lease);
                 doc.Dispose();
                 return;
             }
@@ -273,7 +289,7 @@ internal sealed partial class MeshClient
                     var pongWs = _ws;
                     if (pongWs is { State: WebSocketState.Open })
                     {
-                        await pongWs.SendAsync(PongFrame, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                        await SendTextFrameAsync(PongFrame, ct).ConfigureAwait(false);
                     }
                 }
                 catch { /* heartbeat will catch dead socket */ }

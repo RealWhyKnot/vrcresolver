@@ -151,7 +151,7 @@ internal sealed partial class MeshClient
                     var pongWs = _ws;
                     if (pongWs is { State: WebSocketState.Open })
                     {
-                        await pongWs.SendAsync(PongFrame, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                        await SendTextFrameAsync(PongFrame, ct).ConfigureAwait(false);
                     }
                 }
                 catch { /* heartbeat will catch dead socket */ }

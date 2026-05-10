@@ -38,6 +38,10 @@ namespace WKVRCProxy;
 // Pre-AOT this serialized a Dictionary<string, object?> via reflection;
 // migrated here to a typed DTO so the source-gen path covers it.
 [JsonSerializable(typeof(PlaybackFeedbackFrame))]
+[JsonSerializable(typeof(HelperStatusFrame))]
+[JsonSerializable(typeof(HelperTranscodeLeaseFrame))]
+[JsonSerializable(typeof(HelperTranscodeOutputSpecFrame))]
+[JsonSerializable(typeof(HelperTranscodeResultFrame))]
 // CodecInstaller persistence (state file at LocalLow root).
 // YtDlpUpdater persistence (24h dedupe state).
 // Both are watchdog-internal state files, JSON-on-disk.

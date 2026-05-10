@@ -58,6 +58,9 @@ public static class WireConstants
     // and must tolerate parse errors. See VrcLogMonitor for emission
     // semantics and PlaybackFeedbackKind for the value vocabulary.
     public const string ActionPlaybackFeedback = "playback_feedback";
+    public const string ActionHelperStatus = "helper_status";
+    public const string ActionHelperTranscodeLease = "helper_transcode_lease";
+    public const string ActionHelperTranscodeResult = "helper_transcode_result";
 
     public const string PlaybackFeedbackLoadFailure = "load_failure";
     public const string PlaybackFeedbackSilentStall = "silent_stall";
@@ -111,6 +114,7 @@ public static class WireConstants
     // negotiated_format == "msgpack" (server picks per-connection from
     // our accept_formats list); the feature string is informational.
     public const string FeatureMsgpackFormat = "msgpack_format";
+    public const string FeatureHelperTranscode = "helper_transcode";
 
     // v3.1 client preference order for post-welcome wire format. Sent
     // verbatim as the client_hello.accept_formats field. The first
@@ -311,6 +315,62 @@ public sealed class PlaybackFeedbackFrame
     [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
     [JsonPropertyName("correlation_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CorrelationId { get; set; }
+}
+
+public sealed class HelperStatusFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperStatus;
+    [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
+    [JsonPropertyName("sharing")] public bool Sharing { get; set; }
+    [JsonPropertyName("can_encode_h264")] public bool CanEncodeH264 { get; set; }
+    [JsonPropertyName("status")] public string Status { get; set; } = "";
+    [JsonPropertyName("ffmpeg_version")] public string? FfmpegVersion { get; set; }
+    [JsonPropertyName("encoder")] public string? Encoder { get; set; }
+    [JsonPropertyName("encoder_backend")] public string? EncoderBackend { get; set; }
+    [JsonPropertyName("gpu_limit_percent")] public int GpuLimitPercent { get; set; }
+    [JsonPropertyName("upload_limit_mbps")] public int UploadLimitMbps { get; set; }
+    [JsonPropertyName("allow_on_battery")] public bool AllowOnBattery { get; set; }
+}
+
+public sealed class HelperTranscodeLeaseFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperTranscodeLease;
+    [JsonPropertyName("lease_id")] public string LeaseId { get; set; } = "";
+    [JsonPropertyName("playback_id")] public string PlaybackId { get; set; } = "";
+    [JsonPropertyName("rendition")] public string Rendition { get; set; } = "";
+    [JsonPropertyName("segment_index")] public int SegmentIndex { get; set; }
+    [JsonPropertyName("start_pts")] public double StartPts { get; set; }
+    [JsonPropertyName("duration")] public double Duration { get; set; }
+    [JsonPropertyName("deadline_ms")] public int DeadlineMs { get; set; }
+    [JsonPropertyName("input_url")] public string InputUrl { get; set; } = "";
+    [JsonPropertyName("upload_url")] public string UploadUrl { get; set; } = "";
+    [JsonPropertyName("has_audio")] public bool HasAudio { get; set; }
+    [JsonPropertyName("target_width")] public int TargetWidth { get; set; }
+    [JsonPropertyName("target_height")] public int TargetHeight { get; set; }
+    [JsonPropertyName("target_bitrate_kbps")] public int TargetBitrateKbps { get; set; }
+    [JsonPropertyName("output_spec")] public HelperTranscodeOutputSpecFrame OutputSpec { get; set; } = new();
+}
+
+public sealed class HelperTranscodeOutputSpecFrame
+{
+    [JsonPropertyName("codec")] public string Codec { get; set; } = "h264";
+    [JsonPropertyName("pix_fmt")] public string PixelFormat { get; set; } = "yuv420p";
+    [JsonPropertyName("profile")] public string Profile { get; set; } = "high";
+    [JsonPropertyName("gop_seconds")] public int GopSeconds { get; set; } = 2;
+    [JsonPropertyName("audio")] public string Audio { get; set; } = "aac_128k_48khz_stereo";
+}
+
+public sealed class HelperTranscodeResultFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperTranscodeResult;
+    [JsonPropertyName("lease_id")] public string LeaseId { get; set; } = "";
+    [JsonPropertyName("success")] public bool Success { get; set; }
+    [JsonPropertyName("status")] public string Status { get; set; } = "";
+    [JsonPropertyName("error")] public string? Error { get; set; }
+    [JsonPropertyName("bytes")] public long Bytes { get; set; }
+    [JsonPropertyName("elapsed_ms")] public long ElapsedMs { get; set; }
+    [JsonPropertyName("encoder")] public string? Encoder { get; set; }
+    [JsonPropertyName("ffmpeg_version")] public string? FfmpegVersion { get; set; }
 }
 
 // Wrapper -> watchdog one-shot notification frame, sent on a fresh pipe

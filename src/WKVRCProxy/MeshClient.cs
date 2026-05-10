@@ -80,6 +80,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
     private readonly HttpClient _httpClient;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MeshResolveResult>> _pending = new();
     private readonly Random _rng = new();
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
 
     // Stable per-install identity included on every playback_feedback frame
     // and v3 client_hello as `client_id`. Server logs it as
@@ -192,7 +193,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
 
         try
         {
-            await ws.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
+            await SendTextFrameAsync(payload, CancellationToken.None).ConfigureAwait(false);
         }
         catch { /* best-effort — heartbeat/run-loop will catch a dead socket */ }
     }
@@ -230,9 +231,71 @@ internal sealed partial class MeshClient : IAsyncDisposable
             AcceptFormats = WireConstants.AcceptFormatsPreference,
         };
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(hello, MeshJsonContext.Default.ClientHelloFrame);
-        await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+        await SendTextFrameAsync(bytes, ct).ConfigureAwait(false);
         Logger.WriteFileOnly("[mesh][v3] client_hello sent node=" + nodeHost
             + " hash=" + (cachedHash ?? "null"));
+    }
+
+    private void QueueHelperStatusRefresh()
+    {
+        if (!ServerSupportsFeature(WireConstants.FeatureHelperTranscode))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                AppSettings settings = AppSettingsStore.Shared.Snapshot();
+                FfmpegCapabilityProbeResult probe = await FfmpegCapabilityProbe.ProbeAsync(
+                    AppContext.BaseDirectory,
+                    FfmpegCapabilityProbe.DefaultTimeout,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                var frame = new HelperStatusFrame
+                {
+                    ClientId = _clientId,
+                    Sharing = settings.Helper.GpuSharing,
+                    CanEncodeH264 = settings.Helper.GpuSharing && probe.CanUseHardwareH264,
+                    Status = HelperStatusWord(settings, probe),
+                    FfmpegVersion = probe.Version?.Version,
+                    Encoder = probe.PreferredEncoder?.EncoderName,
+                    EncoderBackend = probe.PreferredEncoder?.Backend.ToString().ToLowerInvariant(),
+                    GpuLimitPercent = settings.Helper.GpuLimitPercent,
+                    UploadLimitMbps = settings.Helper.UploadLimitMbps,
+                    AllowOnBattery = settings.Helper.AllowOnBattery,
+                };
+
+                byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperStatusFrame);
+                await SendTextFrameAsync(bytes, CancellationToken.None).ConfigureAwait(false);
+                Logger.WriteFileOnly("[mesh][helper] status sent status=" + frame.Status
+                    + " encoder=" + (frame.Encoder ?? "<none>"));
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteFileOnly("[mesh][helper] status send failed: "
+                    + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+            }
+        });
+    }
+
+    private bool ServerSupportsFeature(string feature)
+    {
+        var features = _serverFeatures;
+        return features != null && Array.IndexOf(features, feature) >= 0;
+    }
+
+    private static string HelperStatusWord(AppSettings settings, FfmpegCapabilityProbeResult probe)
+    {
+        if (!settings.Helper.GpuSharing) return "off";
+        return probe.Status switch
+        {
+            FfmpegCapabilityProbeStatus.Ready => "idle",
+            FfmpegCapabilityProbeStatus.NotFound => "missing_ffmpeg",
+            FfmpegCapabilityProbeStatus.NoHardwareEncoder => "no_encoder",
+            FfmpegCapabilityProbeStatus.TimedOut => "probe_timeout",
+            FfmpegCapabilityProbeStatus.Failed => "probe_failed",
+            _ => "paused",
+        };
     }
 
     // Frame builder split out so the wire shape can be unit-tested without
@@ -410,7 +473,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
 
         try
         {
-            await ws.SendAsync(payload, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+            await SendTextFrameAsync(payload, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -445,6 +508,73 @@ internal sealed partial class MeshClient : IAsyncDisposable
     // Format helper for log lines, only when correlation_id is populated.
     private static string CidSuffix(string? correlationId) =>
         string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
+
+    private async Task SendTextFrameAsync(byte[] payload, CancellationToken ct)
+    {
+        var ws = _ws;
+        if (ws is not { State: WebSocketState.Open }) return;
+
+        await _sendGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (ws.State == WebSocketState.Open)
+                await ws.SendAsync(payload, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+    }
+
+    private void QueueHelperLease(HelperTranscodeLeaseFrame lease)
+    {
+        if (lease == null || string.IsNullOrWhiteSpace(lease.LeaseId))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            HelperLeaseRunResult result;
+            try
+            {
+                result = await HelperLeaseWorker.RunAsync(
+                    lease,
+                    AppSettingsStore.Shared.Snapshot(),
+                    AppContext.BaseDirectory,
+                    _httpClient,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                result = new HelperLeaseRunResult(
+                    false,
+                    "error",
+                    ex.GetType().Name + ": " + ex.Message,
+                    0,
+                    0,
+                    null,
+                    null);
+            }
+
+            var frame = new HelperTranscodeResultFrame
+            {
+                LeaseId = lease.LeaseId,
+                Success = result.Success,
+                Status = result.Status,
+                Error = result.Error,
+                Bytes = result.Bytes,
+                ElapsedMs = result.ElapsedMilliseconds,
+                Encoder = result.Encoder,
+                FfmpegVersion = result.FfmpegVersion,
+            };
+
+            try
+            {
+                byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperTranscodeResultFrame);
+                await SendTextFrameAsync(bytes, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch { /* best-effort; upload endpoint carries success for completed leases */ }
+        });
+    }
 
     // Detect whether the patched yt-dlp populated any v2 request field. Used
     // to decide whether the watchdog should auto-stamp protocol_version=

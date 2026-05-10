@@ -200,6 +200,10 @@ public class ProtocolRoundTripTests
         Assert.Equal("max_audio_channels", WireConstants.FieldMaxAudioChannels);
         Assert.Equal("vrchat_format_arg", WireConstants.FieldVrchatFormatArg);
         Assert.Equal("correlation_id", WireConstants.FieldCorrelationId);
+        Assert.Equal("helper_status", WireConstants.ActionHelperStatus);
+        Assert.Equal("helper_transcode_lease", WireConstants.ActionHelperTranscodeLease);
+        Assert.Equal("helper_transcode_result", WireConstants.ActionHelperTranscodeResult);
+        Assert.Equal("helper_transcode", WireConstants.FeatureHelperTranscode);
         Assert.Equal("unity_unsupported_format", WireConstants.ReasonUnityUnsupportedFormat);
         Assert.Equal("warp_down", WireConstants.ReasonWarpDown);
         Assert.Equal("avpro", WireConstants.PlayerAvPro);
@@ -208,5 +212,62 @@ public class ProtocolRoundTripTests
         // negotiate down via Math.Clamp(server, 1, client) on welcome
         // receipt — backward compat preserved.
         Assert.Equal(3, WireConstants.ClientProtocolVersion);
+    }
+
+    [Fact]
+    public void HelperStatus_frame_matches_mesh_contract()
+    {
+        var frame = new HelperStatusFrame
+        {
+            ClientId = "client-1",
+            Sharing = true,
+            CanEncodeH264 = true,
+            Status = "idle",
+            FfmpegVersion = "7.1.1",
+            Encoder = "h264_qsv",
+            EncoderBackend = "qsv",
+            GpuLimitPercent = 25,
+            UploadLimitMbps = 0,
+            AllowOnBattery = false,
+        };
+
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperStatusFrame);
+        using var doc = JsonDocument.Parse(bytes);
+
+        Assert.Equal("helper_status", doc.RootElement.GetProperty("action").GetString());
+        Assert.True(doc.RootElement.GetProperty("sharing").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("can_encode_h264").GetBoolean());
+        Assert.Equal("h264_qsv", doc.RootElement.GetProperty("encoder").GetString());
+        Assert.Equal(25, doc.RootElement.GetProperty("gpu_limit_percent").GetInt32());
+    }
+
+    [Fact]
+    public void HelperLease_frame_round_trips()
+    {
+        var frame = new HelperTranscodeLeaseFrame
+        {
+            LeaseId = "lease",
+            PlaybackId = "playback",
+            Rendition = "720p_h264_aac",
+            SegmentIndex = 42,
+            StartPts = 84.0,
+            Duration = 2.0,
+            DeadlineMs = 6000,
+            InputUrl = "https://node1.whyknot.dev/input.ts",
+            UploadUrl = "https://node1.whyknot.dev/api/helper/transcode/lease?token=t",
+            HasAudio = true,
+            TargetWidth = 1280,
+            TargetHeight = 720,
+            TargetBitrateKbps = 2800,
+        };
+
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperTranscodeLeaseFrame);
+        HelperTranscodeLeaseFrame? parsed = JsonSerializer.Deserialize(bytes, MeshJsonContext.Default.HelperTranscodeLeaseFrame);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("helper_transcode_lease", parsed!.Action);
+        Assert.Equal(42, parsed.SegmentIndex);
+        Assert.Equal("h264", parsed.OutputSpec.Codec);
+        Assert.Equal("yuv420p", parsed.OutputSpec.PixelFormat);
     }
 }

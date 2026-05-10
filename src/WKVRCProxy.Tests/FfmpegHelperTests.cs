@@ -70,6 +70,70 @@ public class FfmpegHelperTests
     }
 
     [Fact]
+    public void FfmpegCapabilityProbe_FromOutputsReportsPreferredEncoder()
+    {
+        var location = new FfmpegLocation("ffmpeg.exe", FfmpegLocationKind.Path);
+        FfmpegCapabilityProbeResult result = FfmpegCapabilityProbe.FromOutputs(
+            location,
+            "ffmpeg version 7.1.1-full_build-www.gyan.dev Copyright...",
+            """
+            Encoders:
+             V....D h264_nvenc           NVIDIA NVENC H.264 encoder
+             V..... h264_qsv             Intel Quick Sync Video H.264 encoder
+            """);
+
+        Assert.Equal(FfmpegCapabilityProbeStatus.Ready, result.Status);
+        Assert.True(result.CanUseHardwareH264);
+        Assert.NotNull(result.PreferredEncoder);
+        Assert.Equal(HardwareEncoderBackend.Qsv, result.PreferredEncoder!.Value.Backend);
+        Assert.Equal("7.1.1-full_build-www.gyan.dev", result.Version!.Value.Version);
+    }
+
+    [Fact]
+    public async Task FfmpegCapabilityProbe_ReportsMissingWhenExecutableIsUnavailable()
+    {
+        FfmpegCapabilityProbeResult result = await FfmpegCapabilityProbe.ProbeAsync(
+            installDirectory: "",
+            pathEnvironment: "",
+            timeout: TimeSpan.FromMilliseconds(50),
+            ct: CancellationToken.None,
+            capture: static (_, _, _, _) => throw new InvalidOperationException("should not run"));
+
+        Assert.Equal(FfmpegCapabilityProbeStatus.NotFound, result.Status);
+        Assert.False(result.HasFfmpeg);
+        Assert.False(result.CanUseHardwareH264);
+    }
+
+    [Fact]
+    public async Task FfmpegCapabilityProbe_ReportsTimeoutWithoutEscapingWorkerProcess()
+    {
+        string temp = Path.Combine(Path.GetTempPath(), "wkvrcproxy-ffmpeg-timeout-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(temp, "tools"));
+        File.WriteAllText(Path.Combine(temp, "tools", "ffmpeg.exe"), "");
+
+        try
+        {
+            FfmpegCapabilityProbeResult result = await FfmpegCapabilityProbe.ProbeAsync(
+                installDirectory: temp,
+                pathEnvironment: "",
+                timeout: TimeSpan.FromMilliseconds(10),
+                ct: CancellationToken.None,
+                capture: static async (_, _, _, ct) =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    return "";
+                });
+
+            Assert.Equal(FfmpegCapabilityProbeStatus.TimedOut, result.Status);
+            Assert.False(result.CanUseHardwareH264);
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
     public void TranscodeWorkerProcess_BuildsSafeNvencSegmentCommand()
     {
         var lease = NewLease();
@@ -89,7 +153,8 @@ public class FfmpegHelperTests
         Assert.Contains("h264_nvenc", command.Arguments);
         Assert.Contains(command.Arguments, argument => argument.Contains("format=yuv420p", StringComparison.Ordinal));
         Assert.Contains("-force_key_frames", command.Arguments);
-        Assert.Contains("-an", command.Arguments);
+        Assert.Contains("-c:a", command.Arguments);
+        Assert.Contains("aac", command.Arguments);
         Assert.Equal("seg_000042.ts", command.Arguments[^1]);
     }
 
