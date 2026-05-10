@@ -192,10 +192,10 @@ jobs:
               $lastActual = $actual
               $actualSha = Get-StringSha256 -Text $actual
               if ($actualSha -eq $expectedSha) {
-                Write-Host "Attempt $attempt/$MaxAttempts: body matches (len=$($actual.Length) sha256=$($actualSha.Substring(0,12)))."
+                Write-Host "Attempt ${attempt}/${MaxAttempts}: body matches (len=$($actual.Length) sha256=$($actualSha.Substring(0,12)))."
                 return @{ Match = $true; Actual = $actual; AttemptCount = $attempt }
               }
-              Write-Host "Attempt $attempt/$MaxAttempts: actual_len=$($actual.Length) expected_len=$($Expected.Length) actual_sha=$($actualSha.Substring(0,12)) expected_sha=$($expectedSha.Substring(0,12))"
+              Write-Host "Attempt ${attempt}/${MaxAttempts}: actual_len=$($actual.Length) expected_len=$($Expected.Length) actual_sha=$($actualSha.Substring(0,12)) expected_sha=$($expectedSha.Substring(0,12))"
               if ($attempt -lt $MaxAttempts) {
                 Write-Host "Sleeping ${delay}s before retry..."
                 Start-Sleep -Seconds $delay
