@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.Versioning;
+using System.Text;
 using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
@@ -15,12 +16,14 @@ namespace WKVRCProxy;
 //
 // If the server-side playlist uses relative subresource URLs, AVPro resolves
 // them under /play/<session>/ and the listener forwards them relative to the
-// original target URL's directory. The relay does not parse or rewrite HLS.
-// WhyKnot.dev owns manifest compatibility, tier routing, and transcoding.
+// original target URL's directory. When WhyKnot.dev emits absolute first-party
+// playback proxy URLs, the relay localizes only those URLs back under the
+// same localhost namespace. WhyKnot.dev still owns manifest compatibility,
+// tier routing, and transcoding.
 //
-// Absolute subresource URLs remain a server-side contract: the local relay
-// cannot keep those on localhost without body rewriting, and body rewriting is
-// intentionally out of this client path.
+// The relay never rewrites arbitrary upstream URLs. Only first-party WhyKnot
+// proxy URLs are accepted or localized, so localhost cannot become a general
+// open proxy for local processes.
 //
 // Phase 1: HTTP-only. HTTPS + per-machine cert lifecycle is a separate
 // follow-up. AVPro accepts plain http:// on a non-443 port for hostnames
@@ -132,6 +135,24 @@ internal sealed partial class LocalRelayServer : IDisposable
                     + " from=" + remote + " " + protoVer);
                 DumpHeaders("[relay] req=" + reqId + "  H<", ctx.Request.Headers);
             }
+            if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase))
+            {
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 405 (method)");
+                ctx.Response.StatusCode = 405;
+                ctx.Response.Headers["Allow"] = "GET, HEAD";
+                ctx.Response.Close();
+                return;
+            }
+
+            if (!LocalRelaySecurity.IsAllowedHostHeader(ctx.Request.Headers["Host"], _port))
+            {
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 403 (host)");
+                ctx.Response.StatusCode = 403;
+                ctx.Response.Close();
+                return;
+            }
+
             if (!LocalRelayTargetResolver.IsPlayPath(path))
             {
                 if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 404 (path mismatch)");
@@ -153,10 +174,11 @@ internal sealed partial class LocalRelayServer : IDisposable
             }
 
             targetUrl = target.Url;
-            if (string.IsNullOrEmpty(targetUrl) || !Uri.TryCreate(targetUrl, UriKind.Absolute, out _))
+            if (!LocalRelaySecurity.IsAllowedTargetUrl(targetUrl, out string targetRejectReason))
             {
-                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 400 (invalid resolved target='" + ShortUrl(targetUrl) + "')");
-                ctx.Response.StatusCode = 400;
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 403 ("
+                    + targetRejectReason + " target='" + ShortUrl(targetUrl) + "')");
+                ctx.Response.StatusCode = 403;
                 ctx.Response.Close();
                 return;
             }
@@ -178,30 +200,94 @@ internal sealed partial class LocalRelayServer : IDisposable
                 DumpHttpHeaders("[relay] req=" + reqId + "  upstream-H>", resp.Headers, resp.Content.Headers);
             }
 
-            ctx.Response.StatusCode = (int)resp.StatusCode;
-            string contentType = "";
-            long? contentLength = null;
-            int passedHeaders = 0;
-            int droppedHeaders = 0;
-            foreach (var h in resp.Headers.Concat(resp.Content.Headers))
-            {
-                if (LocalRelayHeaders.ShouldDropResponseHeader(h.Key)) { droppedHeaders++; continue; }
-                if (string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (long.TryParse(string.Join(", ", h.Value), out long len))
-                        contentLength = len;
-                    continue;
-                }
-                if (string.Equals(h.Key, "Content-Type", StringComparison.OrdinalIgnoreCase))
-                    contentType = string.Join(", ", h.Value);
-                try { ctx.Response.Headers.Add(h.Key, string.Join(", ", h.Value)); passedHeaders++; }
-                catch { /* HttpListener rejects some restricted headers; skip */ }
-            }
-            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " response-headers passed=" + passedHeaders
-                + " dropped=" + droppedHeaders + " ct='" + contentType + "' len=" + (contentLength?.ToString() ?? "null"));
+            bool isHead = string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase);
+            bool shouldLocalizeManifest = !isHead
+                && resp.IsSuccessStatusCode
+                && LocalRelayManifestLocalizer.IsLikelyManifest(
+                    path,
+                    targetUrl,
+                    resp.Content.Headers.ContentType);
 
-            if (contentLength.HasValue) ctx.Response.ContentLength64 = contentLength.Value;
+            if (shouldLocalizeManifest)
+            {
+                if (!LocalRelayManifestLocalizer.CanBuffer(resp.Content.Headers.ContentLength))
+                {
+                    if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 502 (manifest too large len="
+                        + resp.Content.Headers.ContentLength + ")");
+                    ctx.Response.StatusCode = 502;
+                    ctx.Response.ContentType = "text/plain; charset=utf-8";
+                    byte[] tooLarge = Encoding.UTF8.GetBytes("manifest too large for local relay");
+                    ctx.Response.ContentLength64 = tooLarge.Length;
+                    await ctx.Response.OutputStream.WriteAsync(tooLarge, _cts.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                using var manifestStream = await resp.Content.ReadAsStreamAsync(_cts.Token).ConfigureAwait(false);
+                var read = await ReadBoundedAsync(
+                    manifestStream,
+                    LocalRelayManifestLocalizer.MaxManifestBytes,
+                    _cts.Token).ConfigureAwait(false);
+                if (read.Exceeded)
+                {
+                    if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 502 (manifest exceeded cap)");
+                    ctx.Response.StatusCode = 502;
+                    ctx.Response.ContentType = "text/plain; charset=utf-8";
+                    byte[] tooLarge = Encoding.UTF8.GetBytes("manifest too large for local relay");
+                    ctx.Response.ContentLength64 = tooLarge.Length;
+                    await ctx.Response.OutputStream.WriteAsync(tooLarge, _cts.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                string original = DecodeTextBody(read.Bytes, resp.Content.Headers.ContentType?.CharSet);
+                string localized = LocalRelayManifestLocalizer.Localize(original, path);
+                byte[] body = Encoding.UTF8.GetBytes(localized);
+
+                ctx.Response.StatusCode = (int)resp.StatusCode;
+                CopyResponseHeaders(
+                    ctx.Response,
+                    resp,
+                    contentLengthOverride: body.Length,
+                    contentTypeOverride: resp.Content.Headers.ContentType?.ToString()
+                        ?? "application/vnd.apple.mpegurl",
+                    bodyRewritten: true,
+                    out int passedManifestHeaders,
+                    out int droppedManifestHeaders);
+                if (s_verbose)
+                {
+                    Console.WriteLine("[relay] req=" + reqId + " localized-manifest bytes-in="
+                        + read.Bytes.Length + " bytes-out=" + body.Length
+                        + " changed=" + (!string.Equals(original, localized, StringComparison.Ordinal)));
+                    Console.WriteLine("[relay] req=" + reqId + " response-headers passed="
+                        + passedManifestHeaders + " dropped=" + droppedManifestHeaders
+                        + " ct='" + ctx.Response.ContentType + "' len=" + body.Length);
+                    DumpHeaders("[relay] req=" + reqId + "  H>", ctx.Response.Headers);
+                }
+                await ctx.Response.OutputStream.WriteAsync(body, _cts.Token).ConfigureAwait(false);
+                bytesOut = body.Length;
+                return;
+            }
+
+            ctx.Response.StatusCode = (int)resp.StatusCode;
+            CopyResponseHeaders(
+                ctx.Response,
+                resp,
+                contentLengthOverride: resp.Content.Headers.ContentLength,
+                contentTypeOverride: resp.Content.Headers.ContentType?.ToString(),
+                bodyRewritten: false,
+                out int passedHeaders,
+                out int droppedHeaders);
+            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " response-headers passed=" + passedHeaders
+                + " dropped=" + droppedHeaders + " ct='" + ctx.Response.ContentType + "' len="
+                + (resp.Content.Headers.ContentLength?.ToString() ?? "null"));
+
             if (s_verbose) DumpHeaders("[relay] req=" + reqId + "  H>", ctx.Response.Headers);
+
+            if (isHead)
+            {
+                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> " + ctx.Response.StatusCode
+                    + " HEAD elapsed=" + (Environment.TickCount64 - t0) + "ms");
+                return;
+            }
 
             // Binary stream copy with per-read idle CTS so a long video
             // (HLS segment, mp4 progressive) doesn't get killed by a
@@ -246,6 +332,67 @@ internal sealed partial class LocalRelayServer : IDisposable
         {
             try { ctx.Response.Close(); } catch { /* best-effort */ }
         }
+    }
+
+    private static void CopyResponseHeaders(
+        HttpListenerResponse downstream,
+        HttpResponseMessage upstream,
+        long? contentLengthOverride,
+        string? contentTypeOverride,
+        bool bodyRewritten,
+        out int passedHeaders,
+        out int droppedHeaders)
+    {
+        passedHeaders = 0;
+        droppedHeaders = 0;
+        foreach (var h in upstream.Headers.Concat(upstream.Content.Headers))
+        {
+            if (LocalRelayHeaders.ShouldDropResponseHeader(h.Key)) { droppedHeaders++; continue; }
+            if (string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.Equals(h.Key, "Content-Type", StringComparison.OrdinalIgnoreCase)) continue;
+            if (bodyRewritten && string.Equals(h.Key, "Content-Encoding", StringComparison.OrdinalIgnoreCase))
+            {
+                droppedHeaders++;
+                continue;
+            }
+
+            try { downstream.Headers.Add(h.Key, string.Join(", ", h.Value)); passedHeaders++; }
+            catch { /* HttpListener rejects some restricted headers; skip */ }
+        }
+
+        if (!string.IsNullOrWhiteSpace(contentTypeOverride))
+            downstream.ContentType = contentTypeOverride;
+        if (contentLengthOverride.HasValue)
+            downstream.ContentLength64 = contentLengthOverride.Value;
+    }
+
+    private static async Task<(byte[] Bytes, bool Exceeded)> ReadBoundedAsync(
+        Stream stream,
+        int maxBytes,
+        CancellationToken ct)
+    {
+        using var ms = new MemoryStream(Math.Min(maxBytes, 64 * 1024));
+        byte[] buffer = new byte[16 * 1024];
+        while (true)
+        {
+            int n = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+            if (n == 0) return (ms.ToArray(), false);
+            if (ms.Length + n > maxBytes) return (Array.Empty<byte>(), true);
+            ms.Write(buffer, 0, n);
+        }
+    }
+
+    private static string DecodeTextBody(byte[] bytes, string? charset)
+    {
+        if (!string.IsNullOrWhiteSpace(charset))
+        {
+            try
+            {
+                return Encoding.GetEncoding(charset.Trim('"')).GetString(bytes);
+            }
+            catch { /* fall through to UTF-8 */ }
+        }
+        return Encoding.UTF8.GetString(bytes);
     }
 
     private static void DumpHeaders(string prefix, System.Collections.Specialized.NameValueCollection headers)

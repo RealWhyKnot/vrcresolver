@@ -16,7 +16,7 @@ Rules that contributors MUST follow. These exist because of real bugs we've hit;
 
 **The `127.0.0.1 localhost.youtube.com` hosts entry exists to bypass VRChat's trusted-URL allowlist in public instances.** It's not a general-purpose intercept. The watchdog adds it on first run, re-checks it every minute via `HostsTicker`, and removes it on uninstall.
 
-**Why**: Public worlds with "Allow Untrusted URLs" off enforce AVPro's small allowlist (`*.youtube.com` and friends). A user-pasted URL whose host matches `localhost.youtube.com` passes that allowlist check; the resolved stream URL (typically `*.googlevideo.com`) is also on the allowlist so playback works end-to-end. In private/friends instances the toggle is on and the entry is idle.
+**Why**: Public worlds with "Allow Untrusted URLs" off enforce AVPro's small allowlist (`*.youtube.com` and friends). A user-pasted URL whose host matches `localhost.youtube.com` passes that allowlist check; the watchdog then fetches WhyKnot playback proxy URLs on AVPro's behalf and keeps first-party manifest subrequests on the same trusted local hostname. In private/friends instances the toggle is on and the entry is idle.
 
 **How to apply**: Don't pin additional hostnames. Don't repurpose this entry for resolution-side work. If a future change needs more allowlist coverage, do it server-side, not by polluting the user's hosts file. Match the entry conservatively (token-aware, NOT substring) -- a comment line that mentions the marker is not a bypass entry, and neither is `127.0.0.1 notlocalhost.youtube.com`.
 

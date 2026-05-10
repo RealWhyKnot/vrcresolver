@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using WKVRCProxy.Shared;
 using Xunit;
 
@@ -178,6 +179,54 @@ public class ResolveCacheTests : IDisposable
         Assert.Null(cache.Lookup("node1.whyknot.dev", url, "avpro", "fmt-A", "r"));
         Assert.Null(cache.Lookup("node1.whyknot.dev", url, "avpro", "fmt-B", "r"));
         Assert.NotNull(cache.Lookup("node1.whyknot.dev", "https://other.example.com/x", "avpro", null, "r"));
+    }
+
+    [Fact]
+    public void EvictByUrl_drops_entries_by_resolved_playback_url()
+    {
+        var cache = new ResolveCache(_path);
+        string sourceUrl = "https://www.youtube.com/watch?v=stale";
+        string playbackUrl = "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc";
+        string future = DateTime.UtcNow.AddHours(1).ToString("o");
+        var resp = new ResolveResponse
+        {
+            Action = WireConstants.ActionResolved,
+            Id = "ignored-on-store",
+            Url = playbackUrl,
+            Engine = "yt-dlp:no-cookies-default",
+            Protocol = "hls",
+            ExpiresAt = future,
+        };
+
+        cache.Store("node1.whyknot.dev", sourceUrl, "avpro", null, resp);
+        int evicted = cache.EvictByUrl(playbackUrl);
+
+        Assert.Equal(1, evicted);
+        Assert.Null(cache.Lookup("node1.whyknot.dev", sourceUrl, "avpro", null, "r"));
+    }
+
+    [Fact]
+    [SupportedOSPlatform("windows")]
+    public void VrcLogMonitor_CanonicalizesLocalTrustGatewayUrlToResolvedTarget()
+    {
+        const string playbackUrl = "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc";
+        Assert.True(TrustGatewayUrlBuilder.TryBuild(
+            51234,
+            playbackUrl,
+            "session",
+            out string localUrl));
+
+        Assert.Equal(playbackUrl, VrcLogMonitor.CanonicalPlaybackObservationUrl(localUrl));
+        Assert.Equal(playbackUrl, VrcLogMonitor.CanonicalPlaybackObservationUrl(playbackUrl));
+
+        string nonWhyKnotTarget = Convert.ToBase64String(
+                System.Text.Encoding.UTF8.GetBytes("https://cdn.example.com/video.m3u8"))
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
+        string forgedLocal = "http://localhost.youtube.com:51234/play/session/manifest.m3u8?target="
+            + nonWhyKnotTarget;
+        Assert.Equal(forgedLocal, VrcLogMonitor.CanonicalPlaybackObservationUrl(forgedLocal));
     }
 
     [Fact]

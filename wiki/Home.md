@@ -26,7 +26,7 @@ yt-dlp returns. Watchdog absent does not break VRChat.
 
 ## Component map
 
-- `WKVRCProxy.exe` -- the long-running watchdog. Holds the WebSocket, runs the named-pipe IPC server, runs the trust-gateway HTTP listener, ticks the patch state every 3 seconds, ticks the hosts entry every 60 seconds.
+- `WKVRCProxy.exe` -- the long-running watchdog. Holds the WebSocket, runs the named-pipe IPC server, runs the trust-gateway HTTP listener, keeps first-party manifest subrequests on the trusted local host, ticks the patch state every 3 seconds, ticks the hosts entry every 60 seconds.
 - `tools/yt-dlp.exe` -- the patched shim that VRChat invokes. Replaces VRChat's bundled yt-dlp at install time. AOT-compiled, 3.27 MB native code.
 - `tools/yt-dlp-og.exe` -- the vanilla yt-dlp the patcher preserved at install time. Used as the fallback path on every failure.
 - `tools/yt-dlp-og-fallback.exe` -- a bundled vanilla yt-dlp that ships in the dist. Safety net for the case where the user's `yt-dlp-og.exe` goes missing (file deleted, fresh install, etc.) -- the watchdog drops a known-good copy back into VRChat's Tools dir on the next 3-second tick.

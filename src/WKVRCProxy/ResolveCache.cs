@@ -169,9 +169,11 @@ internal sealed class ResolveCache
         return effectiveExpiresAt;
     }
 
-    // Drop every entry whose URL matches across all (node, player, format)
-    // combinations. VrcLogMonitor calls this when AVPro fell silent on a
-    // URL we just served.
+    // Drop every entry whose source URL or resolved playback URL matches
+    // across all (node, player, format) combinations. VrcLogMonitor calls
+    // this when AVPro fell silent on a URL we just served; with the trust
+    // gateway, VRChat logs the localhost URL, which is canonicalized back
+    // to the resolved playback URL before eviction.
     public int EvictByUrl(string url)
     {
         if (string.IsNullOrEmpty(url)) return 0;
@@ -183,7 +185,8 @@ internal sealed class ResolveCache
             var doomed = new List<string>();
             foreach (var kv in _state.Entries)
             {
-                if (string.Equals(kv.Value.Url, url, StringComparison.Ordinal))
+                if (string.Equals(kv.Value.Url, url, StringComparison.Ordinal)
+                    || string.Equals(kv.Value.Response?.Url, url, StringComparison.Ordinal))
                     doomed.Add(kv.Key);
             }
             foreach (string k in doomed) _state.Entries.Remove(k);

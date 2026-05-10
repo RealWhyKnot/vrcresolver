@@ -90,49 +90,66 @@ internal static partial class Program
             }
             else
             {
-                (string? resolved, string? fallbackReason) result;
-                try
+                if (WhyKnotUrlPolicy.IsWhyKnotPlaybackProxyUrl(url))
                 {
-                    result = await ResolveOverPipeAsync(url, player, formatArg).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    Log("UNHANDLED in pipe path: " + ex.GetType().Name + ": " + ex.Message);
-                    result = (null, WireConstants.OgFallbackReasonPipeResolveFailed);
-                }
-
-                if (!string.IsNullOrEmpty(result.resolved))
-                {
-                    // Trust-gateway wrap (Phase 1, HTTP-only). If the
-                    // watchdog is running and bound the local listener
-                    // it leaves a port file on disk; we wrap the resolved
-                    // URL through localhost.youtube.com:<port>/play so
-                    // AVPro's allowlist accepts it in default-public
-                    // worlds. Missing port file = watchdog isn't running
-                    // OR the relay didn't bind; fall through to emitting
-                    // the raw URL (today's behavior; works in trust-
-                    // disabled worlds, fails in default-public).
-                    string toEmit = TryWrapForTrustGateway(result.resolved!);
+                    // Users can paste a WhyKnot playback URL directly into
+                    // a VRChat player. Do not send that back through the mesh
+                    // resolver: it is already a server-minted playback URL,
+                    // and resolving it again can recurse through /api/proxy.
+                    string toEmit = TryWrapForTrustGateway(url);
                     WriteUrlToStdout(toEmit);
-                    bool wrapped = !ReferenceEquals(toEmit, result.resolved);
-                    Log("emitted resolved URL to stdout host=" + ExtractHost(toEmit)
+                    bool wrapped = !string.Equals(toEmit, url, StringComparison.Ordinal);
+                    Log("direct WhyKnot playback URL host=" + ExtractHost(url)
+                        + " emitted-host=" + ExtractHost(toEmit)
                         + " bytes=" + toEmit.Length
                         + " trust_gateway=" + (wrapped ? "wrapped" : "passthrough"));
                     exitCode = 0;
-                    outcome = wrapped ? "pipe-resolved-wrapped" : "pipe-resolved";
+                    outcome = wrapped ? "direct-whyknot-playback-wrapped" : "direct-whyknot-playback";
                 }
                 else
                 {
-                    // Notify the watchdog about the og fallback before
-                    // invoking og so the watchdog console surfaces the
-                    // fallback fact in real time. Fire-and-forget; the
-                    // notify uses a fresh pipe connection that closes
-                    // immediately, then we exec og normally.
-                    string reason = result.fallbackReason ?? WireConstants.OgFallbackReasonPipeResolveFailed;
-                    await TrySendOgFallbackNotifyAsync(url, reason, swTotal.ElapsedMilliseconds).ConfigureAwait(false);
+                    (string? resolved, string? fallbackReason) result;
+                    try
+                    {
+                        result = await ResolveOverPipeAsync(url, player, formatArg).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log("UNHANDLED in pipe path: " + ex.GetType().Name + ": " + ex.Message);
+                        result = (null, WireConstants.OgFallbackReasonPipeResolveFailed);
+                    }
 
-                    exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
-                    outcome = "pipe-failed-og-fallback";
+                    if (!string.IsNullOrEmpty(result.resolved))
+                    {
+                        // Trust-gateway wrap (Phase 1, HTTP-only). If the
+                        // watchdog is running and bound the local listener
+                        // it leaves a port file on disk; WhyKnot playback proxy
+                        // URLs are wrapped through localhost.youtube.com:<port>/play
+                        // so AVPro's allowlist accepts them in default-public
+                        // worlds. Missing port file, non-WhyKnot responses, or
+                        // malformed URLs fall through to emitting the raw URL.
+                        string toEmit = TryWrapForTrustGateway(result.resolved!);
+                        WriteUrlToStdout(toEmit);
+                        bool wrapped = !ReferenceEquals(toEmit, result.resolved);
+                        Log("emitted resolved URL to stdout host=" + ExtractHost(toEmit)
+                            + " bytes=" + toEmit.Length
+                            + " trust_gateway=" + (wrapped ? "wrapped" : "passthrough"));
+                        exitCode = 0;
+                        outcome = wrapped ? "pipe-resolved-wrapped" : "pipe-resolved";
+                    }
+                    else
+                    {
+                        // Notify the watchdog about the og fallback before
+                        // invoking og so the watchdog console surfaces the
+                        // fallback fact in real time. Fire-and-forget; the
+                        // notify uses a fresh pipe connection that closes
+                        // immediately, then we exec og normally.
+                        string reason = result.fallbackReason ?? WireConstants.OgFallbackReasonPipeResolveFailed;
+                        await TrySendOgFallbackNotifyAsync(url, reason, swTotal.ElapsedMilliseconds).ConfigureAwait(false);
+
+                        exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
+                        outcome = "pipe-failed-og-fallback";
+                    }
                 }
             }
 

@@ -1,7 +1,5 @@
 # WKVRCProxy
 
-> **On hold.** Development is paused while server-side changes get worked out to resolve VRChat playability issues. Existing builds have been pulled; no supported releases are available right now.
-
 VRChat's in-world video players use yt-dlp under the hood. Vanilla yt-dlp is slow on cold starts, breaks against YouTube changes the moment they ship, and hands AVPro URLs that VRChat's trusted-host allowlist rejects in default-public worlds. WKVRCProxy fixes all three.
 
 A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build that asks a remote resolver (whyknot.dev) and routes the resulting stream URL through a local listener so AVPro accepts it everywhere. If the remote is unreachable or anything else goes wrong, the patched binary falls through to the vanilla yt-dlp it preserved at install time. Watchdog absent does not break VRChat.
@@ -12,7 +10,7 @@ A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build t
 
 ## What you get
 
-- **Public-instance YouTube playback.** A local HTTP listener at `localhost.youtube.com:{port}` wraps every resolved stream URL so VRChat's AVPro trust list accepts it in default-public worlds. The trust gateway is HTTP-only today; HTTPS is parked behind concrete trigger conditions, see the wiki.
+- **Public-instance playback.** A local HTTP listener at `localhost.youtube.com:{port}` wraps resolved WhyKnot playback proxy URLs so VRChat's AVPro trust list accepts them in default-public worlds. First-party manifest subresources and pasteable WhyKnot playback URLs stay under the same trusted local namespace.
 - **Server-side resolution behind WARP egress.** YouTube extraction happens on the backend behind Cloudflare WARP, so regional blocks and IP-rate-limits don't cost you a stalled video.
 - **Per-URL disk cache.** First resolve of a URL takes 2 to 3 seconds end-to-end. Second resolve in the same session lands in 20 ms (a 99.2% latency reduction on the wrapper-side). Cache survives watchdog restarts.
 - **HLS-first format selection.** AVPro gets 1080p HLS, not 360p progressive mp4. The dispatcher picks the best match for the player VRChat asked for.

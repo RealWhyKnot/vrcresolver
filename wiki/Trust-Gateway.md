@@ -6,7 +6,7 @@ The trust gateway is the local HTTP listener that lets AVPro accept resolved str
 
 VRChat's AVPro layer ships with a hardcoded list of trusted hostnames. In worlds with "Allow Untrusted URLs" off (the default for public instances), AVPro rejects any URL whose host doesn't match an entry in that list. The list is small: `*.youtube.com`, `youtu.be`, `*.googlevideo.com`, `*.facebook.com`, `*.fbcdn.net`, `*.vimeo.com`, `*.twitch.tv`, a handful of others.
 
-The resolver returns URLs of the form `https://node1.whyknot.dev/api/proxy?q=...`. `node1.whyknot.dev` is not on the trust list. AVPro silently rejects with `Loading failed` within ~1 second of opening, no real network fetch attempted.
+The resolver returns URLs of the form `https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=...`. `node1.whyknot.dev` is not on the trust list. AVPro silently rejects with `Loading failed` within ~1 second of opening, no real network fetch attempted.
 
 ## The fix
 
@@ -16,13 +16,13 @@ Hosts file entry on every install:
 127.0.0.1   localhost.youtube.com   # WKVRCProxy
 ```
 
-`localhost.youtube.com` matches the `*.youtube.com` allowlist pattern. The watchdog binds an HTTP listener on `127.0.0.1:{ephemeral-port}` and writes the port number to `%LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt`. The patched yt-dlp wrapper reads the port and rewrites every resolved URL to:
+`localhost.youtube.com` matches the `*.youtube.com` allowlist pattern. The watchdog binds an HTTP listener on `127.0.0.1:{ephemeral-port}` and writes the port number to `%LOCALAPPDATA%Low\WKVRCProxy\relay_port.txt`. The patched yt-dlp wrapper reads the port and rewrites WhyKnot playback proxy URLs to:
 
 ```
 http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64-of-real-resolved-url>
 ```
 
-The hosts entry routes the AVPro fetch to `127.0.0.1:{port}`. The listener decodes the base64, fetches the real URL via HttpClient, and streams bytes back to AVPro with the original headers preserved. The `<session>` path namespace gives relative playlist subrequests a stable local base path. AVPro sees a hostname it trusts and a working stream, never knows it took a detour.
+The hosts entry routes the AVPro fetch to `127.0.0.1:{port}`. The listener decodes the base64, fetches the real URL via HttpClient, and streams bytes back to AVPro. The `<session>` path namespace gives relative playlist subrequests a stable local base path. If a WhyKnot manifest contains absolute first-party playback proxy URLs (`/api/proxy` or `/api/popcorn/proxy`), the relay localizes only those URLs back under the same localhost namespace so the next AVPro fetch stays trusted.
 
 ## Request flow
 
@@ -36,11 +36,11 @@ AVPro:  GET http://localhost.youtube.com:51234/play/7f8a9b0c1d2e/manifest.m3u8?t
               |
               v
 +-----------------------------+
-| LocalRelayServer (watchdog) |  base64-decode target -> https://node1.whyknot.dev/api/proxy?q=...
+| LocalRelayServer (watchdog) |  base64-decode target -> https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=...
 | - HttpListener              |  HttpClient.SendAsync (forwards Range, If-*, User-Agent)
-| - HttpClient                |  reads response headers
+| - HttpClient                |  reads response headers, streams bytes
 | - relative-prefix map       |  /play/<session>/seg.ts -> upstream base + seg.ts
-+-----------------------------+  no manifest parsing or body rewriting
++-----------------------------+  localizes first-party WhyKnot playback proxy URLs only
               |
               v
         Stream bytes back to AVPro with status + Content-Type + Content-Length + Content-Range mirrored.
@@ -48,11 +48,13 @@ AVPro:  GET http://localhost.youtube.com:51234/play/7f8a9b0c1d2e/manifest.m3u8?t
 
 ## HLS handling
 
-The client no longer parses or rewrites HLS manifests. WhyKnot.dev owns HLS compatibility, tier routing, and server-side transcode output.
+WhyKnot.dev owns HLS compatibility, tier routing, and server-side transcode output. The client does not try to fix arbitrary upstream manifests.
 
 When the first local URL includes `target=`, the listener records `/play/<session>/` against the upstream manifest directory. If the playlist body contains relative subresource URLs, AVPro resolves them under the same local namespace and the listener forwards them relative to that upstream directory.
 
-Absolute playlist URLs are a server-side contract. The client will not rewrite them back onto `localhost.youtube.com`; WhyKnot.dev must emit client-compatible playlist bodies for the trust-gateway path.
+If the playlist body contains absolute WhyKnot playback proxy URLs, the listener rewrites those first-party URLs to local relative `proxy/<namespace>/<file>?target=...` entries. That is intentionally narrow: third-party absolute URLs are left untouched, and the relay rejects any `target=` that is not a WhyKnot playback proxy URL. This keeps the listener from becoming a general-purpose localhost proxy while still preserving the trusted-host chain for backend-generated manifests.
+
+If the user pastes a WhyKnot playback URL directly into a video player, the patched yt-dlp wrapper recognizes it before opening the mesh pipe and emits it through the same trust-gateway wrapper. That prevents a server-minted `/api/proxy` URL from being sent back to the resolver and recursively resolved again.
 
 ## Failure modes
 
@@ -63,11 +65,12 @@ Absolute playlist URLs are a server-side contract. The client will not rewrite t
 | Watchdog logs `[relay][warn] could not allocate ephemeral port` | Windows refused to allocate an ephemeral port at all. Rare. Restart the OS or check `netstat -an` for exhaustion. |
 | Wrapper log shows `trust_gateway=passthrough` for every resolve | The port file is missing. Either the watchdog isn't running, or its listener didn't bind. Check the watchdog log. |
 | AVPro still rejects with `Loading failed` despite the gateway running | Hosts entry got removed. The `HostsTicker` re-adds it within 60 seconds; wait or restart the watchdog. |
+| Local request returns 403 from the relay | The request host or `target=` was not allowed. The relay accepts `localhost.youtube.com`, `localhost`, and `127.0.0.1`, and only forwards WhyKnot playback proxy targets. |
 
 ## What the gateway does NOT do
 
 - Does not rewrite URLs the wrapper didn't see (e.g. URLs hand-typed in VRChat for hosts that VRChat itself recognizes via its own player URL handling -- those go straight to AVPro and we're not in the path).
-- Does not modify request/response bodies. Manifests, binary mp4 / mp3 / webm, and segment bytes pass through verbatim.
+- Does not modify arbitrary request/response bodies. Binary mp4 / mp3 / webm and segment bytes pass through verbatim; manifest localization is limited to WhyKnot-owned playback proxy URLs.
 - Does not attempt to handle DRM. Encrypted streams go through whatever DRM negotiation AVPro does directly with the upstream.
 - Does not require VRChat to be running. The listener binds at watchdog startup and stays up until shutdown.
 
@@ -92,7 +95,10 @@ If any of those fire, see the parked design notes in the project memory.
 
 ## Source pointers
 
-- `src/WKVRCProxy/LocalRelayServer.cs` -- the HttpListener loop, request handler, relative playlist namespace map, idle timeout + disconnect propagation.
+- `src/WKVRCProxy/LocalRelayServer.cs` -- the HttpListener loop, request handler, response copy path, idle timeout + disconnect propagation.
+- `src/WKVRCProxy/LocalRelayManifestLocalizer.cs` -- first-party manifest URL localization back under the trusted local namespace.
+- `src/WKVRCProxy/LocalRelaySecurity.cs` -- host-header and WhyKnot playback proxy target validation.
+- `src/WKVRCProxy.Shared/WhyKnotUrlPolicy.cs` -- shared first-party playback proxy URL recognition for the wrapper and relay.
 - `src/WKVRCProxy/RelayPortManager.cs` -- ephemeral port allocation, port file persistence, reuse across restarts.
 - `src/WKVRCProxy/HostsManager.cs` + `src/WKVRCProxy/HostsTicker.cs` -- the hosts entry add/remove + 60-second re-check ticker.
 - `src/WKVRCProxy.YtDlp/Program.cs::TryWrapForTrustGateway` -- the wrapper-side URL rewrite that emits the gateway URL.

@@ -32,6 +32,7 @@ internal static class LocalRelayHeaders
             if (key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
             if (key.Equals("Cookie", StringComparison.OrdinalIgnoreCase)) continue;
             if (key.Equals("Authorization", StringComparison.OrdinalIgnoreCase)) continue;
+            if (key.Equals("Accept-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
             if (key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
             if (key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -39,5 +40,10 @@ internal static class LocalRelayHeaders
             if (value == null) continue;
             dst.Headers.TryAddWithoutValidation(key, value);
         }
+
+        // Keep local relay responses byte-simple. The local hop is loopback, so
+        // compressed manifests save nothing and make first-party URL localization
+        // unsafe unless the relay also owns every content-encoding edge case.
+        dst.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
     }
 }

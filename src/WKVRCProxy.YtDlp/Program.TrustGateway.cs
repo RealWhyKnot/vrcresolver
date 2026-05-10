@@ -1,4 +1,3 @@
-using System.Text;
 using WKVRCProxy.Shared;
 
 namespace WKVRCProxy.YtDlp;
@@ -20,57 +19,23 @@ internal static partial class Program
     // on path extension (.m3u8 -> HLS, .mpd -> DASH); without a recognised
     // extension, MF mis-dispatches and playback stalls. The namespace lets
     // the relay forward relative playlist subrequests without parsing or
-    // rewriting the manifest body.
+    // rewriting arbitrary manifest bodies.
     //
     // Failure modes -- ALL fall through to the raw URL (today's behavior):
     //   - port file missing (watchdog not running OR didn't bind)
     //   - port file unreadable / malformed
+    //   - resolved URL is not a WhyKnot playback proxy URL
     //   - URL is already wrapped (defensive; avoid double-wrap)
     private static string TryWrapForTrustGateway(string url)
     {
         if (string.IsNullOrEmpty(url)) return url;
 
-        // Defensive: don't double-wrap. If the URL is already pointed at
-        // localhost.youtube.com it came from somewhere that already did
-        // the wrap (or someone manually constructed it).
-        if (url.IndexOf("localhost.youtube.com", StringComparison.OrdinalIgnoreCase) >= 0)
-            return url;
-
         int? port = TryReadRelayPort();
         if (!port.HasValue) return url;
 
-        string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(url))
-            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
-        string ext = ExtractPathExtension(url);
-        string suffix = string.IsNullOrEmpty(ext) ? "" : ("." + ext);
-        string session = Guid.NewGuid().ToString("N")[..12];
-        return "http://localhost.youtube.com:"
-            + port.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + "/play/" + session + "/manifest" + suffix + "?target=" + b64;
-    }
-
-    // Mirrors LocalRelayServer.ExtractPathExtension. Lowercase, no leading
-    // dot. Only emit when the upstream extension is on a small allowlist
-    // so unfamiliar suffixes don't end up advertised on the trust-gateway
-    // URL where they could mis-dispatch MF onto the wrong handler.
-    private static readonly HashSet<string> s_allowedPathExts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mp4", "m4s", "m4v", "ts", "m3u8", "mpd",
-        "webm", "mkv", "mov",
-        "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac",
-        "vtt", "srt",
-    };
-
-    private static string ExtractPathExtension(string upstreamUrl)
-    {
-        if (string.IsNullOrEmpty(upstreamUrl)) return "";
-        string path;
-        try { path = new Uri(upstreamUrl).AbsolutePath; }
-        catch { return ""; }
-        string ext = Path.GetExtension(path);
-        if (string.IsNullOrEmpty(ext) || ext.Length < 2) return "";
-        string trimmed = ext.Substring(1).ToLowerInvariant();
-        return s_allowedPathExts.Contains(trimmed) ? trimmed : "";
+        return TrustGatewayUrlBuilder.TryBuild(port.Value, url, session: null, out string localUrl)
+            ? localUrl
+            : url;
     }
 
     private static int? TryReadRelayPort()

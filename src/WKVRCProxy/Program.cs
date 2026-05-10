@@ -229,13 +229,14 @@ internal static class Program
 
         // Local-relay HTTP listener (Phase 1 trust gateway). Binds 127.0.0.1
         // on an ephemeral high port; the patched yt-dlp wrapper reads the
-        // port file and rewrites resolved URLs to
+        // port file and rewrites WhyKnot playback proxy URLs to
         // `http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>`
         // so AVPro's allowlist (which has *.youtube.com) accepts them in
-        // default-public worlds. The relay forwards bytes to WhyKnot.dev
-        // without parsing manifests; WhyKnot.dev owns compatibility and
-        // transcode decisions. Failure to bind is non-fatal: the wrapper
-        // falls through to emitting the raw server URL on missing port file.
+        // default-public worlds. The relay forwards bytes to WhyKnot.dev and
+        // localizes first-party manifest proxy URLs; WhyKnot.dev owns broader
+        // compatibility and transcode decisions. Failure to bind is non-fatal:
+        // the wrapper falls through to emitting the raw server URL on missing
+        // port file.
         // HTTPS + per-machine cert lifecycle is a planned follow-up.
         s_relayPort = new RelayPortManager();
         if (s_relayPort.Initialize())
@@ -454,6 +455,11 @@ internal static class Program
                 catch (Exception ex) { Console.WriteLine("[shutdown][warn] resolve-cache: " + ex.Message); }
             }
         }
+
+        // Fast shutdown skips the relay stop so the patcher restore gets the
+        // OS grace window, but deleting the port file is cheap and prevents a
+        // wrapper invocation from emitting a stale localhost URL.
+        try { s_relayPort?.DeletePortFile(); } catch { /* best-effort */ }
 
         if (s_patcher != null)
         {

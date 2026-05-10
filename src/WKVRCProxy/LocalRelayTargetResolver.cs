@@ -1,9 +1,11 @@
 using System.Text;
+using System.Runtime.Versioning;
 
 namespace WKVRCProxy;
 
 internal readonly record struct LocalRelayTarget(string Url, string Kind);
 
+[SupportedOSPlatform("windows")]
 internal sealed class LocalRelayTargetResolver
 {
     private const int RelativeBaseSoftCap = 256;
@@ -19,7 +21,8 @@ internal sealed class LocalRelayTargetResolver
         if (!string.IsNullOrEmpty(targetParam))
         {
             string targetUrl = DecodeTargetParam(targetParam);
-            RememberRelativeBase(path, targetUrl);
+            if (LocalRelaySecurity.IsAllowedTargetUrl(targetUrl, out _))
+                RememberRelativeBase(path, targetUrl);
             target = new LocalRelayTarget(targetUrl, "target");
             return true;
         }

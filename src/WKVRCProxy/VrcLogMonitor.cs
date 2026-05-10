@@ -166,7 +166,8 @@ internal sealed partial class VrcLogMonitor : IDisposable
                 if (_lastOpeningUrl != null
                     && DateTime.UtcNow - _lastOpeningAt <= AvProOpenFailCorrelationWindow)
                 {
-                    string failed = _lastOpeningUrl;
+                    string observed = _lastOpeningUrl;
+                    string failed = CanonicalPlaybackObservationUrl(observed);
                     int ms = (int)(DateTime.UtcNow - _lastOpeningAt).TotalMilliseconds;
                     _lastOpeningUrl = null; // consume
                     _ = _mesh.SendPlaybackFeedbackAsync(failed, WireConstants.PlaybackFeedbackLoadFailure, ms);
@@ -175,7 +176,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
                     // evict so the next resolve goes back to mesh and
                     // gets a fresh URL.
                     int evicted = _cache?.EvictByUrl(failed) ?? 0;
-                    Console.WriteLine("[vrclog] load_failure ms=" + ms + " url=" + LogUtil.SanitizeForConsole(failed, 96)
+                    Console.WriteLine("[vrclog] load_failure ms=" + ms + " url=" + LogUtil.RedactUrl(failed)
                         + (evicted > 0 ? " evicted=" + evicted : ""));
                 }
                 CancelStallWatchdog();
@@ -235,14 +236,23 @@ internal sealed partial class VrcLogMonitor : IDisposable
             if (activeUrl == null) return;
 
             int ms = (int)(DateTime.UtcNow - activeAt).TotalMilliseconds;
-            _ = _mesh.SendPlaybackFeedbackAsync(activeUrl, WireConstants.PlaybackFeedbackSilentStall, ms);
+            string reportedUrl = CanonicalPlaybackObservationUrl(activeUrl);
+            _ = _mesh.SendPlaybackFeedbackAsync(reportedUrl, WireConstants.PlaybackFeedbackSilentStall, ms);
             // v3.2: AVPro fell silent on a URL we just served. If it was
             // cached, the cached entry is poison -- evict so the next
             // resolve goes back to mesh and gets a fresh URL.
-            int evicted = _cache?.EvictByUrl(activeUrl) ?? 0;
-            Console.WriteLine("[vrclog] silent_stall ms=" + ms + " url=" + LogUtil.SanitizeForConsole(activeUrl, 96)
+            int evicted = _cache?.EvictByUrl(reportedUrl) ?? 0;
+            Console.WriteLine("[vrclog] silent_stall ms=" + ms + " url=" + LogUtil.RedactUrl(reportedUrl)
                 + (evicted > 0 ? " evicted=" + evicted : ""));
         });
+    }
+
+    internal static string CanonicalPlaybackObservationUrl(string url)
+    {
+        return TrustGatewayUrlBuilder.TryExtractTarget(url, out string targetUrl)
+            && WhyKnotUrlPolicy.IsWhyKnotPlaybackProxyUrl(targetUrl)
+            ? targetUrl
+            : url;
     }
 
     private void CancelStallWatchdog()
