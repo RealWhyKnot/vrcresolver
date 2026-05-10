@@ -191,7 +191,7 @@ jobs:
               try {
                 $actual = [string](($raw | ConvertFrom-Json).body)
               } catch {
-                throw "Failed to parse gh release view JSON for $Tag: $_"
+                throw "Failed to parse gh release view JSON for ${Tag}: $_"
               }
               $actual = ($actual -replace "`r`n","`n").TrimEnd("`n")
               $lastActual = $actual
