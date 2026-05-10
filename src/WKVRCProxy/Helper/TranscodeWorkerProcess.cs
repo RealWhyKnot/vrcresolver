@@ -1,0 +1,144 @@
+using System.Diagnostics;
+using System.Globalization;
+
+namespace WKVRCProxy;
+
+internal sealed record TranscodeFfmpegCommand(
+    string ExecutablePath,
+    IReadOnlyList<string> Arguments)
+{
+    public ProcessStartInfo ToStartInfo()
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ExecutablePath,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+
+        foreach (string argument in Arguments)
+            startInfo.ArgumentList.Add(argument);
+
+        return startInfo;
+    }
+}
+
+internal static class TranscodeWorkerProcess
+{
+    public static TranscodeFfmpegCommand BuildSegmentCommand(
+        string ffmpegPath,
+        TranscodeLease lease,
+        HardwareEncoderCapability encoder,
+        string outputPath,
+        int targetWidth,
+        int targetHeight,
+        int targetBitrateKbps)
+    {
+        if (string.IsNullOrWhiteSpace(ffmpegPath))
+            throw new ArgumentException("FFmpeg path is required.", nameof(ffmpegPath));
+        if (lease == null)
+            throw new ArgumentNullException(nameof(lease));
+        if (string.IsNullOrWhiteSpace(outputPath))
+            throw new ArgumentException("Output path is required.", nameof(outputPath));
+
+        int safeWidth = Math.Clamp(targetWidth, 160, 3840);
+        int safeHeight = Math.Clamp(targetHeight, 120, 2160);
+        int bitrate = Math.Clamp(targetBitrateKbps, 300, 12000);
+        int gopSeconds = Math.Clamp(lease.OutputSpec.GopSeconds <= 0 ? 2 : lease.OutputSpec.GopSeconds, 1, 6);
+        int gopFrames = gopSeconds * 30;
+        string pixFmt = PixelFormatFor(encoder, lease.OutputSpec.PixelFormat);
+        string segment = lease.DurationSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+        string start = lease.StartPtsSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+
+        var args = new List<string>
+        {
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-ss",
+            start,
+            "-t",
+            segment,
+            "-i",
+            lease.InputChunkUrl.ToString(),
+            "-map",
+            "0:v:0",
+            "-vf",
+            "scale=" + safeWidth.ToString(CultureInfo.InvariantCulture) + ":"
+                + safeHeight.ToString(CultureInfo.InvariantCulture)
+                + ":force_original_aspect_ratio=decrease,format=" + pixFmt,
+            "-c:v",
+            encoder.EncoderName,
+        };
+
+        AddBackendOptions(args, encoder);
+
+        args.AddRange(new[]
+        {
+            "-b:v",
+            bitrate.ToString(CultureInfo.InvariantCulture) + "k",
+            "-maxrate",
+            Math.Max(bitrate, (int)(bitrate * 1.15)).ToString(CultureInfo.InvariantCulture) + "k",
+            "-bufsize",
+            Math.Max(bitrate * 2, 600).ToString(CultureInfo.InvariantCulture) + "k",
+            "-g",
+            gopFrames.ToString(CultureInfo.InvariantCulture),
+            "-keyint_min",
+            gopFrames.ToString(CultureInfo.InvariantCulture),
+            "-force_key_frames",
+            "expr:gte(t,n_forced*" + gopSeconds.ToString(CultureInfo.InvariantCulture) + ")",
+            "-bf",
+            "0",
+            "-an",
+            "-f",
+            "mpegts",
+            outputPath,
+        });
+
+        return new TranscodeFfmpegCommand(ffmpegPath, args);
+    }
+
+    public static void ApplySafePriority(Process process)
+    {
+        if (process == null)
+            throw new ArgumentNullException(nameof(process));
+
+        try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
+        catch { /* priority changes are best-effort */ }
+    }
+
+    private static string PixelFormatFor(HardwareEncoderCapability encoder, string requested)
+    {
+        requested = (requested ?? "").Trim().ToLowerInvariant();
+        if (requested is "yuv420p" or "nv12")
+            return encoder.Backend is HardwareEncoderBackend.Qsv or HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation
+                ? "nv12"
+                : requested;
+
+        return encoder.Backend is HardwareEncoderBackend.Qsv or HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation
+            ? "nv12"
+            : "yuv420p";
+    }
+
+    private static void AddBackendOptions(List<string> args, HardwareEncoderCapability encoder)
+    {
+        switch (encoder.Backend)
+        {
+            case HardwareEncoderBackend.Nvenc:
+                args.AddRange(new[] { "-preset", "p2", "-tune", "ll", "-rc", "cbr", "-rc-lookahead", "0", "-forced-idr", "1" });
+                break;
+            case HardwareEncoderBackend.Qsv:
+                args.AddRange(new[] { "-preset", "veryfast", "-low_power", "1" });
+                break;
+            case HardwareEncoderBackend.Amf:
+                args.AddRange(new[] { "-quality", "speed" });
+                break;
+            case HardwareEncoderBackend.MediaFoundation:
+                args.AddRange(new[] { "-hw_encoding", "1", "-rate_control", "cbr" });
+                break;
+        }
+    }
+}

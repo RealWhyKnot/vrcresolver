@@ -60,7 +60,7 @@ internal static class LocalRelayTlsManager
     {
         if (args.Length < 2 || !int.TryParse(args[1], out int port) || !IsValidPort(port))
         {
-            Console.Error.WriteLine("[relay][tls][err] invalid port");
+            ConsoleUx.Error(LogComponent.Relay, "HTTPS setup failed: invalid port.");
             return 2;
         }
 
@@ -74,7 +74,7 @@ internal static class LocalRelayTlsManager
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine("[relay][tls][err] bootstrap failed: " + ex.GetType().Name + ": " + ex.Message);
+            ConsoleUx.Error(LogComponent.Relay, "HTTPS setup failed: " + ex.GetType().Name + ": " + ex.Message);
             return 1;
         }
     }
@@ -88,18 +88,18 @@ internal static class LocalRelayTlsManager
             catch (Exception ex)
             {
                 errors++;
-                Console.Error.WriteLine("[relay][tls][warn] sslcert delete port=" + port + ": " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Relay, "HTTPS cleanup could not remove sslcert for port " + port + ": " + ex.Message);
             }
         }
 
         try { RemoveInstalledCertificates(StoreName.My); }
-        catch (Exception ex) { errors++; Console.Error.WriteLine("[relay][tls][warn] remove MY certs: " + ex.Message); }
+        catch (Exception ex) { errors++; ConsoleUx.Warn(LogComponent.Relay, "HTTPS cleanup could not remove personal certificate: " + ex.Message); }
         try { RemoveInstalledCertificates(StoreName.Root); }
-        catch (Exception ex) { errors++; Console.Error.WriteLine("[relay][tls][warn] remove ROOT certs: " + ex.Message); }
+        catch (Exception ex) { errors++; ConsoleUx.Warn(LogComponent.Relay, "HTTPS cleanup could not remove trusted root certificate: " + ex.Message); }
         try { DeleteLegacyPfxIfPresent(); }
-        catch (Exception ex) { errors++; Console.Error.WriteLine("[relay][tls][warn] delete legacy pfx: " + ex.Message); }
+        catch (Exception ex) { errors++; ConsoleUx.Warn(LogComponent.Relay, "HTTPS cleanup could not delete legacy certificate file: " + ex.Message); }
         try { if (File.Exists(PortsPath())) File.Delete(PortsPath()); }
-        catch (Exception ex) { errors++; Console.Error.WriteLine("[relay][tls][warn] delete ports file: " + ex.Message); }
+        catch (Exception ex) { errors++; ConsoleUx.Warn(LogComponent.Relay, "HTTPS cleanup could not delete ports file: " + ex.Message); }
         try
         {
             string root = ProgramDataRoot();

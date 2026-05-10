@@ -416,8 +416,9 @@ internal sealed partial class MeshClient : IAsyncDisposable
         {
             _pending.TryRemove(req.Id, out _);
             _inflightCids.TryRemove(req.Id, out _);
-            Console.WriteLine(
-                "[mesh][warn] send failed id=" + req.Id +
+            ConsoleUx.Warn(
+                LogComponent.Mesh,
+                "send failed id=" + req.Id +
                 CidSuffix(req.CorrelationId) +
                 ": " + ex.GetType().Name + ": " +
                 LogUtil.SanitizeForConsole(ex.Message, 160));
@@ -506,8 +507,9 @@ internal sealed partial class MeshClient : IAsyncDisposable
         string idList = failedIds.Count <= MaxIdsInLine
             ? string.Join(",", failedIds)
             : string.Join(",", failedIds.GetRange(0, MaxIdsInLine)) + ",...(+" + (failedIds.Count - MaxIdsInLine) + ")";
-        Console.WriteLine(
-            "[mesh] failing " + failedIds.Count + " pending requests reason=" + reason +
+        ConsoleUx.Warn(
+            LogComponent.Mesh,
+            "failing " + failedIds.Count + " pending requests reason=" + reason +
             " ids=" + idList);
     }
 

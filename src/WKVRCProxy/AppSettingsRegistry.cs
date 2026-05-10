@@ -1,0 +1,256 @@
+using System.Globalization;
+
+namespace WKVRCProxy;
+
+internal static class AppSettingsRegistry
+{
+    private static readonly AppSettings s_defaults = new();
+
+    public static IReadOnlyList<AppSettingDefinition> All { get; } =
+    [
+        new AppSettingDefinition(
+            "sharing",
+            "Let this PC help repair videos when sharing is available.",
+            ["on", "off"],
+            static s => FormatBool(s.Helper.GpuSharing),
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Helper.GpuSharing = parsed;
+                return true;
+            },
+            static s => s.Helper.GpuSharing = s_defaults.Helper.GpuSharing,
+            aliases: ["gpu-sharing", "helper.gpu-sharing"]),
+
+        new AppSettingDefinition(
+            "gpu-limit",
+            "Maximum GPU share used for video repair.",
+            ["number from 5 to 75; shown as %"],
+            static s => s.Helper.GpuLimitPercent.ToString(CultureInfo.InvariantCulture) + "%",
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParsePercent(value, 5, 75, out int parsed, out error)) return false;
+                s.Helper.GpuLimitPercent = parsed;
+                return true;
+            },
+            static s => s.Helper.GpuLimitPercent = s_defaults.Helper.GpuLimitPercent,
+            aliases: ["gpu", "gpu-percent", "helper.gpu-limit"]),
+
+        new AppSettingDefinition(
+            "upload-limit",
+            "Maximum upload speed used for sharing.",
+            ["number from 0 to 500; 0 means automatic; shown as MB/s"],
+            static s => s.Helper.UploadLimitMbps == 0
+                ? "automatic"
+                : s.Helper.UploadLimitMbps.ToString(CultureInfo.InvariantCulture) + " MB/s",
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseMegabytesPerSecond(value, 0, 500, out int parsed, out error)) return false;
+                s.Helper.UploadLimitMbps = parsed;
+                return true;
+            },
+            static s => s.Helper.UploadLimitMbps = s_defaults.Helper.UploadLimitMbps,
+            aliases: ["upload", "helper.upload-limit"]),
+
+        new AppSettingDefinition(
+            "allow-on-battery",
+            "Allow sharing while this PC is on battery power.",
+            ["on", "off"],
+            static s => FormatBool(s.Helper.AllowOnBattery),
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Helper.AllowOnBattery = parsed;
+                return true;
+            },
+            static s => s.Helper.AllowOnBattery = s_defaults.Helper.AllowOnBattery,
+            aliases: ["battery", "helper.allow-on-battery"]),
+
+        new AppSettingDefinition(
+            "status-line",
+            "Show the live status line at the prompt.",
+            ["on", "off"],
+            static s => FormatBool(s.Terminal.StatusLine),
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Terminal.StatusLine = parsed;
+                return true;
+            },
+            static s => s.Terminal.StatusLine = s_defaults.Terminal.StatusLine,
+            aliases: ["status", "terminal.status-line"]),
+
+        new AppSettingDefinition(
+            "animations",
+            "Animate the active video traffic indicators.",
+            ["on", "off"],
+            static s => FormatBool(s.Terminal.Animations),
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Terminal.Animations = parsed;
+                return true;
+            },
+            static s => s.Terminal.Animations = s_defaults.Terminal.Animations,
+            aliases: ["terminal.animations"]),
+
+        new AppSettingDefinition(
+            "secure-local-video",
+            "Use secure local video links when Windows allows it.",
+            ["on", "off"],
+            static s => s.Relay.Https == RelayAppSettings.HttpsOff ? "off" : "on",
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Relay.Https = parsed ? RelayAppSettings.HttpsAuto : RelayAppSettings.HttpsOff;
+                return true;
+            },
+            static s => s.Relay.Https = s_defaults.Relay.Https,
+            restartRequired: true,
+            aliases: ["local-https", "relay.https"]),
+
+        new AppSettingDefinition(
+            "update-check",
+            "Check for new WKVRCProxy versions at startup.",
+            ["on", "off"],
+            static s => FormatBool(s.Maintenance.UpdateCheck),
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Maintenance.UpdateCheck = parsed;
+                return true;
+            },
+            static s => s.Maintenance.UpdateCheck = s_defaults.Maintenance.UpdateCheck,
+            restartRequired: true,
+            aliases: ["updates", "maintenance.update-check"]),
+
+        new AppSettingDefinition(
+            "video-support-updates",
+            "Keep playback compatibility helpers current.",
+            ["on", "off"],
+            static s => FormatBool(s.Maintenance.CodecAutoInstall && s.Maintenance.YtDlpFallbackAutoUpdate),
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Maintenance.CodecAutoInstall = parsed;
+                s.Maintenance.YtDlpFallbackAutoUpdate = parsed;
+                return true;
+            },
+            static s =>
+            {
+                s.Maintenance.CodecAutoInstall = s_defaults.Maintenance.CodecAutoInstall;
+                s.Maintenance.YtDlpFallbackAutoUpdate = s_defaults.Maintenance.YtDlpFallbackAutoUpdate;
+            },
+            restartRequired: true,
+            aliases: ["video-updates", "codec-install", "fallback-updater", "maintenance.codec-install", "maintenance.ytdlp-update"]),
+    ];
+
+    public static bool TryFind(string key, out AppSettingDefinition? setting)
+    {
+        key = (key ?? "").Trim();
+        setting = All.FirstOrDefault(s =>
+            string.Equals(s.Key, key, StringComparison.OrdinalIgnoreCase)
+            || s.Aliases.Any(a => string.Equals(a, key, StringComparison.OrdinalIgnoreCase)));
+        return setting != null;
+    }
+
+    private static bool TryParseBool(string value, out bool parsed, out string error)
+    {
+        switch ((value ?? "").Trim().ToLowerInvariant())
+        {
+            case "on":
+            case "true":
+            case "yes":
+            case "1":
+            case "enabled":
+                parsed = true;
+                error = "";
+                return true;
+            case "off":
+            case "false":
+            case "no":
+            case "0":
+            case "disabled":
+                parsed = false;
+                error = "";
+                return true;
+            default:
+                parsed = false;
+                error = "expected on or off";
+                return false;
+        }
+    }
+
+    private static bool TryParsePercent(string value, int min, int max, out int parsed, out string error)
+    {
+        return TryParseNumberRange((value ?? "").Trim(), min, max, out parsed, out error, "%");
+    }
+
+    private static bool TryParseMegabytesPerSecond(string value, int min, int max, out int parsed, out string error)
+    {
+        return TryParseNumberRange((value ?? "").Trim(), min, max, out parsed, out error, " MB/s");
+    }
+
+    private static bool TryParseNumberRange(string value, int min, int max, out int parsed, out string error, string unit)
+    {
+        parsed = 0;
+        if (value.Length == 0 || value.Any(ch => ch < '0' || ch > '9')
+            || !int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed))
+        {
+            error = "enter a number from " + min + " to " + max + unit;
+            return false;
+        }
+
+        if (parsed < min || parsed > max)
+        {
+            error = "enter a number from " + min + " to " + max + unit;
+            return false;
+        }
+
+        error = "";
+        return true;
+    }
+
+    private static string FormatBool(bool value) => value ? "on" : "off";
+}
+
+internal sealed class AppSettingDefinition
+{
+    private readonly Func<AppSettings, string> _get;
+    private readonly TrySetSetting _set;
+    private readonly Action<AppSettings> _reset;
+
+    public AppSettingDefinition(
+        string key,
+        string description,
+        IReadOnlyList<string> choices,
+        Func<AppSettings, string> get,
+        TrySetSetting set,
+        Action<AppSettings> reset,
+        bool restartRequired = false,
+        IReadOnlyList<string>? aliases = null)
+    {
+        Key = key;
+        Description = description;
+        Choices = choices;
+        _get = get;
+        _set = set;
+        _reset = reset;
+        RestartRequired = restartRequired;
+        Aliases = aliases ?? Array.Empty<string>();
+    }
+
+    public string Key { get; }
+    public string Description { get; }
+    public IReadOnlyList<string> Choices { get; }
+    public bool RestartRequired { get; }
+    public IReadOnlyList<string> Aliases { get; }
+
+    public string Get(AppSettings settings) => _get(settings);
+
+    public bool TrySet(AppSettings settings, string value, out string error) => _set(settings, value, out error);
+
+    public void Reset(AppSettings settings) => _reset(settings);
+}
+
+internal delegate bool TrySetSetting(AppSettings settings, string value, out string error);

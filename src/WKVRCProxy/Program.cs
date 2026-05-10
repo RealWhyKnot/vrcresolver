@@ -100,7 +100,7 @@ internal static class Program
             try { mutex = new System.Threading.Mutex(false, MutexName, out _); }
             catch (UnauthorizedAccessException)
             {
-                Console.WriteLine("[warn] could not create global mutex (locked-down session?) -- using session-local mutex.");
+                ConsoleUx.Warn(LogComponent.Terminal, "could not create global mutex; using session-local mutex.");
                 mutex = new System.Threading.Mutex(false, "Local\\WKVRCProxy.Watchdog", out _);
             }
             catch (Exception ex)
@@ -115,7 +115,7 @@ internal static class Program
 
             if (!acquired)
             {
-                Console.WriteLine("WKVRCProxy is already running.");
+                ConsoleUx.Warn(LogComponent.Terminal, "WKVRCProxy is already running.");
                 return 1;
             }
 
@@ -190,6 +190,7 @@ internal static class Program
 #pragma warning disable CS0162
         bool isDev = BuildInfo.IsDevBuild;
 #pragma warning restore CS0162
+        AppSettings settings = AppSettingsStore.Shared.Snapshot();
         ConsoleUx.Banner(
             version: version,
             sha: BuildInfo.GitSha,
@@ -240,11 +241,20 @@ internal static class Program
         // compatibility and transcode decisions. Failure to bind is non-fatal:
         // the wrapper falls through to emitting the raw server URL on missing
         // port file.
-        // HTTPS + per-machine cert lifecycle is a planned follow-up.
+        // HTTPS + per-machine cert lifecycle is preferred unless disabled
+        // in settings or blocked by UAC / HTTP.sys. HTTP fallback remains
+        // so the watchdog never fails startup solely because TLS setup did.
         s_relayPort = new RelayPortManager();
         if (s_relayPort.Initialize())
         {
-            string relayScheme = LocalRelayTlsManager.TryEnsureReadyForPort(s_relayPort.CurrentPort)
+            bool relayHttpsAllowed = !string.Equals(
+                settings.Relay.Https,
+                RelayAppSettings.HttpsOff,
+                StringComparison.OrdinalIgnoreCase);
+            if (!relayHttpsAllowed)
+                ConsoleUx.Write(LogComponent.Relay, "secure local video disabled in settings; using local HTTP fallback.");
+
+            string relayScheme = relayHttpsAllowed && LocalRelayTlsManager.TryEnsureReadyForPort(s_relayPort.CurrentPort)
                 ? "https"
                 : "http";
             s_relayPort.WriteSchemeFile(relayScheme);
@@ -252,32 +262,36 @@ internal static class Program
             {
                 s_relay = new LocalRelayServer(s_relayPort.CurrentPort, relayScheme);
                 s_relay.Start();
+                ConsoleUx.Success(LogComponent.Relay, "local video relay ready: "
+                    + relayScheme + "://localhost.youtube.com:" + s_relayPort.CurrentPort);
             }
             catch (Exception ex)
             {
                 if (string.Equals(relayScheme, "https", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.WriteLine("[relay][warn] HTTPS listener start failed: " + ex.Message
-                        + " -- retrying HTTP relay");
+                    ConsoleUx.Warn(LogComponent.Relay, "secure local video failed: " + ex.Message
+                        + " -- retrying local HTTP fallback.");
                     try
                     {
                         relayScheme = "http";
                         s_relayPort.WriteSchemeFile(relayScheme);
                         s_relay = new LocalRelayServer(s_relayPort.CurrentPort, relayScheme);
                         s_relay.Start();
+                        ConsoleUx.Success(LogComponent.Relay, "local video relay ready: http://localhost.youtube.com:"
+                            + s_relayPort.CurrentPort);
                     }
                     catch (Exception httpEx)
                     {
-                        Console.WriteLine("[relay][warn] HTTP listener start failed: " + httpEx.Message
-                            + " -- public-instance trust gateway disabled");
+                        ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start: " + httpEx.Message
+                            + " -- public-instance helper disabled.");
                         s_relay = null;
                         s_relayPort.DeletePortFile();
                     }
                 }
                 else
                 {
-                    Console.WriteLine("[relay][warn] listener start failed: " + ex.Message
-                        + " -- public-instance trust gateway disabled");
+                    ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start: " + ex.Message
+                        + " -- public-instance helper disabled.");
                     s_relay = null;
                     s_relayPort.DeletePortFile();
                 }
@@ -285,7 +299,7 @@ internal static class Program
         }
         else
         {
-            Console.WriteLine("[relay][warn] could not allocate ephemeral port -- public-instance trust gateway disabled");
+            ConsoleUx.Warn(LogComponent.Relay, "could not reserve a local video port -- public-instance helper disabled.");
         }
 
         // Watch VRChat's output_log_*.txt for AVPro playback failures and
@@ -303,8 +317,9 @@ internal static class Program
             return 2;
         }
 
-        Console.WriteLine("Patch applied. Watching for VRChat overwrites -- Ctrl+C to quit.");
-        Console.WriteLine("To uninstall, run WKVRCProxy.Uninstaller.exe (in the same folder).");
+        ConsoleUx.Success(LogComponent.Patch, "VRChat video hook ready; watching for game updates.");
+        ConsoleUx.Write(LogComponent.Terminal, "type /help for commands, /status for activity, /settings for options.");
+        ConsoleUx.Write(LogComponent.Terminal, "to uninstall, run WKVRCProxy.Uninstaller.exe from this folder.");
 
         // Hosts entry (for public-instance support) on a background task so
         // the UAC prompt doesn't gate the watchdog. Patching is already live
@@ -315,7 +330,7 @@ internal static class Program
         _ = Task.Run(() =>
         {
             try { HostsManager.EnsureBypassEntryOrPrompt(); }
-            catch (Exception ex) { Console.WriteLine("[hosts][warn] background error: " + ex.Message); }
+            catch (Exception ex) { ConsoleUx.Warn(LogComponent.Hosts, "background check failed: " + ex.Message); }
         });
 
         s_hostsTicker = new HostsTicker();
@@ -351,7 +366,7 @@ internal static class Program
         s_terminal.Start();
 
         s_quitSignal.Wait();
-        Console.WriteLine("Shutting down...");
+        ConsoleUx.Write(LogComponent.Shutdown, "shutting down; restoring VRChat tools and closing local services.");
 
         RunShutdown().GetAwaiter().GetResult();
         return 0;
@@ -403,7 +418,7 @@ internal static class Program
         {
             using var cts = new CancellationTokenSource(ms);
             var done = await Task.WhenAny(t, Task.Delay(Timeout.Infinite, cts.Token)).ConfigureAwait(false);
-            if (done != t) Console.WriteLine("[shutdown][warn] " + step + " exceeded budget -- moving on");
+            if (done != t) ConsoleUx.Warn(LogComponent.Shutdown, step + " exceeded budget; moving on.");
         }
 
         // Skip ipc + mesh + logmon on the fast path so the patcher restore
@@ -419,7 +434,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_terminal.StopAsync(), Math.Min(remain, 500), "terminal").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] terminal: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "terminal: " + ex.Message); }
             }
 
             if (s_heartbeat != null)
@@ -429,7 +444,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_heartbeat.StopAsync(), Math.Min(remain, 500), "heartbeat").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] heartbeat: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "heartbeat: " + ex.Message); }
             }
 
             if (s_hostsTicker != null)
@@ -439,7 +454,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_hostsTicker.StopAsync(), Math.Min(remain, 500), "hosts-ticker").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] hosts-ticker: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "hosts-ticker: " + ex.Message); }
             }
 
             if (s_logmon != null)
@@ -449,7 +464,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_logmon.StopAsync(), Math.Min(remain, 1000), "logmon").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] logmon: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "log monitor: " + ex.Message); }
             }
 
             if (s_ipc != null)
@@ -459,7 +474,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_ipc.StopAsync(), Math.Min(remain, 3000), "ipc").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] ipc: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "IPC: " + ex.Message); }
             }
 
             // Stop the relay listener AFTER ipc but before mesh -- AVPro
@@ -478,7 +493,7 @@ internal static class Program
                     s_relay.Dispose();
                     s_relay = null;
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] relay: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "local video relay: " + ex.Message); }
             }
             try { s_relayPort?.DeletePortFile(); } catch { /* best-effort */ }
 
@@ -489,7 +504,7 @@ internal static class Program
                     int remain = (int)Math.Max(0, (totalBudget - sw.Elapsed).TotalMilliseconds);
                     await WithTimeout(s_mesh.StopAsync(), Math.Min(remain, 3000), "mesh").ConfigureAwait(false);
                 }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] mesh: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "WhyKnot connection: " + ex.Message); }
             }
 
             // Flush the resolve cache last so any debounced writes from
@@ -499,7 +514,7 @@ internal static class Program
             if (s_resolveCache != null)
             {
                 try { s_resolveCache.FlushNow(); }
-                catch (Exception ex) { Console.WriteLine("[shutdown][warn] resolve-cache: " + ex.Message); }
+                catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "resolve cache: " + ex.Message); }
             }
         }
 
@@ -516,7 +531,7 @@ internal static class Program
                 int patcherBudget = fast ? Math.Max(remain, 3000) : Math.Min(remain, 5000);
                 await WithTimeout(s_patcher.StopAsync(), patcherBudget, "patcher").ConfigureAwait(false);
             }
-            catch (Exception ex) { Console.WriteLine("[shutdown][warn] patcher: " + ex.Message); }
+            catch (Exception ex) { ConsoleUx.Warn(LogComponent.Shutdown, "VRChat hook: " + ex.Message); }
         }
     }
 

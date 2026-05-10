@@ -44,6 +44,12 @@ internal static class YtDlpUpdater
 
     public static void StartBackgroundCheck()
     {
+        if (!AppSettingsStore.Shared.Snapshot().Maintenance.YtDlpFallbackAutoUpdate)
+        {
+            Logger.WriteFileOnly("[yt-dlp] fallback auto-update disabled by settings");
+            return;
+        }
+
         _ = Task.Run(RunAsync);
     }
 
@@ -80,7 +86,7 @@ internal static class YtDlpUpdater
 
             if (string.IsNullOrEmpty(remoteVersion))
             {
-                Console.WriteLine("[yt-dlp][warn] update check failed (could not reach GitHub)");
+                ConsoleUx.Warn(LogComponent.YtDlp, "fallback update check could not reach GitHub.");
                 SaveState(statePath, state);
                 return;
             }
@@ -98,7 +104,7 @@ internal static class YtDlpUpdater
                 return;
             }
 
-            Console.WriteLine("[yt-dlp] updating bundled fallback "
+            ConsoleUx.Write(LogComponent.YtDlp, "updating bundled fallback "
                 + (string.IsNullOrEmpty(localVersion) ? "<unknown>" : localVersion)
                 + " -> " + remoteVersion);
 
@@ -106,11 +112,11 @@ internal static class YtDlpUpdater
             if (ok)
             {
                 state.LastLocal = remoteVersion;
-                Console.WriteLine("[yt-dlp] updated to " + remoteVersion);
+                ConsoleUx.Success(LogComponent.YtDlp, "bundled fallback updated to " + remoteVersion + ".");
             }
             else
             {
-                Console.WriteLine("[yt-dlp][warn] update failed -- bundled fallback left at " + (localVersion ?? "<unknown>"));
+                ConsoleUx.Warn(LogComponent.YtDlp, "update failed; bundled fallback left at " + (localVersion ?? "<unknown>") + ".");
             }
             SaveState(statePath, state);
         }
@@ -118,7 +124,7 @@ internal static class YtDlpUpdater
         {
             // Last-ditch -- never let a yt-dlp updater failure bubble up
             // to the user as a stack trace. The watchdog is more important.
-            Console.WriteLine("[yt-dlp][warn] background error: " + ex.Message);
+            ConsoleUx.Warn(LogComponent.YtDlp, "background check failed: " + ex.Message);
         }
     }
 

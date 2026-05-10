@@ -86,21 +86,21 @@ internal sealed class Heartbeat : IDisposable
         string meshState = _mesh.IsConnected ? "connected" : "disconnected";
 
         var sb = new System.Text.StringBuilder();
-        sb.Append("[heartbeat] up=").Append(FormatUptime(up));
-        sb.Append(" mesh=").Append(meshState);
+        sb.Append("up=").Append(FormatUptime(up));
+        sb.Append(" WhyKnot=").Append(meshState);
         // Drop-when-zero conditional fields. Quiet idle sessions show
         // just "[heartbeat] up=2h13m mesh=connected".
         if (resolves > 0)
         {
             sb.Append(" resolves=").Append(resolves);
-            if (lhYt > 0) sb.Append(" (").Append(lhYt).Append(" via lh-yt)");
+            if (lhYt > 0) sb.Append(" (").Append(lhYt).Append(" local video)");
         }
-        if (bytes > 0) sb.Append(" stream-bytes=").Append(FormatBytes(bytes));
+        if (bytes > 0) sb.Append(" video=").Append(WatchdogDisplay.FormatBytes(bytes));
         if (cacheSize > 0 || cacheHits > 0)
             sb.Append(" cache=").Append(cacheSize).Append('(').Append(cacheHits).Append("hits)");
         if (reconnects > 0) sb.Append(" reconnects=").Append(reconnects);
 
-        Console.WriteLine(sb.ToString());
+        ConsoleUx.Write(LogComponent.Heartbeat, sb.ToString());
     }
 
     internal static string FormatUptime(TimeSpan ts)
@@ -114,18 +114,7 @@ internal sealed class Heartbeat : IDisposable
         return ((int)ts.TotalMinutes).ToString(CultureInfo.InvariantCulture) + "m";
     }
 
-    internal static string FormatBytes(long bytes)
-    {
-        const double KB = 1024;
-        const double MB = KB * 1024;
-        const double GB = MB * 1024;
-        const double TB = GB * 1024;
-        if (bytes < KB) return bytes + " B";
-        if (bytes < MB) return (bytes / KB).ToString("0.0", CultureInfo.InvariantCulture) + " KB";
-        if (bytes < GB) return (bytes / MB).ToString("0.0", CultureInfo.InvariantCulture) + " MB";
-        if (bytes < TB) return (bytes / GB).ToString("0.00", CultureInfo.InvariantCulture) + " GB";
-        return (bytes / TB).ToString("0.00", CultureInfo.InvariantCulture) + " TB";
-    }
+    internal static string FormatBytes(long bytes) => WatchdogDisplay.FormatBytes(bytes);
 
     public void Dispose()
     {

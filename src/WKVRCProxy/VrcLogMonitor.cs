@@ -138,7 +138,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
             {
-                Console.WriteLine("[vrclog] monitor error: " + ex.GetType().Name + ": " + ex.Message);
+                ConsoleUx.Warn(LogComponent.VrcLog, "monitor error: " + ex.GetType().Name + ": " + ex.Message);
                 try { await Task.Delay(5000, ct).ConfigureAwait(false); } catch { return; }
             }
         }
@@ -176,7 +176,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
                     // evict so the next resolve goes back to mesh and
                     // gets a fresh URL.
                     int evicted = _cache?.EvictByUrl(failed) ?? 0;
-                    Console.WriteLine("[vrclog] load_failure ms=" + ms + " url=" + LogUtil.RedactUrl(failed)
+                    ConsoleUx.Warn(LogComponent.VrcLog, "load_failure ms=" + ms + " url=" + LogUtil.RedactUrl(failed)
                         + (evicted > 0 ? " evicted=" + evicted : ""));
                 }
                 CancelStallWatchdog();
@@ -242,7 +242,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
             // cached, the cached entry is poison -- evict so the next
             // resolve goes back to mesh and gets a fresh URL.
             int evicted = _cache?.EvictByUrl(reportedUrl) ?? 0;
-            Console.WriteLine("[vrclog] silent_stall ms=" + ms + " url=" + LogUtil.RedactUrl(reportedUrl)
+            ConsoleUx.Warn(LogComponent.VrcLog, "silent_stall ms=" + ms + " url=" + LogUtil.RedactUrl(reportedUrl)
                 + (evicted > 0 ? " evicted=" + evicted : ""));
         });
     }

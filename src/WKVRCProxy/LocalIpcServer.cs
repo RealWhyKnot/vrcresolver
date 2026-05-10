@@ -83,7 +83,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[ipc][warn] could not create pipe instance: " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Ipc, "could not create pipe instance: " + ex.Message);
                 try { await Task.Delay(1000, ct).ConfigureAwait(false); } catch { return; }
                 continue;
             }
@@ -99,7 +99,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[ipc][warn] accept error: " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Ipc, "accept failed: " + ex.Message);
                 pipe.Dispose();
                 continue;
             }
@@ -120,7 +120,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             var (line, truncated) = await ReadLineAsync(pipe, perReqCts.Token).ConfigureAwait(false);
             if (truncated)
             {
-                Console.WriteLine("[ipc][warn] rejecting request: payload exceeded "
+                ConsoleUx.Warn(LogComponent.Ipc, "rejecting request: payload exceeded "
                     + MaxRequestBytes + " bytes without a newline terminator");
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
                 return;
@@ -161,17 +161,17 @@ internal sealed partial class LocalIpcServer : IDisposable
                 // Pre-fix this path was completely silent.
                 if (parseError != null)
                 {
-                    Console.WriteLine("[ipc][warn] request parse failed: "
+                    ConsoleUx.Warn(LogComponent.Ipc, "request parse failed: "
                         + LogUtil.SanitizeForConsole(parseError, 160)
                         + " preview=" + LogUtil.SanitizeForConsole(line, 80));
                 }
                 else if (req != null)
                 {
-                    Console.WriteLine("[ipc][warn] request missing url");
+                    ConsoleUx.Warn(LogComponent.Ipc, "request missing url");
                 }
                 else
                 {
-                    Console.WriteLine("[ipc][warn] empty request received");
+                    ConsoleUx.Warn(LogComponent.Ipc, "empty request received");
                 }
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
                 return;
@@ -187,7 +187,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             // diagnostic on the watchdog side).
             if (!string.Equals(req.Action, WireConstants.ActionResolve, StringComparison.Ordinal))
             {
-                Console.WriteLine("[ipc][warn] rejecting request id=" + id +
+                ConsoleUx.Warn(LogComponent.Ipc, "rejecting request id=" + id +
                     " action=" + LogUtil.SanitizeForConsole(req.Action, 32) +
                     " -- only \"resolve\" is accepted on this pipe");
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
@@ -201,7 +201,7 @@ internal sealed partial class LocalIpcServer : IDisposable
             // of silently being routed to a server that will reject.
             if (req.Player != WireConstants.PlayerAvPro && req.Player != WireConstants.PlayerUnity)
             {
-                Console.WriteLine("[ipc][warn] rejecting request id=" + id + CidSuffix(cid) +
+                ConsoleUx.Warn(LogComponent.Ipc, "rejecting request id=" + id + CidSuffix(cid) +
                     " player=" + LogUtil.SanitizeForConsole(req.Player ?? "<null>", 32) +
                     " -- must be \"avpro\" or \"unity\" (case-sensitive)");
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
@@ -303,8 +303,9 @@ internal sealed partial class LocalIpcServer : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    "[ipc][warn] mesh.ResolveAsync threw id=" + id + CidSuffix(cid) +
+                ConsoleUx.Warn(
+                    LogComponent.Ipc,
+                    "mesh.ResolveAsync threw id=" + id + CidSuffix(cid) +
                     ": " + ex.GetType().Name + ": " +
                     LogUtil.SanitizeForConsole(ex.Message, 160));
                 failReason = WireConstants.FallbackInternalError;
@@ -381,8 +382,9 @@ internal sealed partial class LocalIpcServer : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine(
-                "[ipc][warn] connection error id=" + id + CidSuffix(cid) +
+            ConsoleUx.Warn(
+                LogComponent.Ipc,
+                "connection error id=" + id + CidSuffix(cid) +
                 ": " + ex.GetType().Name + ": " +
                 LogUtil.SanitizeForConsole(ex.Message, 160));
         }

@@ -84,8 +84,9 @@ internal sealed class PatchManager : IDisposable
             string startedStr;
             try { startedStr = primary.StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); }
             catch { startedStr = "<unknown>"; }
-            Console.WriteLine(
-                "[patch] VRChat is currently running (PID " + primary.Id +
+            ConsoleUx.Write(
+                LogComponent.Patch,
+                "VRChat is currently running (PID " + primary.Id +
                 ", started " + startedStr + ") -- patch will apply when yt-dlp.exe isn't actively in use.");
             foreach (var p in procs) try { p.Dispose(); } catch { /* best-effort */ }
         }
@@ -153,19 +154,19 @@ internal sealed class PatchManager : IDisposable
                 if (File.Exists(_bundledFallbackPath))
                 {
                     AtomicCopy(_bundledFallbackPath, targetPath);
-                    Console.WriteLine("Recovery: orphan patched yt-dlp.exe replaced with bundled vanilla (" + ReadBundledFallbackVersion() + ").");
+                    ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan patched yt-dlp.exe replaced with bundled vanilla (" + ReadBundledFallbackVersion() + ").");
                 }
                 else
                 {
                     // Last resort: delete and let Start() halt. There's no
                     // viable yt-dlp anywhere we can reach.
                     File.Delete(targetPath);
-                    Console.WriteLine("Recovery: orphan patched yt-dlp.exe deleted (no bundled fallback available).");
+                    ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan patched yt-dlp.exe deleted (no bundled fallback available).");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Recovery: orphan replacement failed: " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan replacement failed: " + ex.Message);
             }
         }
     }
@@ -422,7 +423,7 @@ internal sealed class PatchManager : IDisposable
     {
         if (_lastTickOutcome == outcome) return;
         _lastTickOutcome = outcome;
-        Console.WriteLine(message);
+        ConsoleUx.Write(LogComponent.Patch, StripPatchPrefix(message));
     }
 
     // File-only variant for the steady-state Match outcome. Demoted in
@@ -434,6 +435,14 @@ internal sealed class PatchManager : IDisposable
         if (_lastTickOutcome == outcome) return;
         _lastTickOutcome = outcome;
         Logger.WriteFileOnly(message);
+    }
+
+    private static string StripPatchPrefix(string message)
+    {
+        const string prefix = "[patch] ";
+        return message != null && message.StartsWith(prefix, StringComparison.Ordinal)
+            ? message[prefix.Length..]
+            : (message ?? "");
     }
 
     // Track consecutive IOException ticks so a sustained AV-lock or
@@ -472,7 +481,7 @@ internal sealed class PatchManager : IDisposable
         if (!string.IsNullOrEmpty(_vrcToolsDir))
         {
             try { restored = RestoreYtDlpInTools(_vrcToolsDir); }
-            catch (Exception ex) { Console.WriteLine("[halt] restore threw: " + ex.Message); }
+            catch (Exception ex) { ConsoleUx.Warn(LogComponent.Patch, "halt restore threw: " + ex.Message); }
             ToolsDirSweeper.Sweep(_vrcToolsDir);
         }
 
@@ -480,16 +489,11 @@ internal sealed class PatchManager : IDisposable
         // in the scrollback and update the console window title so a user
         // glancing at the taskbar sees the daemon is no longer functional
         // even after the message has scrolled off.
-        Console.WriteLine("");
-        Console.WriteLine("============================================================");
-        Console.WriteLine("[FATAL] WKVRCProxy halted -- Reinstall WKVRCProxy");
-        Console.WriteLine("[halt]  reason=" + reason + " restored=" + restored);
-        Console.WriteLine("============================================================");
-        Console.WriteLine("");
+        ConsoleUx.Fatal("WKVRCProxy halted -- Reinstall WKVRCProxy; reason=" + reason + " restored=" + restored);
         try { Console.Title = "WKVRCProxy -- HALTED (" + reason + ")"; } catch { /* best-effort */ }
 
         try { File.WriteAllText(_haltFlagPath, DateTime.UtcNow.ToString("o") + " " + reason); }
-        catch (Exception ex) { Console.WriteLine("[halt] could not write halt.flag: " + ex.Message); }
+        catch (Exception ex) { ConsoleUx.Warn(LogComponent.Patch, "could not write halt.flag: " + ex.Message); }
         _cts.Cancel();
     }
 

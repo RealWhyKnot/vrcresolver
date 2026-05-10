@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
+using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
@@ -24,6 +25,12 @@ internal static class UpdateCheck
 
     public static void StartBackgroundCheck()
     {
+        if (!AppSettingsStore.Shared.Snapshot().Maintenance.UpdateCheck)
+        {
+            Logger.WriteFileOnly("[update] startup update check disabled by settings");
+            return;
+        }
+
         _ = Task.Run(RunAsync);
     }
 
@@ -62,8 +69,9 @@ internal static class UpdateCheck
                 ? (urlEl.GetString() ?? "")
                 : "";
 
-            Console.WriteLine(
-                "[update] Version " + tag + " available — run WKVRCProxy.Updater.exe to install" +
+            ConsoleUx.Success(
+                LogComponent.Update,
+                "version " + tag + " is available; run WKVRCProxy.Updater.exe to install" +
                 (string.IsNullOrEmpty(url) ? "" : " (" + url + ")"));
         }
         catch

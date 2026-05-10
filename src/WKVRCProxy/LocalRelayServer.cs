@@ -79,7 +79,7 @@ internal sealed partial class LocalRelayServer : IDisposable
         }
         catch (HttpListenerException ex)
         {
-            Console.WriteLine("[relay][error] HttpListener.Start failed on port "
+            ConsoleUx.Error(LogComponent.Relay, "listener failed on port "
                 + _port + " scheme=" + _scheme + ": " + ex.Message);
             throw;
         }
@@ -107,7 +107,7 @@ internal sealed partial class LocalRelayServer : IDisposable
             catch (Exception ex)
             {
                 if (_cts.IsCancellationRequested) break;
-                Console.WriteLine("[relay][warn] accept error: " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Relay, "accept failed: " + ex.Message);
                 continue;
             }
             // Fire-and-forget per-request handler. HttpListener serialises
@@ -135,14 +135,14 @@ internal sealed partial class LocalRelayServer : IDisposable
                 string rawUrl = ctx.Request.RawUrl ?? "";
                 string remote = ctx.Request.RemoteEndPoint?.ToString() ?? "?";
                 string protoVer = "HTTP/" + (ctx.Request.ProtocolVersion?.ToString() ?? "?");
-                Console.WriteLine("[relay] req=" + reqId + " <- " + method + " " + ShortUrl(rawUrl)
+                Verbose("req=" + reqId + " <- " + method + " " + ShortUrl(rawUrl)
                     + " from=" + remote + " " + protoVer);
                 DumpHeaders("[relay] req=" + reqId + "  H<", ctx.Request.Headers);
             }
             if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase))
             {
-                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 405 (method)");
+                if (s_verbose) Verbose("req=" + reqId + " -> 405 (method)");
                 ctx.Response.StatusCode = 405;
                 ctx.Response.Headers["Allow"] = "GET, HEAD";
                 ctx.Response.Close();
@@ -151,7 +151,7 @@ internal sealed partial class LocalRelayServer : IDisposable
 
             if (!LocalRelaySecurity.IsAllowedHostHeader(ctx.Request.Headers["Host"], _port))
             {
-                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 403 (host)");
+                if (s_verbose) Verbose("req=" + reqId + " -> 403 (host)");
                 ctx.Response.StatusCode = 403;
                 ctx.Response.Close();
                 return;
@@ -159,7 +159,7 @@ internal sealed partial class LocalRelayServer : IDisposable
 
             if (!LocalRelayTargetResolver.IsPlayPath(path))
             {
-                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 404 (path mismatch)");
+                if (s_verbose) Verbose("req=" + reqId + " -> 404 (path mismatch)");
                 ctx.Response.StatusCode = 404;
                 ctx.Response.Close();
                 return;
@@ -171,7 +171,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                     ctx.Request.QueryString["target"],
                     out LocalRelayTarget target))
             {
-                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 400 (no target param or relative base)");
+                if (s_verbose) Verbose("req=" + reqId + " -> 400 (no target param or relative base)");
                 ctx.Response.StatusCode = 400;
                 ctx.Response.Close();
                 return;
@@ -180,13 +180,13 @@ internal sealed partial class LocalRelayServer : IDisposable
             targetUrl = target.Url;
             if (!LocalRelaySecurity.IsAllowedTargetUrl(targetUrl, out string targetRejectReason))
             {
-                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 403 ("
+                if (s_verbose) Verbose("req=" + reqId + " -> 403 ("
                     + targetRejectReason + " target='" + ShortUrl(targetUrl) + "')");
                 ctx.Response.StatusCode = 403;
                 ctx.Response.Close();
                 return;
             }
-            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " kind=" + target.Kind + " target=" + ShortUrl(targetUrl));
+            if (s_verbose) Verbose("req=" + reqId + " kind=" + target.Kind + " target=" + ShortUrl(targetUrl));
             WatchdogStats.RecordRelayRequest(targetUrl);
 
             using var outboundReq = new HttpRequestMessage(
@@ -200,7 +200,7 @@ internal sealed partial class LocalRelayServer : IDisposable
 
             if (s_verbose)
             {
-                Console.WriteLine("[relay] req=" + reqId + " upstream-status=" + (int)resp.StatusCode
+                Verbose("req=" + reqId + " upstream-status=" + (int)resp.StatusCode
                     + " ms=" + (Environment.TickCount64 - t0));
                 DumpHttpHeaders("[relay] req=" + reqId + "  upstream-H>", resp.Headers, resp.Content.Headers);
             }
@@ -217,7 +217,7 @@ internal sealed partial class LocalRelayServer : IDisposable
             {
                 if (!LocalRelayManifestLocalizer.CanBuffer(resp.Content.Headers.ContentLength))
                 {
-                    if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 502 (manifest too large len="
+                    if (s_verbose) Verbose("req=" + reqId + " -> 502 (manifest too large len="
                         + resp.Content.Headers.ContentLength + ")");
                     ctx.Response.StatusCode = 502;
                     ctx.Response.ContentType = "text/plain; charset=utf-8";
@@ -234,7 +234,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                     _cts.Token).ConfigureAwait(false);
                 if (read.Exceeded)
                 {
-                    if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> 502 (manifest exceeded cap)");
+                    if (s_verbose) Verbose("req=" + reqId + " -> 502 (manifest exceeded cap)");
                     ctx.Response.StatusCode = 502;
                     ctx.Response.ContentType = "text/plain; charset=utf-8";
                     byte[] tooLarge = Encoding.UTF8.GetBytes("manifest too large for local relay");
@@ -259,10 +259,10 @@ internal sealed partial class LocalRelayServer : IDisposable
                     out int droppedManifestHeaders);
                 if (s_verbose)
                 {
-                    Console.WriteLine("[relay] req=" + reqId + " localized-manifest bytes-in="
+                    Verbose("req=" + reqId + " localized-manifest bytes-in="
                         + read.Bytes.Length + " bytes-out=" + body.Length
                         + " changed=" + (!string.Equals(original, localized, StringComparison.Ordinal)));
-                    Console.WriteLine("[relay] req=" + reqId + " response-headers passed="
+                    Verbose("req=" + reqId + " response-headers passed="
                         + passedManifestHeaders + " dropped=" + droppedManifestHeaders
                         + " ct='" + ctx.Response.ContentType + "' len=" + body.Length);
                     DumpHeaders("[relay] req=" + reqId + "  H>", ctx.Response.Headers);
@@ -282,7 +282,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                 bodyRewritten: false,
                 out int passedHeaders,
                 out int droppedHeaders);
-            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " response-headers passed=" + passedHeaders
+            if (s_verbose) Verbose("req=" + reqId + " response-headers passed=" + passedHeaders
                 + " dropped=" + droppedHeaders + " ct='" + ctx.Response.ContentType + "' len="
                 + (resp.Content.Headers.ContentLength?.ToString() ?? "null"));
 
@@ -290,7 +290,7 @@ internal sealed partial class LocalRelayServer : IDisposable
 
             if (isHead)
             {
-                if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> " + ctx.Response.StatusCode
+                if (s_verbose) Verbose("req=" + reqId + " -> " + ctx.Response.StatusCode
                     + " HEAD elapsed=" + (Environment.TickCount64 - t0) + "ms");
                 return;
             }
@@ -308,8 +308,7 @@ internal sealed partial class LocalRelayServer : IDisposable
                 try { n = await upstream.ReadAsync(buf.AsMemory(), idle.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (!_cts.IsCancellationRequested && idle.IsCancellationRequested)
                 {
-                    Console.WriteLine("[relay][warn] body idle timeout for "
-                        + ShortUrl(targetUrl));
+                    ConsoleUx.Warn(LogComponent.Relay, "stream idle timeout for " + ShortUrl(targetUrl));
                     return;
                 }
                 if (n == 0) break;
@@ -317,21 +316,21 @@ internal sealed partial class LocalRelayServer : IDisposable
                 bytesOut += n;
                 WatchdogStats.RecordRelayBytes(targetUrl, n);
             }
-            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " -> " + ctx.Response.StatusCode
+            if (s_verbose) Verbose("req=" + reqId + " -> " + ctx.Response.StatusCode
                 + " stream bytes-out=" + bytesOut + " elapsed=" + (Environment.TickCount64 - t0) + "ms");
         }
         catch (HttpListenerException hle)
         {
-            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " client-disconnect (HttpListenerException ec=" + hle.ErrorCode + ") bytes-out=" + bytesOut);
+            if (s_verbose) Verbose("req=" + reqId + " client-disconnect (HttpListenerException ec=" + hle.ErrorCode + ") bytes-out=" + bytesOut);
         }
         catch (System.IO.IOException ioe)
         {
-            if (s_verbose) Console.WriteLine("[relay] req=" + reqId + " client-disconnect (IOException: " + ioe.Message + ") bytes-out=" + bytesOut);
+            if (s_verbose) Verbose("req=" + reqId + " client-disconnect (IOException: " + ioe.Message + ") bytes-out=" + bytesOut);
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* shutdown */ }
         catch (Exception ex)
         {
-            Console.WriteLine("[relay][warn] handler error for " + ShortUrl(targetUrl)
+            ConsoleUx.Warn(LogComponent.Relay, "request failed for " + ShortUrl(targetUrl)
                 + ": " + ex.GetType().Name + ": " + ex.Message);
             try { ctx.Response.StatusCode = 502; } catch { }
         }
@@ -410,7 +409,7 @@ internal sealed partial class LocalRelayServer : IDisposable
             if (string.IsNullOrEmpty(key)) continue;
             string val = headers[key] ?? "";
             if (val.Length > 200) val = val.Substring(0, 200) + "...";
-            Console.WriteLine(prefix + " " + key + ": " + val);
+            Logger.WriteFileOnly(prefix + " " + key + ": " + val);
         }
     }
 
@@ -420,8 +419,13 @@ internal sealed partial class LocalRelayServer : IDisposable
         {
             string val = string.Join(", ", h.Value);
             if (val.Length > 200) val = val.Substring(0, 200) + "...";
-            Console.WriteLine(prefix + " " + h.Key + ": " + val);
+            Logger.WriteFileOnly(prefix + " " + h.Key + ": " + val);
         }
+    }
+
+    private static void Verbose(string message)
+    {
+        Logger.WriteFileOnly("[relay] " + message);
     }
 
     private static string ShortUrl(string url)

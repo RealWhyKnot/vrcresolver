@@ -1,6 +1,4 @@
-using System.Globalization;
 using System.Runtime.Versioning;
-using System.Text;
 using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
@@ -8,28 +6,47 @@ namespace WKVRCProxy;
 [SupportedOSPlatform("windows")]
 internal sealed class InteractiveTerminal : IDisposable
 {
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(125);
-    internal static readonly TimeSpan ActivityWindow = TimeSpan.FromSeconds(2);
-
     private readonly Action _requestShutdown;
     private readonly Func<bool> _meshConnected;
     private readonly CancellationTokenSource _cts = new();
-    private readonly StringBuilder _input = new();
-    private readonly object _inputLock = new();
-    private readonly Overlay _overlay;
+    private readonly TerminalInputBuffer _input;
+    private readonly TerminalCommandRegistry _commands;
+    private readonly TerminalSessionStore _session;
+    private readonly TerminalRenderer _renderer;
 
-    private IDisposable? _overlayRegistration;
     private Task? _inputTask;
     private Task? _renderTask;
     private int _spinnerIndex;
     private int _started;
+    private string _lastSuggestionInput = "";
     private volatile bool _stopped;
 
     public InteractiveTerminal(Action requestShutdown, Func<bool> meshConnected)
+        : this(
+            requestShutdown,
+            meshConnected,
+            TerminalSessionStore.CreateDefault())
+    {
+    }
+
+    internal InteractiveTerminal(
+        Action requestShutdown,
+        Func<bool> meshConnected,
+        TerminalSessionStore session)
     {
         _requestShutdown = requestShutdown ?? throw new ArgumentNullException(nameof(requestShutdown));
         _meshConnected = meshConnected ?? throw new ArgumentNullException(nameof(meshConnected));
-        _overlay = new Overlay(this);
+        _session = session ?? throw new ArgumentNullException(nameof(session));
+        _input = new TerminalInputBuffer(_session.LoadHistory());
+        _commands = TerminalCommandRegistry.CreateDefault();
+        _renderer = new TerminalRenderer(
+            snapshot: WatchdogStats.GetActivitySnapshot,
+            bandwidth: WatchdogStats.GetBandwidthSnapshot,
+            meshConnected: MeshConnected,
+            spinnerIndex: () => Volatile.Read(ref _spinnerIndex),
+            input: _input.Text,
+            settings: AppSettingsStore.Shared.Snapshot,
+            recordOutput: _session.RecordOutput);
     }
 
     public void Start()
@@ -37,8 +54,9 @@ internal sealed class InteractiveTerminal : IDisposable
         if (Interlocked.Exchange(ref _started, 1) != 0) return;
         if (!CanUseInteractiveConsole()) return;
 
-        _overlayRegistration = ConsoleUx.UseOverlay(_overlay);
-        ConsoleUx.Write(LogComponent.Terminal, "interactive terminal ready; type 'help' for commands.");
+        _session.Start();
+        _renderer.AttachOverlay();
+        _renderer.Success("interactive terminal ready; type /help for commands.");
         _inputTask = Task.Run(() => InputLoopAsync(_cts.Token));
         _renderTask = Task.Run(() => RenderLoopAsync(_cts.Token));
     }
@@ -47,7 +65,8 @@ internal sealed class InteractiveTerminal : IDisposable
     {
         _stopped = true;
         _cts.Cancel();
-        _overlayRegistration?.Dispose();
+        _renderer.DetachOverlay();
+        _session.Stop();
         await AwaitNoThrowAsync(_renderTask, 500).ConfigureAwait(false);
         await AwaitNoThrowAsync(_inputTask, 500).ConfigureAwait(false);
     }
@@ -73,14 +92,14 @@ internal sealed class InteractiveTerminal : IDisposable
                     continue;
                 }
 
-                HandleKey(Console.ReadKey(intercept: true));
+                await HandleKeyAsync(Console.ReadKey(intercept: true), ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { return; }
             catch (InvalidOperationException) { return; }
             catch (IOException) { return; }
             catch (Exception ex)
             {
-                ConsoleUx.Warn(LogComponent.Terminal, "input disabled: " + ex.GetType().Name + ": " + ex.Message);
+                _renderer.Warn("input disabled: " + ex.GetType().Name + ": " + ex.Message);
                 return;
             }
         }
@@ -92,184 +111,198 @@ internal sealed class InteractiveTerminal : IDisposable
         {
             try
             {
-                await Task.Delay(RefreshInterval, ct).ConfigureAwait(false);
+                await Task.Delay(_renderer.ShouldUseFastRefresh()
+                    ? TerminalRefreshPolicy.ActiveRefreshInterval
+                    : TerminalRefreshPolicy.IdleRefreshInterval, ct).ConfigureAwait(false);
                 Interlocked.Increment(ref _spinnerIndex);
-                ConsoleUx.WithConsoleLock(_overlay.RenderLocked);
+                _renderer.RenderOverlay();
             }
             catch (OperationCanceledException) { return; }
             catch { return; }
         }
     }
 
-    private void HandleKey(ConsoleKeyInfo key)
+    private async Task HandleKeyAsync(ConsoleKeyInfo key, CancellationToken ct)
     {
         if ((key.Modifiers & ConsoleModifiers.Control) != 0)
         {
-            if (key.Key == ConsoleKey.U)
+            switch (key.Key)
             {
-                SetInput("");
-                Redraw();
+                case ConsoleKey.U:
+                    _input.Clear();
+                    _lastSuggestionInput = "";
+                    Redraw();
+                    return;
+                case ConsoleKey.L:
+                    _renderer.ClearScreen();
+                    return;
+                case ConsoleKey.D when string.IsNullOrEmpty(_input.Text()):
+                    _requestShutdown();
+                    return;
+                case ConsoleKey.C:
+                    _input.Clear();
+                    _lastSuggestionInput = "";
+                    _renderer.Warn("input cancelled.");
+                    return;
             }
-            return;
         }
 
         switch (key.Key)
         {
             case ConsoleKey.Enter:
-                SubmitInput();
+                await SubmitInputAsync(ct).ConfigureAwait(false);
                 return;
             case ConsoleKey.Backspace:
-                RemoveLastInputChar();
+                _input.Backspace();
+                _lastSuggestionInput = "";
                 Redraw();
                 return;
             case ConsoleKey.Escape:
-                SetInput("");
+                _input.Clear();
+                _lastSuggestionInput = "";
                 Redraw();
                 return;
             case ConsoleKey.Tab:
-                CompleteInput();
+                CompleteInput(showSuggestionsWhenAmbiguous: true);
+                return;
+            case ConsoleKey.UpArrow:
+                _input.PreviousHistory();
+                _lastSuggestionInput = "";
+                Redraw();
+                return;
+            case ConsoleKey.DownArrow:
+                _input.NextHistory();
+                _lastSuggestionInput = "";
                 Redraw();
                 return;
         }
 
         if (!char.IsControl(key.KeyChar))
         {
-            AppendInput(key.KeyChar);
-            Redraw();
+            _input.Append(key.KeyChar);
+            AutoCompleteInput();
         }
     }
 
-    private void SubmitInput()
+    private async Task SubmitInputAsync(CancellationToken ct)
     {
-        string command = TakeInput().Trim();
-        if (command.Length == 0)
+        string commandText = _input.Take().Trim();
+        _lastSuggestionInput = "";
+        if (commandText.Length == 0)
         {
             Redraw();
             return;
         }
 
-        ConsoleUx.WithConsoleLock(() =>
+        _input.Remember(commandText);
+        _session.RecordCommand(commandText);
+        _renderer.EchoCommand(commandText);
+
+        var parsed = TerminalCommandLine.Parse(commandText);
+        if (!_commands.TryGet(parsed.Verb, out TerminalCommand? command))
         {
-            _overlay.ClearLocked();
-            WriteColored(ConsoleColor.White, "wkvrc> ");
-            WriteColored(ConsoleColor.Gray, command);
-            Console.WriteLine();
-            _overlay.RenderLocked();
-        });
+            _renderer.Warn("unknown command: " + parsed.Verb + " (type /help)");
+            return;
+        }
 
-        ExecuteCommand(command);
-    }
+        var context = new TerminalCommandContext(
+            _renderer,
+            _session,
+            _commands,
+            _requestShutdown,
+            WatchdogStats.GetActivitySnapshot,
+            MeshConnected);
 
-    private void ExecuteCommand(string command)
-    {
-        string[] parts = command.Split(' ', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        string verb = parts.Length == 0 ? "" : parts[0].ToLowerInvariant();
-        string args = parts.Length == 2 ? parts[1] : "";
-
-        switch (verb)
+        try
         {
-            case "help":
-                ConsoleUx.Write(LogComponent.Terminal, "commands: settings, help, clear, quit");
-                break;
-            case "settings":
-                if (args.Length > 0)
-                    ConsoleUx.Warn(LogComponent.Terminal, "settings has no editable values in this build.");
-                else
-                    ConsoleUx.Write(LogComponent.Terminal, "settings: no editable values in this build.");
-                break;
-            case "clear":
-                ClearConsole();
-                break;
-            case "quit":
-            case "exit":
-                ConsoleUx.Write(LogComponent.Terminal, "quit requested; shutting down.");
-                _requestShutdown();
-                break;
-            default:
-                ConsoleUx.Warn(LogComponent.Terminal, "unknown command: " + command + " (type 'help')");
-                break;
+            await command!.ExecuteAsync(context, parsed.Arguments, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _renderer.Warn("command cancelled.");
+        }
+        catch (Exception ex)
+        {
+            _renderer.Error("command failed: " + ex.GetType().Name + ": " + ex.Message);
         }
     }
 
-    private void CompleteInput()
+    private void AutoCompleteInput()
     {
-        string current = GetInput();
-        if ("settings".StartsWith(current, StringComparison.OrdinalIgnoreCase))
-            SetInput("settings");
-        else if ("help".StartsWith(current, StringComparison.OrdinalIgnoreCase))
-            SetInput("help");
-        else if ("quit".StartsWith(current, StringComparison.OrdinalIgnoreCase))
-            SetInput("quit");
+        string text = _input.Text();
+        if (text == "/")
+        {
+            ShowCompletions(text, force: false);
+            return;
+        }
+
+        if (text.StartsWith("/", StringComparison.Ordinal) && !text.Contains(' ', StringComparison.Ordinal))
+        {
+            TerminalCompletion completion = _commands.Complete(text);
+            if (!string.IsNullOrEmpty(completion.Replacement))
+            {
+                _input.Set(completion.Replacement);
+                _lastSuggestionInput = "";
+                Redraw();
+                return;
+            }
+
+            if (completion.Suggestions.Count > 0)
+            {
+                ShowCompletions(text, completion.Suggestions, force: false);
+                return;
+            }
+        }
+
+        _lastSuggestionInput = "";
+        Redraw();
     }
 
-    private void ClearConsole()
+    private void CompleteInput(bool showSuggestionsWhenAmbiguous)
     {
-        ConsoleUx.WithConsoleLock(() =>
+        TerminalCompletion completion = _commands.Complete(_input.Text());
+        if (!string.IsNullOrEmpty(completion.Replacement))
         {
-            _overlay.ClearLocked();
-            try { Console.Clear(); }
-            catch { /* non-clearable host */ }
-            _overlay.RenderLocked();
-        });
+            _input.Set(completion.Replacement);
+            _lastSuggestionInput = "";
+            Redraw();
+            return;
+        }
+
+        if (completion.Suggestions.Count > 0 && showSuggestionsWhenAmbiguous)
+            ShowCompletions(_input.Text(), completion.Suggestions, force: true);
+        else
+            Redraw();
+    }
+
+    private void ShowCompletions(string input, bool force)
+    {
+        ShowCompletions(input, _commands.All, force);
+    }
+
+    private void ShowCompletions(string input, IReadOnlyList<TerminalCommand> suggestions, bool force)
+    {
+        if (!force && string.Equals(_lastSuggestionInput, input, StringComparison.Ordinal))
+        {
+            Redraw();
+            return;
+        }
+
+        _lastSuggestionInput = input;
+        _renderer.RenderCompletions(suggestions);
     }
 
     private void Redraw()
     {
-        if (_stopped) return;
-        ConsoleUx.WithConsoleLock(_overlay.RenderLocked);
+        if (!_stopped)
+            _renderer.RenderOverlay();
     }
-
-    private void AppendInput(char ch)
-    {
-        lock (_inputLock)
-        {
-            if (_input.Length < 512)
-                _input.Append(ch);
-        }
-    }
-
-    private void RemoveLastInputChar()
-    {
-        lock (_inputLock)
-        {
-            if (_input.Length > 0)
-                _input.Length--;
-        }
-    }
-
-    private string TakeInput()
-    {
-        lock (_inputLock)
-        {
-            string value = _input.ToString();
-            _input.Clear();
-            return value;
-        }
-    }
-
-    private string GetInput()
-    {
-        lock (_inputLock) return _input.ToString();
-    }
-
-    private void SetInput(string value)
-    {
-        lock (_inputLock)
-        {
-            _input.Clear();
-            _input.Append(value);
-        }
-    }
-
-    private WatchdogActivitySnapshot Snapshot() => WatchdogStats.GetActivitySnapshot();
 
     private bool MeshConnected()
     {
         try { return _meshConnected(); }
         catch { return false; }
     }
-
-    private int SpinnerIndex() => Volatile.Read(ref _spinnerIndex);
 
     private static async Task AwaitNoThrowAsync(Task? task, int timeoutMs)
     {
@@ -282,137 +315,12 @@ internal sealed class InteractiveTerminal : IDisposable
         catch { /* best-effort */ }
     }
 
-    private static int ConsoleWidth()
-    {
-        try { return Math.Max(20, Console.WindowWidth - 1); }
-        catch { return 119; }
-    }
-
-    private static void WriteColored(ConsoleColor color, string text)
-    {
-        ConsoleColor prev;
-        try { prev = Console.ForegroundColor; }
-        catch { prev = ConsoleColor.Gray; }
-        try
-        {
-            try { Console.ForegroundColor = color; } catch { /* no-tty */ }
-            Console.Write(text);
-        }
-        finally
-        {
-            try { Console.ForegroundColor = prev; } catch { /* no-tty */ }
-        }
-    }
-
     public void Dispose()
     {
         _stopped = true;
         _cts.Cancel();
-        _overlayRegistration?.Dispose();
+        _renderer.DetachOverlay();
+        _session.Dispose();
         _cts.Dispose();
-    }
-
-    private sealed class Overlay : IConsoleOverlay
-    {
-        private readonly InteractiveTerminal _owner;
-        private int _renderedLength;
-
-        public Overlay(InteractiveTerminal owner)
-        {
-            _owner = owner;
-        }
-
-        public void ClearLocked()
-        {
-            if (_renderedLength <= 0) return;
-            Console.Write('\r');
-            Console.Write(new string(' ', _renderedLength));
-            Console.Write('\r');
-            _renderedLength = 0;
-        }
-
-        public void RenderLocked()
-        {
-            if (_owner._stopped) return;
-            ClearLocked();
-            string line = TerminalStatusFormatter.FormatLine(
-                _owner.Snapshot(),
-                DateTime.UtcNow,
-                _owner.MeshConnected(),
-                _owner.SpinnerIndex(),
-                ConsoleWidth(),
-                _owner.GetInput());
-            WriteColored(ConsoleColor.DarkGray, line);
-            _renderedLength = line.Length;
-        }
-    }
-}
-
-[SupportedOSPlatform("windows")]
-internal static class TerminalStatusFormatter
-{
-    private static readonly char[] s_frames = { '|', '/', '-', '\\' };
-
-    public static string FormatLine(
-        WatchdogActivitySnapshot snapshot,
-        DateTime nowUtc,
-        bool meshConnected,
-        int spinnerIndex,
-        int width,
-        string input)
-    {
-        width = NormalizeWidth(width);
-        char frame = s_frames[(spinnerIndex & int.MaxValue) % s_frames.Length];
-        char relayFrame = snapshot.RelayActive(nowUtc, InteractiveTerminal.ActivityWindow) ? frame : '-';
-        char whyKnotFrame = snapshot.WhyKnotActive(nowUtc, InteractiveTerminal.ActivityWindow) ? frame : '-';
-
-        string status = string.Format(
-            CultureInfo.InvariantCulture,
-            "lh-yt {0} {1} | whyknot {2} {3} | {4}",
-            relayFrame,
-            Heartbeat.FormatBytes(snapshot.RelayBytesTotal),
-            whyKnotFrame,
-            Heartbeat.FormatBytes(snapshot.WhyKnotRelayBytesTotal),
-            meshConnected ? "mesh up" : "mesh down");
-        return Fit(status, "wkvrc> ", input ?? "", width);
-    }
-
-    private static int NormalizeWidth(int width)
-    {
-        if (width <= 0) return 119;
-        return Math.Clamp(width, 20, 180);
-    }
-
-    private static string Fit(string status, string prompt, string input, int width)
-    {
-        int inputBudget = Math.Max(0, width - status.Length - 2 - prompt.Length);
-        string shownInput = TrimLeft(input, inputBudget);
-        string line = status + "  " + prompt + shownInput;
-        if (line.Length <= width) return line;
-
-        int statusBudget = Math.Max(0, width - 2 - prompt.Length - shownInput.Length);
-        status = TrimRight(status, statusBudget);
-        line = status.Length == 0
-            ? prompt + shownInput
-            : status + "  " + prompt + shownInput;
-        if (line.Length <= width) return line;
-
-        return TrimLeft(prompt + input, width);
-    }
-
-    private static string TrimRight(string value, int max)
-    {
-        if (max <= 0) return "";
-        if (value.Length <= max) return value;
-        if (max <= 2) return value.Substring(0, max);
-        return value.Substring(0, max - 2) + "..";
-    }
-
-    private static string TrimLeft(string value, int max)
-    {
-        if (max <= 0) return "";
-        if (value.Length <= max) return value;
-        if (max <= 3) return value.Substring(value.Length - max, max);
-        return "..." + value.Substring(value.Length - (max - 3), max - 3);
     }
 }

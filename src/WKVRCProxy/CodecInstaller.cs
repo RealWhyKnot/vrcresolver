@@ -43,6 +43,12 @@ internal static class CodecInstaller
 
     public static void StartBackgroundCheck()
     {
+        if (!AppSettingsStore.Shared.Snapshot().Maintenance.CodecAutoInstall)
+        {
+            Logger.WriteFileOnly("[codec] auto-install disabled by settings");
+            return;
+        }
+
         _ = Task.Run(RunAsync);
     }
 
@@ -67,8 +73,10 @@ internal static class CodecInstaller
                     PackageFamilyName = codec.PackageFamilyName,
                 };
                 dirty = true;
-                Console.WriteLine("[codec] " + codec.Name + ": "
-                    + (installed ? "installed" : "install failed (will retry next week)"));
+                if (installed)
+                    ConsoleUx.Success(LogComponent.Codec, codec.Name + " ready.");
+                else
+                    ConsoleUx.Warn(LogComponent.Codec, codec.Name + " install failed; will retry next week.");
             }
 
             if (dirty) SaveState(statePath, state);
@@ -77,7 +85,7 @@ internal static class CodecInstaller
         {
             // Silenced to a single line. Codec install is non-critical;
             // a failure here must never propagate to the user as a stack.
-            Console.WriteLine("[codec] background error: " + ex.Message);
+            ConsoleUx.Warn(LogComponent.Codec, "background check failed: " + ex.Message);
         }
     }
 

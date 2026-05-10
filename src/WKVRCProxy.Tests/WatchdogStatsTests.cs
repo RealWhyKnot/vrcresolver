@@ -45,4 +45,22 @@ public class WatchdogStatsTests
         Assert.True(snapshot.WhyKnotActive(now, TimeSpan.FromSeconds(1)));
         Assert.False(snapshot.RelayActive(now + TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1)));
     }
+
+    [Fact]
+    public void BandwidthSnapshot_ReportsRecentBytesBySecond()
+    {
+        WatchdogStats.ResetForTests();
+        var now = new DateTime(2026, 5, 10, 12, 0, 10, DateTimeKind.Utc);
+
+        WatchdogStats.RecordRelayBytesAt("https://node1.whyknot.dev/api/proxy/a.ts", 1000, now - TimeSpan.FromSeconds(2));
+        WatchdogStats.RecordRelayBytesAt("https://node1.whyknot.dev/api/proxy/b.ts", 2000, now);
+        WatchdogStats.RecordRelayBytesAt("https://node1.whyknot.dev/api/proxy/c.ts", 3000, now);
+
+        WatchdogBandwidthSnapshot bandwidth = WatchdogStats.GetBandwidthSnapshot(now, seconds: 4);
+
+        Assert.Equal(new long[] { 0, 1000, 0, 5000 }, bandwidth.HistoryBytesPerSecond);
+        Assert.Equal(5000, bandwidth.CurrentBytesPerSecond);
+        Assert.Equal(5000, bandwidth.PeakBytesPerSecond);
+        Assert.True(bandwidth.HasTraffic);
+    }
 }

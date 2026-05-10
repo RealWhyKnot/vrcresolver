@@ -144,8 +144,9 @@ internal sealed partial class MeshClient
                     string features = welcome.Features != null && welcome.Features.Length > 0
                         ? "[" + string.Join(",", welcome.Features) + "]"
                         : "[]";
-                    Console.WriteLine(
-                        "[mesh] welcome node=" + (welcome.Node ?? "?") +
+                    ConsoleUx.Write(
+                        LogComponent.Mesh,
+                        "welcome node=" + (welcome.Node ?? "?") +
                         " v=" + welcome.ProtocolVersion + " (negotiated=" + negotiated + ")" +
                         " server=" + (welcome.ServerVersion ?? "?") +
                         " yt-dlp=" + (welcome.YtDlpVersion ?? "?") +
@@ -338,8 +339,9 @@ internal sealed partial class MeshClient
         }
         if (emit)
         {
-            Console.WriteLine(
-                "[mesh][warn] frame parse failed (" + key + " x" + count + " in last min): " +
+            ConsoleUx.Warn(
+                LogComponent.Mesh,
+                "frame parse failed (" + key + " x" + count + " in last min): " +
                 LogUtil.SanitizeForConsole(ex.Message, 80) +
                 " — preview=" + LogUtil.PayloadPreview(payload, 120));
         }

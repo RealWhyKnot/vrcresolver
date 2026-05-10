@@ -118,7 +118,7 @@ internal static class HostsManager
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine("[hosts][err] add failed: " + ex.Message);
+            ConsoleUx.Error(LogComponent.Hosts, "add failed: " + ex.Message);
             return 1;
         }
     }
@@ -145,7 +145,7 @@ internal static class HostsManager
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine("[hosts][err] remove failed: " + ex.Message);
+            ConsoleUx.Error(LogComponent.Hosts, "remove failed: " + ex.Message);
             return 1;
         }
     }

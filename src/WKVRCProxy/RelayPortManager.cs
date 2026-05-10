@@ -44,21 +44,21 @@ internal sealed class RelayPortManager
             CurrentPort = prev.Value;
             WritePortFile(CurrentPort);
             WriteLastPortFile(CurrentPort);
-            Console.WriteLine("[relay] reusing previous port " + CurrentPort);
+            ConsoleUx.Write(LogComponent.Relay, "reserved local video port " + CurrentPort + " (reused)");
             return true;
         }
 
         if (!TryClaimEphemeralPort(out int fresh))
         {
-            Console.WriteLine("[relay][error] could not claim any ephemeral port");
+            ConsoleUx.Error(LogComponent.Relay, "could not reserve a local video port");
             return false;
         }
 
         CurrentPort = fresh;
         WritePortFile(CurrentPort);
         WriteLastPortFile(CurrentPort);
-        Console.WriteLine("[relay] listening port " + CurrentPort
-            + (prev.HasValue ? " (previous " + prev.Value + " was busy)" : ""));
+        ConsoleUx.Write(LogComponent.Relay, "reserved local video port " + CurrentPort
+            + (prev.HasValue ? " (previous port was busy)" : ""));
         return true;
     }
 
@@ -136,7 +136,7 @@ internal sealed class RelayPortManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[relay][warn] could not write " + Path.GetFileName(path) + ": " + ex.Message);
+            ConsoleUx.Warn(LogComponent.Relay, "could not write " + Path.GetFileName(path) + ": " + ex.Message);
         }
     }
 }

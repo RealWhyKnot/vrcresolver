@@ -22,6 +22,11 @@ public enum LogComponent
     Heartbeat,
     Relay,
     Terminal,
+    Codec,
+    Report,
+    Update,
+    VrcLog,
+    YtDlp,
     Shutdown,
 }
 
@@ -39,22 +44,25 @@ public static class ConsoleUx
     private static readonly object s_lock = new();
     private static IConsoleOverlay? s_overlay;
 
-    // Component palette. Picked for visual contrast across the default
-    // Windows console + most terminals: each component lands on a
-    // distinguishable hue from its neighbours so a sysadmin scanning the
-    // log can colour-filter by source. Warnings always render yellow,
-    // overriding the component colour, so a [warn] line stands out
-    // regardless of which component emitted it.
+    // Component palette. Most normal output stays grey/white so the
+    // watchdog reads like a calm terminal transcript. Colour is reserved
+    // for things the user should notice quickly: mesh/relay activity,
+    // warnings, errors, and resolve outcomes.
     private static ConsoleColor ColorFor(LogComponent c) => c switch
     {
-        LogComponent.Mesh      => ConsoleColor.Cyan,
-        LogComponent.Ipc       => ConsoleColor.Magenta,
-        LogComponent.Hosts     => ConsoleColor.Blue,
-        LogComponent.Patch     => ConsoleColor.DarkYellow,
-        LogComponent.Wrapper   => ConsoleColor.DarkMagenta,
+        LogComponent.Mesh      => ConsoleColor.DarkCyan,
+        LogComponent.Ipc       => ConsoleColor.DarkGray,
+        LogComponent.Hosts     => ConsoleColor.DarkGray,
+        LogComponent.Patch     => ConsoleColor.Gray,
+        LogComponent.Wrapper   => ConsoleColor.DarkGray,
         LogComponent.Heartbeat => ConsoleColor.DarkGray,
-        LogComponent.Relay     => ConsoleColor.DarkCyan,
+        LogComponent.Relay     => ConsoleColor.Gray,
         LogComponent.Terminal  => ConsoleColor.Gray,
+        LogComponent.Codec     => ConsoleColor.Gray,
+        LogComponent.Report    => ConsoleColor.DarkGray,
+        LogComponent.Update    => ConsoleColor.Gray,
+        LogComponent.VrcLog    => ConsoleColor.DarkGray,
+        LogComponent.YtDlp     => ConsoleColor.Gray,
         LogComponent.Shutdown  => ConsoleColor.DarkRed,
         _                      => ConsoleColor.Gray,
     };
@@ -69,6 +77,11 @@ public static class ConsoleUx
         LogComponent.Heartbeat => "[heartbeat]",
         LogComponent.Relay     => "[relay]",
         LogComponent.Terminal  => "[terminal]",
+        LogComponent.Codec     => "[codec]",
+        LogComponent.Report    => "[report]",
+        LogComponent.Update    => "[update]",
+        LogComponent.VrcLog    => "[vrclog]",
+        LogComponent.YtDlp     => "[yt-dlp]",
         LogComponent.Shutdown  => "[shutdown]",
         _                      => "[?]",
     };
@@ -93,12 +106,17 @@ public static class ConsoleUx
 
     public static void Write(LogComponent c, string body)
     {
-        WriteStamped(ColorFor(c), $"{Tag(c)} {body}");
+        WriteStamped(ColorFor(c), $"{Bullet()} {Tag(c)} {body}");
+    }
+
+    public static void Success(LogComponent c, string body)
+    {
+        WriteStamped(ConsoleColor.Green, $"{Bullet()} {Tag(c)} {body}");
     }
 
     public static void Warn(LogComponent c, string body)
     {
-        WriteStamped(ConsoleColor.Yellow, $"{Tag(c)}[warn] {body}");
+        WriteStamped(ConsoleColor.Yellow, $"{Bullet()} {Tag(c)}[warn] {body}");
     }
 
     // Component-tagged error. Same shape as Warn but red. Use for paths that
@@ -106,12 +124,12 @@ public static class ConsoleUx
     // in the existing convention). For terminal halts use Fatal instead.
     public static void Error(LogComponent c, string body)
     {
-        WriteStamped(ConsoleColor.Red, $"{Tag(c)}[err] {body}");
+        WriteStamped(ConsoleColor.Red, $"{Bullet()} {Tag(c)}[err] {body}");
     }
 
     public static void Fatal(string body)
     {
-        WriteStamped(ConsoleColor.Red, $"[FATAL] {body}");
+        WriteStamped(ConsoleColor.Red, $"{Bullet()} [FATAL] {body}");
     }
 
     // Per-resolve outcome line. Fixed-column layout so the operator can
@@ -180,8 +198,8 @@ public static class ConsoleUx
 
         string line = string.Format(
             CultureInfo.InvariantCulture,
-            " {0}  {1,-" + OutcomeWidth + "} {2}{3}  {4}  {5,6}{6}",
-            token, word, hostCol, ytTag, playerCol, elapsedStr, reasonSuffix);
+            "{0} [resolve] {1}  {2,-" + OutcomeWidth + "} {3}{4}  {5}  {6,6}{7}",
+            Bullet(), token, word, hostCol, ytTag, playerCol, elapsedStr, reasonSuffix);
 
         WriteStamped(color, line);
     }
@@ -193,8 +211,8 @@ public static class ConsoleUx
     {
         string line = string.Format(
             CultureInfo.InvariantCulture,
-            " !!  {0,-" + OutcomeWidth + "} {1}       {2}   elapsed={3}ms",
-            "wrapper", TruncatePad(host, HostWidth), reason, elapsedMs);
+            "{0} [wrapper] !!  {1,-" + OutcomeWidth + "} {2}       {3}   elapsed={4}ms",
+            Bullet(), "fallback", TruncatePad(host, HostWidth), reason, elapsedMs);
         WriteStamped(ConsoleColor.Yellow, line);
     }
 
@@ -214,14 +232,15 @@ public static class ConsoleUx
 
         lock (s_lock)
         {
-            WriteRaw(ConsoleColor.Cyan, divider);
+            WriteRaw(ConsoleColor.DarkGray, divider);
             WriteRaw(ConsoleColor.White, $"  WKVRCProxy {version}");
+            WriteRaw(ConsoleColor.Gray,  "  local video relay for VRChat");
             WriteRaw(ConsoleColor.Gray,  $"  sha {sha}  built {buildTime}");
             if (isDev)
             {
                 WriteRaw(ConsoleColor.Yellow, "  mode: DEV (verbose [relay] req= trace enabled)");
             }
-            WriteRaw(ConsoleColor.Cyan, subdivider);
+            WriteRaw(ConsoleColor.DarkGray, subdivider);
 
             int labelWidth = paths.Max(p => p.Label.Length);
             foreach (var (label, value) in paths)
@@ -229,7 +248,7 @@ public static class ConsoleUx
                 string padded = (label + ":").PadRight(labelWidth + 2);
                 WriteRaw(ConsoleColor.Gray, $"  {padded} {value}");
             }
-            WriteRaw(ConsoleColor.Cyan, divider);
+            WriteRaw(ConsoleColor.DarkGray, divider);
             WriteRaw(ConsoleColor.Gray, "");
         }
     }
@@ -289,7 +308,8 @@ public static class ConsoleUx
             catch { prev = ConsoleColor.Gray; }
             try
             {
-                try { Console.ForegroundColor = color; } catch { /* no-tty */ }
+                if (ShouldUseColor())
+                    try { Console.ForegroundColor = color; } catch { /* no-tty */ }
                 Console.WriteLine(text);
             }
             finally
@@ -310,6 +330,35 @@ public static class ConsoleUx
     {
         try { s_overlay?.RenderLocked(); }
         catch { s_overlay = null; }
+    }
+
+    private static bool ShouldUseColor()
+    {
+        if (Console.IsOutputRedirected) return false;
+        return string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
+    }
+
+    private static string Bullet()
+    {
+        return ShouldUseUnicode() ? "•" : "*";
+    }
+
+    private static bool ShouldUseUnicode()
+    {
+        if (Console.IsOutputRedirected) return false;
+        string? ascii = Environment.GetEnvironmentVariable("WKVRCPROXY_ASCII_TERMINAL");
+        if (string.Equals(ascii, "1", StringComparison.Ordinal)
+            || string.Equals(ascii, "true", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        try
+        {
+            return Console.OutputEncoding.WebName.Contains("utf", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     private sealed class OverlayRegistration : IDisposable

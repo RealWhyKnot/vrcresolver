@@ -43,6 +43,13 @@ namespace WKVRCProxy;
 // Both are watchdog-internal state files, JSON-on-disk.
 [JsonSerializable(typeof(CodecInstaller.CodecState))]
 [JsonSerializable(typeof(YtDlpUpdater.UpdateState))]
+// User-editable watchdog settings at LocalLow\WKVRCProxy\settings.json.
+// Kept in this source-gen context so settings remain AOT-safe.
+[JsonSerializable(typeof(AppSettings))]
+[JsonSerializable(typeof(TerminalAppSettings))]
+[JsonSerializable(typeof(RelayAppSettings))]
+[JsonSerializable(typeof(MaintenanceAppSettings))]
+[JsonSerializable(typeof(HelperAppSettings))]
 // ReportingService outbound /report frames (anonymous failure
 // telemetry; gated by WKVRCPROXY_ANONYMOUS_REPORTING).
 [JsonSerializable(typeof(ReportingService.ReportPayload))]
@@ -58,6 +65,7 @@ namespace WKVRCProxy;
 // LocalIpcServer.HandleAsync and emits a single console line surfacing
 // the fallback fact to the operator.
 [JsonSerializable(typeof(WrapperEventNotify))]
+[JsonSerializable(typeof(TerminalSessionEvent))]
 internal sealed partial class MeshJsonContext : JsonSerializerContext
 {
 }

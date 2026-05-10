@@ -63,7 +63,7 @@ internal static partial class ReportingService
         catch { _enabled = false; }
 
         if (_enabled)
-            Console.WriteLine("[report] anonymous failure reporting ON (WKVRCPROXY_ANONYMOUS_REPORTING=1)");
+            ConsoleUx.Write(LogComponent.Report, "anonymous failure reporting ON (WKVRCPROXY_ANONYMOUS_REPORTING=1)");
     }
 
     // Fire a report when the mesh returns fallback_native. Filters out
@@ -116,11 +116,11 @@ internal static partial class ReportingService
             using var resp = await _http.PostAsJsonAsync(
                 Endpoint, payload, MeshJsonContext.Default.ReportPayload).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
-                Console.WriteLine("[report] server rejected: " + (int)resp.StatusCode);
+                ConsoleUx.Warn(LogComponent.Report, "server rejected report: " + (int)resp.StatusCode);
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[report] post failed: " + ex.GetType().Name + ": " + ex.Message);
+            ConsoleUx.Warn(LogComponent.Report, "post failed: " + ex.GetType().Name + ": " + ex.Message);
         }
     }
 

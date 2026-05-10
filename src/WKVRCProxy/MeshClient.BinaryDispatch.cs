@@ -194,8 +194,9 @@ internal sealed partial class MeshClient
         }
         if (emit)
         {
-            Console.WriteLine(
-                "[mesh][warn] binary frame parse failed (" + key + " x" + count + " in last min): " +
+            ConsoleUx.Warn(
+                LogComponent.Mesh,
+                "binary frame parse failed (" + key + " x" + count + " in last min): " +
                 LogUtil.SanitizeForConsole(detail, 200) +
                 " — preview=" + LogUtil.PayloadPreview(payload, 60));
         }
