@@ -16,9 +16,13 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **watchdog:** Add advanced terminal renderer (11749d3)
 - **helper:** Ship ffmpeg and handle transcode leases (f150370)
 - **helper:** Add hitch diagnostics and benchmarked presets (036692e)
+- **mesh:** Playback_feedback emits delivered_height + kind=playing telemetry (f133ffb)
 
 ### Changed
 - Improve helper diagnostics and terminal input (3988dad)
+
+### Fixed
+- **relay:** Stream-localize manifests so playback_id tokens dont 502 (fa74463)
 
 ---
 
