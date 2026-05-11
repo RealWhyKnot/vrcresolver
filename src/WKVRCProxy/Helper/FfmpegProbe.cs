@@ -125,9 +125,9 @@ internal static class HardwareEncoderProbe
 
         HardwareEncoderBackend[] order =
         [
-            HardwareEncoderBackend.Qsv,
             HardwareEncoderBackend.Nvenc,
             HardwareEncoderBackend.Amf,
+            HardwareEncoderBackend.Qsv,
             HardwareEncoderBackend.MediaFoundation,
         ];
 

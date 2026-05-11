@@ -28,6 +28,9 @@ internal sealed record TranscodeFfmpegCommand(
 
 internal static class TranscodeWorkerProcess
 {
+    private const string HttpUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
     public static TranscodeFfmpegCommand BuildSegmentCommand(
         string ffmpegPath,
         TranscodeLease lease,
@@ -62,6 +65,18 @@ internal static class TranscodeWorkerProcess
             "-hide_banner",
             "-nostdin",
             "-y",
+            "-loglevel",
+            "error",
+            "-protocol_whitelist",
+            "file,http,https,tcp,tls,crypto",
+            "-rw_timeout",
+            "15000000",
+            "-user_agent",
+            HttpUserAgent,
+            "-headers",
+            "Referer: https://www.youtube.com/\r\n",
+            "-fflags",
+            "+genpts+discardcorrupt",
             "-ss",
             start,
             "-i",
@@ -87,6 +102,8 @@ internal static class TranscodeWorkerProcess
             segment,
             "-map",
             "0:v:0",
+            "-sn",
+            "-dn",
         });
 
         if (hasAudio)

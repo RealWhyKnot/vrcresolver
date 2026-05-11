@@ -186,6 +186,33 @@ internal static class TerminalBlocks
         return frames;
     }
 
+    public static IReadOnlyList<TerminalFrame> CompletionPalette(
+        IReadOnlyList<TerminalCompletionItem> items,
+        int width,
+        TerminalGlyphSet glyphs)
+    {
+        width = Math.Max(24, width);
+        var frames = new List<TerminalFrame>(items.Count + 1)
+        {
+            TerminalFrame.FromRuns(
+                new TerminalTextRun(glyphs.Bullet + " ", ConsoleColor.DarkGray),
+                new TerminalTextRun("matches", ConsoleColor.White)),
+        };
+
+        int itemWidth = Math.Min(24, Math.Max(8, items.Count == 0 ? 8 : items.Max(c => c.Text.Length + 1)));
+        int descriptionWidth = Math.Max(8, width - itemWidth - 8);
+        foreach (var item in items)
+        {
+            frames.Add(TerminalFrame.FromRuns(
+                new TerminalTextRun("  " + glyphs.Detail + " ", ConsoleColor.DarkGray),
+                new TerminalTextRun(item.Text.PadRight(itemWidth), ConsoleColor.White),
+                new TerminalTextRun("  ", ConsoleColor.DarkGray),
+                new TerminalTextRun(TrimRight(item.Description, descriptionWidth), ConsoleColor.Gray)));
+        }
+
+        return frames;
+    }
+
     public static string TrimRight(string value, int max)
     {
         value ??= "";

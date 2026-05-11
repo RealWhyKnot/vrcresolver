@@ -25,6 +25,7 @@ public static class Logger
     private static string? _logDir;
     private static string _component = "unknown";
     private static int _installed;
+    private static int _devConsoleDiagnostics;
 
     // Stamp updated on every Tee write so the watchdog's Heartbeat ticker
     // can suppress its periodic "still alive" line when something else has
@@ -32,6 +33,13 @@ public static class Logger
     // about "was anything logged in the last 5 minutes" coarse-grained.
     private static long _lastWriteTicksUtc;
     public static DateTime LastWriteUtc => new(Volatile.Read(ref _lastWriteTicksUtc), DateTimeKind.Utc);
+
+    public static bool DevConsoleDiagnosticsEnabled => Volatile.Read(ref _devConsoleDiagnostics) != 0;
+
+    public static void SetDevConsoleDiagnostics(bool enabled)
+    {
+        Volatile.Write(ref _devConsoleDiagnostics, enabled ? 1 : 0);
+    }
 
     public static void Install(string component)
     {
@@ -79,6 +87,32 @@ public static class Logger
     public static void WriteFileOnly(string? line)
     {
         Tee(line);
+    }
+
+    // Diagnostics that are useful in support logs but should become visible
+    // while running a dev build. Release builds keep the old file-only
+    // behavior; dev builds mirror the concise body through the normal console
+    // UX so the live prompt tells the operator what is actually happening.
+    public static void WriteDiagnostic(LogComponent component, string fileLine, string consoleBody)
+    {
+        if (DevConsoleDiagnosticsEnabled)
+        {
+            ConsoleUx.Write(component, consoleBody);
+            return;
+        }
+
+        Tee(fileLine);
+    }
+
+    public static void WarnDiagnostic(LogComponent component, string fileLine, string consoleBody)
+    {
+        if (DevConsoleDiagnosticsEnabled)
+        {
+            ConsoleUx.Warn(component, consoleBody);
+            return;
+        }
+
+        Tee(fileLine);
     }
 
     private static void Tee(string? line)

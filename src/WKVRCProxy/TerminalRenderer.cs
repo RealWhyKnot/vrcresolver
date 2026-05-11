@@ -130,9 +130,20 @@ internal sealed class TerminalRenderer
         RenderFrames("commands", TerminalBlocks.CommandPalette(commands, UsableWidth(), Glyphs()));
     }
 
-    public void RenderCompletions(IReadOnlyList<TerminalCommand> commands)
+    public void RenderCompletions(string input, IReadOnlyList<TerminalCompletionItem> items)
     {
-        RenderFrames("matches", TerminalBlocks.CommandPalette(commands, UsableWidth(), Glyphs()));
+        var frames = TerminalBlocks.CompletionPalette(items, UsableWidth(), Glyphs());
+        _recordOutput?.Invoke("matches", frames.Count == 0 ? "" : frames[0].PlainText);
+        ConsoleUx.WithConsoleLock(() =>
+        {
+            _overlay.ClearLocked();
+            WriteFrameLine(TerminalFrame.FromRuns(
+                new TerminalTextRun("wkvrc> ", ConsoleColor.White),
+                new TerminalTextRun(input ?? "", ConsoleColor.Gray)));
+            foreach (TerminalFrame frame in frames)
+                WriteFrameLine(frame);
+            _overlay.RenderLocked();
+        });
     }
 
     public void RenderHistory(IReadOnlyList<string> commands)

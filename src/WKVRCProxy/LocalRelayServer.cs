@@ -477,7 +477,7 @@ internal sealed partial class LocalRelayServer : IDisposable
 
     private static void Verbose(string message)
     {
-        Logger.WriteFileOnly("[relay] " + message);
+        Logger.WriteDiagnostic(LogComponent.Relay, "[relay] " + message, message);
     }
 
     private static string ShortUrl(string url)

@@ -33,10 +33,16 @@ internal static class HelperLeaseWorker
 
         try
         {
+            LogLease(leaseFrame, "received", "deadline_ms=" + leaseFrame.DeadlineMs
+                + " input=" + LogUtil.RedactUrl(leaseFrame.InputUrl));
+
             settings = (settings ?? new AppSettings()).Normalize();
             var throttle = HelperSelfThrottle.Evaluate(settings, DefaultSignals());
             if (!throttle.CanAcceptWork)
+            {
+                WarnLease(leaseFrame, "rejected", throttle.State + ": " + throttle.Reason);
                 return Result(false, throttle.State, throttle.Reason);
+            }
 
             FfmpegCapabilityProbeResult probe = await FfmpegCapabilityProbe.ProbeAsync(
                 installDirectory,
@@ -44,9 +50,15 @@ internal static class HelperLeaseWorker
                 ct).ConfigureAwait(false);
             ffmpegVersion = probe.Version?.Version;
             if (!probe.Location.HasValue)
+            {
+                WarnLease(leaseFrame, "rejected", "missing_ffmpeg: " + probe.Message);
                 return Result(false, "missing_ffmpeg", probe.Message);
+            }
             if (!probe.PreferredEncoder.HasValue)
+            {
+                WarnLease(leaseFrame, "rejected", "no_encoder: " + probe.Message);
                 return Result(false, "no_encoder", probe.Message);
+            }
 
             HelperEncodingQuality quality = await HelperBenchmarkService.ResolveQualityAsync(
                 settings,
@@ -65,15 +77,22 @@ internal static class HelperLeaseWorker
                 hasAudio: leaseFrame.HasAudio,
                 quality: quality);
 
+            int deadlineMs = Math.Clamp(leaseFrame.DeadlineMs <= 0 ? 6000 : leaseFrame.DeadlineMs, 1000, 60000);
+            LogLease(leaseFrame, "ffmpeg start", "encoder=" + encoderName
+                + " quality=" + HelperEncodingQualityNames.Format(quality)
+                + " segment=" + leaseFrame.SegmentIndex
+                + " start=" + leaseFrame.StartPts.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+                + " duration=" + leaseFrame.Duration.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+                + " deadline_ms=" + deadlineMs);
+
             using var process = new Process { StartInfo = command.ToStartInfo() };
+            using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadlineCts.CancelAfter(deadlineMs);
             process.Start();
             TranscodeWorkerProcess.ApplySafePriority(process);
             Task<string> stderrTask = process.StandardError.ReadToEndAsync(ct);
             Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
 
-            using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            int deadlineMs = Math.Clamp(leaseFrame.DeadlineMs <= 0 ? 6000 : leaseFrame.DeadlineMs, 1000, 60000);
-            deadlineCts.CancelAfter(deadlineMs);
             try
             {
                 await process.WaitForExitAsync(deadlineCts.Token).ConfigureAwait(false);
@@ -81,27 +100,45 @@ internal static class HelperLeaseWorker
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 TryKill(process);
+                WarnLease(leaseFrame, "deadline", "ffmpeg exceeded "
+                    + deadlineMs + "ms stderr=" + CompletedTaskText(stderrTask, 180));
                 return Result(false, "deadline", "helper encode exceeded the server deadline");
             }
 
             string stderr = await stderrTask.ConfigureAwait(false);
             _ = await stdoutTask.ConfigureAwait(false);
             if (process.ExitCode != 0)
+            {
+                WarnLease(leaseFrame, "ffmpeg failed", "exit=" + process.ExitCode
+                    + " stderr=" + Snip(stderr, 180));
                 return Result(false, "ffmpeg_failed", Snip(stderr, 240));
+            }
 
             var info = new FileInfo(outputPath);
             if (!info.Exists || info.Length <= 0)
+            {
+                WarnLease(leaseFrame, "empty output", "ffmpeg completed without a segment");
                 return Result(false, "empty_output", "ffmpeg completed without a segment");
+            }
 
-            await UploadAsync(httpClient, leaseFrame.UploadUrl, outputPath, ct).ConfigureAwait(false);
+            LogLease(leaseFrame, "upload start", "bytes=" + info.Length);
+            await UploadAsync(httpClient, leaseFrame.UploadUrl, outputPath, deadlineCts.Token).ConfigureAwait(false);
+            LogLease(leaseFrame, "uploaded", "bytes=" + info.Length
+                + " elapsed_ms=" + sw.ElapsedMilliseconds);
             return Result(true, "uploaded", null, info.Length);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
+        catch (OperationCanceledException)
+        {
+            WarnLease(leaseFrame, "deadline", "lease exceeded deadline during upload");
+            return Result(false, "deadline", "helper lease exceeded the server deadline");
+        }
         catch (Exception ex)
         {
+            WarnLease(leaseFrame, "error", ex.GetType().Name + ": " + ex.Message);
             return Result(false, "error", ex.GetType().Name + ": " + ex.Message);
         }
         finally
@@ -178,4 +215,34 @@ internal static class HelperLeaseWorker
         if (value.Length <= max) return value;
         return value[..Math.Max(0, max - 2)] + "..";
     }
+
+    private static void LogLease(HelperTranscodeLeaseFrame lease, string stage, string detail)
+    {
+        string fileLine = "[mesh][helper] lease " + stage + " lease=" + Safe(lease.LeaseId, 64)
+            + " stream=" + Safe(lease.PlaybackId, 64)
+            + " segment=" + lease.SegmentIndex
+            + " " + detail;
+        Logger.WriteDiagnostic(LogComponent.Helper, fileLine,
+            "lease " + stage + " segment=" + lease.SegmentIndex + " " + detail);
+    }
+
+    private static void WarnLease(HelperTranscodeLeaseFrame lease, string stage, string detail)
+    {
+        string fileLine = "[mesh][helper][warn] lease " + stage + " lease=" + Safe(lease.LeaseId, 64)
+            + " stream=" + Safe(lease.PlaybackId, 64)
+            + " segment=" + lease.SegmentIndex
+            + " " + detail;
+        Logger.WarnDiagnostic(LogComponent.Helper, fileLine,
+            "lease " + stage + " segment=" + lease.SegmentIndex + " " + detail);
+    }
+
+    private static string CompletedTaskText(Task<string> task, int max)
+    {
+        if (task.IsCompletedSuccessfully)
+            return Snip(task.Result, max);
+        return "";
+    }
+
+    private static string Safe(string value, int max)
+        => LogUtil.SanitizeForConsole(value ?? "", max);
 }

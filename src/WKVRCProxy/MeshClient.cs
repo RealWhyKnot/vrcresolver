@@ -282,9 +282,15 @@ internal sealed partial class MeshClient : IAsyncDisposable
 
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperStatusFrame);
                 await SendTextFrameAsync(bytes, CancellationToken.None).ConfigureAwait(false);
-                Logger.WriteFileOnly("[mesh][helper] status sent status=" + frame.Status
+                string statusLine = "[mesh][helper] status sent status=" + frame.Status
                     + " encoder=" + (frame.Encoder ?? "<none>")
-                    + " quality=" + HelperEncodingQualityNames.Format(quality));
+                    + " quality=" + HelperEncodingQualityNames.Format(quality);
+                Logger.WriteDiagnostic(
+                    LogComponent.Helper,
+                    statusLine,
+                    "status sent status=" + frame.Status
+                        + " encoder=" + (frame.Encoder ?? "<none>")
+                        + " quality=" + HelperEncodingQualityNames.Format(quality));
             }
             catch (Exception ex)
             {
@@ -551,6 +557,17 @@ internal sealed partial class MeshClient : IAsyncDisposable
         if (lease == null || string.IsNullOrWhiteSpace(lease.LeaseId))
             return;
 
+        Logger.WriteDiagnostic(
+            LogComponent.Helper,
+            "[mesh][helper] lease queued lease=" + LogUtil.SanitizeForConsole(lease.LeaseId, 64)
+                + " stream=" + LogUtil.SanitizeForConsole(lease.PlaybackId, 64)
+                + " segment=" + lease.SegmentIndex
+                + " deadline_ms=" + lease.DeadlineMs
+                + " input=" + LogUtil.RedactUrl(lease.InputUrl),
+            "lease queued segment=" + lease.SegmentIndex
+                + " deadline_ms=" + lease.DeadlineMs
+                + " input=" + LogUtil.RedactUrl(lease.InputUrl));
+
         _ = Task.Run(async () =>
         {
             HelperLeaseRunResult result;
@@ -587,12 +604,51 @@ internal sealed partial class MeshClient : IAsyncDisposable
                 FfmpegVersion = result.FfmpegVersion,
             };
 
+            string resultLine = "[mesh][helper] result sent lease=" + LogUtil.SanitizeForConsole(lease.LeaseId, 64)
+                + " segment=" + lease.SegmentIndex
+                + " success=" + result.Success
+                + " status=" + LogUtil.SanitizeForConsole(result.Status, 64)
+                + " bytes=" + result.Bytes
+                + " elapsed_ms=" + result.ElapsedMilliseconds
+                + " encoder=" + (result.Encoder ?? "<none>")
+                + (string.IsNullOrWhiteSpace(result.Error)
+                    ? ""
+                    : " error=" + LogUtil.SanitizeForConsole(result.Error, 180));
+
             try
             {
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperTranscodeResultFrame);
                 await SendTextFrameAsync(bytes, CancellationToken.None).ConfigureAwait(false);
+                if (result.Success)
+                {
+                    Logger.WriteDiagnostic(LogComponent.Helper, resultLine,
+                        "result sent segment=" + lease.SegmentIndex
+                            + " status=" + result.Status
+                            + " bytes=" + result.Bytes
+                            + " elapsed_ms=" + result.ElapsedMilliseconds);
+                }
+                else
+                {
+                    Logger.WarnDiagnostic(LogComponent.Helper, resultLine,
+                        "result sent segment=" + lease.SegmentIndex
+                            + " status=" + result.Status
+                            + " bytes=" + result.Bytes
+                            + " elapsed_ms=" + result.ElapsedMilliseconds
+                            + (string.IsNullOrWhiteSpace(result.Error)
+                                ? ""
+                                : " error=" + LogUtil.SanitizeForConsole(result.Error, 120)));
+                }
             }
-            catch { /* best-effort; upload endpoint carries success for completed leases */ }
+            catch (Exception ex)
+            {
+                Logger.WarnDiagnostic(
+                    LogComponent.Helper,
+                    "[mesh][helper][warn] result send failed lease=" + LogUtil.SanitizeForConsole(lease.LeaseId, 64)
+                        + " segment=" + lease.SegmentIndex
+                        + " " + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160),
+                    "result send failed segment=" + lease.SegmentIndex
+                        + " " + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 120));
+            }
         });
     }
 

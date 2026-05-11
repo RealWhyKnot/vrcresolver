@@ -33,6 +33,7 @@ internal static class HelperEncodingQualityNames
         {
             Fast => HelperEncodingQuality.Fast,
             Balanced => HelperEncodingQuality.Balanced,
+            "balance" => HelperEncodingQuality.Balanced,
             Quality => HelperEncodingQuality.Quality,
             Auto => HelperEncodingQuality.Auto,
             "" => HelperEncodingQuality.Auto,
@@ -44,7 +45,7 @@ internal static class HelperEncodingQualityNames
     {
         value = (value ?? "").Trim().ToLowerInvariant();
         quality = ParseOrAuto(value);
-        if (value is Auto or Fast or Balanced or Quality)
+        if (value is Auto or Fast or Balanced or "balance" or Quality)
         {
             error = "";
             return true;

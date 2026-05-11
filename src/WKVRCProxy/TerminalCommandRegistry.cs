@@ -137,11 +137,26 @@ internal sealed class TerminalCommandRegistry
         input ??= "";
         string trimmed = input.TrimStart();
         bool slash = trimmed.StartsWith("/", StringComparison.Ordinal);
-        string token = slash ? trimmed.Substring(1) : trimmed;
-        int tokenEnd = token.IndexOfAny(new[] { ' ', '\t' });
-        if (tokenEnd >= 0)
+        string body = slash ? trimmed.Substring(1) : trimmed;
+        bool endsWithSpace = body.Length > 0 && char.IsWhiteSpace(body[^1]);
+        string[] tokens = body.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (!endsWithSpace && tokens.Length <= 1)
+            return CompleteCommand(slash, tokens.Length == 0 ? "" : tokens[0]);
+
+        if (tokens.Length == 0)
+            return CompleteCommand(slash, "");
+
+        string verb = TerminalCommandLine.NormalizeVerb(tokens[0]);
+        if (!TryGet(verb, out TerminalCommand? command) || command == null)
+            return TerminalCompletion.Empty;
+        if (!string.Equals(command.Name, "settings", StringComparison.OrdinalIgnoreCase))
             return TerminalCompletion.Empty;
 
+        return CompleteSettings(slash, tokens, endsWithSpace);
+    }
+
+    private TerminalCompletion CompleteCommand(bool slash, string token)
+    {
         string prefix = TerminalCommandLine.NormalizeVerb(token);
         var matches = _primaryCommands
             .Where(c => c.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
@@ -150,12 +165,115 @@ internal sealed class TerminalCommandRegistry
             .ToArray();
 
         if (prefix.Length == 0)
-            return new TerminalCompletion("", matches);
+            return new TerminalCompletion("", CommandItems(matches, slash));
 
         if (matches.Length == 1)
-            return new TerminalCompletion((slash ? "/" : "") + matches[0].Name, Array.Empty<TerminalCommand>());
+            return new TerminalCompletion((slash ? "/" : "") + matches[0].Name + " ", Array.Empty<TerminalCompletionItem>());
 
-        return new TerminalCompletion("", matches);
+        return new TerminalCompletion("", CommandItems(matches, slash));
+    }
+
+    private static TerminalCompletion CompleteSettings(bool slash, string[] tokens, bool endsWithSpace)
+    {
+        var args = tokens.Skip(1).ToList();
+        if (endsWithSpace)
+            args.Add("");
+
+        if (args.Count == 0)
+            args.Add("");
+
+        string commandPrefix = slash ? "/settings" : "settings";
+        string current = args[^1];
+        if (args.Count == 1)
+        {
+            var items = SettingsActionItems(current)
+                .Concat(SettingItems(current))
+                .ToArray();
+            if (items.Length == 1)
+            {
+                string replacement = commandPrefix + " " + items[0].Text
+                    + (IsSettingName(items[0].Text) ? " " : " ");
+                return new TerminalCompletion(replacement, Array.Empty<TerminalCompletionItem>());
+            }
+
+            return new TerminalCompletion("", items);
+        }
+
+        string action = args[0].ToLowerInvariant();
+        if (action is "get" or "reset")
+        {
+            var items = SettingItems(current, includeAll: action == "reset").ToArray();
+            if (items.Length == 1)
+                return new TerminalCompletion(commandPrefix + " " + action + " " + items[0].Text + " ", Array.Empty<TerminalCompletionItem>());
+            return new TerminalCompletion("", items);
+        }
+
+        if (action == "set")
+        {
+            if (args.Count == 2)
+            {
+                var items = SettingItems(current).ToArray();
+                if (items.Length == 1)
+                    return new TerminalCompletion(commandPrefix + " set " + items[0].Text + " ", Array.Empty<TerminalCompletionItem>());
+                return new TerminalCompletion("", items);
+            }
+
+            return CompleteSettingValue(commandPrefix + " set ", args[1], current);
+        }
+
+        return CompleteSettingValue(commandPrefix + " ", args[0], current);
+    }
+
+    private static TerminalCompletion CompleteSettingValue(string prefix, string settingName, string current)
+    {
+        if (!AppSettingsRegistry.TryFind(settingName, out AppSettingDefinition? setting) || setting == null)
+            return TerminalCompletion.Empty;
+
+        var items = setting.CompletionValues
+            .Where(v => v.StartsWith(current ?? "", StringComparison.OrdinalIgnoreCase))
+            .Select(v => new TerminalCompletionItem(v, setting.Description))
+            .ToArray();
+        if (items.Length == 1)
+            return new TerminalCompletion(prefix + setting.Key + " " + items[0].Text, Array.Empty<TerminalCompletionItem>());
+
+        return new TerminalCompletion("", items);
+    }
+
+    private static IEnumerable<TerminalCompletionItem> SettingsActionItems(string prefix)
+    {
+        var actions = new[]
+        {
+            new TerminalCompletionItem("get", "Show one setting."),
+            new TerminalCompletionItem("set", "Change a setting."),
+            new TerminalCompletionItem("reset", "Reset a setting."),
+            new TerminalCompletionItem("help", "Show settings help."),
+        };
+        return actions.Where(i => i.Text.StartsWith(prefix ?? "", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IEnumerable<TerminalCompletionItem> SettingItems(string prefix, bool includeAll = false)
+    {
+        if (includeAll && "all".StartsWith(prefix ?? "", StringComparison.OrdinalIgnoreCase))
+            yield return new TerminalCompletionItem("all", "Reset every setting.");
+
+        foreach (var setting in AppSettingsRegistry.All)
+        {
+            if (setting.Key.StartsWith(prefix ?? "", StringComparison.OrdinalIgnoreCase)
+                || setting.Aliases.Any(a => a.StartsWith(prefix ?? "", StringComparison.OrdinalIgnoreCase)))
+            {
+                yield return new TerminalCompletionItem(setting.Key, setting.Description);
+            }
+        }
+    }
+
+    private static bool IsSettingName(string value)
+        => AppSettingsRegistry.TryFind(value, out _);
+
+    private static IReadOnlyList<TerminalCompletionItem> CommandItems(IEnumerable<TerminalCommand> commands, bool slash)
+    {
+        return commands
+            .Select(c => new TerminalCompletionItem((slash ? "/" : "") + c.Name, c.Description))
+            .ToArray();
     }
 }
 
@@ -213,8 +331,10 @@ internal sealed class TerminalCommandContext
 
 internal readonly record struct TerminalCompletion(
     string Replacement,
-    IReadOnlyList<TerminalCommand> Suggestions)
+    IReadOnlyList<TerminalCompletionItem> Suggestions)
 {
     public static TerminalCompletion Empty { get; } =
-        new TerminalCompletion("", Array.Empty<TerminalCommand>());
+        new TerminalCompletion("", Array.Empty<TerminalCompletionItem>());
 }
+
+internal readonly record struct TerminalCompletionItem(string Text, string Description);

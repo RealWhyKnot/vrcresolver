@@ -20,6 +20,7 @@ internal static class AppSettingsRegistry
                 return true;
             },
             static s => s.Helper.GpuSharing = s_defaults.Helper.GpuSharing,
+            completionValues: ["on", "off"],
             aliases: ["gpu-sharing", "helper.gpu-sharing"]),
 
         new AppSettingDefinition(
@@ -34,6 +35,7 @@ internal static class AppSettingsRegistry
                 return true;
             },
             static s => s.Helper.GpuLimitPercent = s_defaults.Helper.GpuLimitPercent,
+            completionValues: ["5", "10", "25", "50", "75"],
             aliases: ["gpu", "gpu-percent", "helper.gpu-limit"]),
 
         new AppSettingDefinition(
@@ -50,6 +52,7 @@ internal static class AppSettingsRegistry
                 return true;
             },
             static s => s.Helper.UploadLimitMbps = s_defaults.Helper.UploadLimitMbps,
+            completionValues: ["0", "5", "10", "25", "50"],
             aliases: ["upload", "helper.upload-limit"]),
 
         new AppSettingDefinition(
@@ -64,6 +67,7 @@ internal static class AppSettingsRegistry
                 return true;
             },
             static s => s.Helper.AllowOnBattery = s_defaults.Helper.AllowOnBattery,
+            completionValues: ["on", "off"],
             aliases: ["battery", "helper.allow-on-battery"]),
 
         new AppSettingDefinition(
@@ -81,6 +85,7 @@ internal static class AppSettingsRegistry
                 return true;
             },
             static s => s.Helper.EncodingQuality = s_defaults.Helper.EncodingQuality,
+            completionValues: ["auto", "fast", "balanced", "quality"],
             aliases: ["quality", "preset", "encoder-quality", "helper.encoding-quality"]),
 
         new AppSettingDefinition(
@@ -95,6 +100,7 @@ internal static class AppSettingsRegistry
                 return true;
             },
             static s => s.Terminal.StatusLine = s_defaults.Terminal.StatusLine,
+            completionValues: ["on", "off"],
             aliases: ["status", "terminal.status-line"]),
 
         new AppSettingDefinition(
@@ -109,6 +115,7 @@ internal static class AppSettingsRegistry
                 return true;
             },
             static s => s.Terminal.Animations = s_defaults.Terminal.Animations,
+            completionValues: ["on", "off"],
             aliases: ["terminal.animations"]),
 
         new AppSettingDefinition(
@@ -124,6 +131,7 @@ internal static class AppSettingsRegistry
             },
             static s => s.Relay.Https = s_defaults.Relay.Https,
             restartRequired: true,
+            completionValues: ["on", "off"],
             aliases: ["local-https", "relay.https"]),
 
         new AppSettingDefinition(
@@ -139,6 +147,7 @@ internal static class AppSettingsRegistry
             },
             static s => s.Maintenance.UpdateCheck = s_defaults.Maintenance.UpdateCheck,
             restartRequired: true,
+            completionValues: ["on", "off"],
             aliases: ["updates", "maintenance.update-check"]),
 
         new AppSettingDefinition(
@@ -159,6 +168,7 @@ internal static class AppSettingsRegistry
                 s.Maintenance.YtDlpFallbackAutoUpdate = s_defaults.Maintenance.YtDlpFallbackAutoUpdate;
             },
             restartRequired: true,
+            completionValues: ["on", "off"],
             aliases: ["video-updates", "codec-install", "fallback-updater", "maintenance.codec-install", "maintenance.ytdlp-update"]),
     ];
 
@@ -245,6 +255,7 @@ internal sealed class AppSettingDefinition
         TrySetSetting set,
         Action<AppSettings> reset,
         bool restartRequired = false,
+        IReadOnlyList<string>? completionValues = null,
         IReadOnlyList<string>? aliases = null)
     {
         Key = key;
@@ -254,12 +265,14 @@ internal sealed class AppSettingDefinition
         _set = set;
         _reset = reset;
         RestartRequired = restartRequired;
+        CompletionValues = completionValues ?? choices;
         Aliases = aliases ?? Array.Empty<string>();
     }
 
     public string Key { get; }
     public string Description { get; }
     public IReadOnlyList<string> Choices { get; }
+    public IReadOnlyList<string> CompletionValues { get; }
     public bool RestartRequired { get; }
     public IReadOnlyList<string> Aliases { get; }
 

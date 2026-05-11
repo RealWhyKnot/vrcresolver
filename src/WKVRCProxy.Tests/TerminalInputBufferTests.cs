@@ -46,7 +46,7 @@ public class TerminalInputBufferTests
 
         TerminalCompletion completion = registry.Complete("/sta");
 
-        Assert.Equal("/status", completion.Replacement);
+        Assert.Equal("/status ", completion.Replacement);
         Assert.Empty(completion.Suggestions);
     }
 
@@ -58,8 +58,8 @@ public class TerminalInputBufferTests
         TerminalCompletion completion = registry.Complete("/");
 
         Assert.Equal("", completion.Replacement);
-        Assert.Contains(completion.Suggestions, c => c.Name == "settings");
-        Assert.Contains(completion.Suggestions, c => c.Name == "status");
+        Assert.Contains(completion.Suggestions, c => c.Text == "/settings");
+        Assert.Contains(completion.Suggestions, c => c.Text == "/status");
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public class TerminalInputBufferTests
 
         TerminalCompletion completion = registry.Complete("/se");
 
-        Assert.Equal("/settings", completion.Replacement);
+        Assert.Equal("/settings ", completion.Replacement);
         Assert.Empty(completion.Suggestions);
     }
 
@@ -81,8 +81,8 @@ public class TerminalInputBufferTests
         TerminalCompletion completion = registry.Complete("/s");
 
         Assert.Equal("", completion.Replacement);
-        Assert.Contains(completion.Suggestions, c => c.Name == "settings");
-        Assert.Contains(completion.Suggestions, c => c.Name == "status");
+        Assert.Contains(completion.Suggestions, c => c.Text == "/settings");
+        Assert.Contains(completion.Suggestions, c => c.Text == "/status");
     }
 
     [Fact]
@@ -92,7 +92,54 @@ public class TerminalInputBufferTests
 
         TerminalCompletion completion = registry.Complete("/act");
 
-        Assert.Equal("/status", completion.Replacement);
+        Assert.Equal("/status ", completion.Replacement);
+        Assert.Empty(completion.Suggestions);
+    }
+
+    [Fact]
+    public void TabCompletion_CompletesSettingsName()
+    {
+        var registry = TerminalCommandRegistry.CreateDefault();
+
+        TerminalCompletion completion = registry.Complete("settings enc");
+
+        Assert.Equal("settings encoding-quality ", completion.Replacement);
+        Assert.Empty(completion.Suggestions);
+    }
+
+    [Fact]
+    public void TabCompletion_CompletesSettingsSetName()
+    {
+        var registry = TerminalCommandRegistry.CreateDefault();
+
+        TerminalCompletion completion = registry.Complete("settings set enc");
+
+        Assert.Equal("settings set encoding-quality ", completion.Replacement);
+        Assert.Empty(completion.Suggestions);
+    }
+
+    [Fact]
+    public void TabCompletion_SuggestsSettingsValues()
+    {
+        var registry = TerminalCommandRegistry.CreateDefault();
+
+        TerminalCompletion completion = registry.Complete("settings set encoding-quality ");
+
+        Assert.Equal("", completion.Replacement);
+        Assert.Contains(completion.Suggestions, c => c.Text == "auto");
+        Assert.Contains(completion.Suggestions, c => c.Text == "fast");
+        Assert.Contains(completion.Suggestions, c => c.Text == "balanced");
+        Assert.Contains(completion.Suggestions, c => c.Text == "quality");
+    }
+
+    [Fact]
+    public void TabCompletion_CompletesSettingsValue()
+    {
+        var registry = TerminalCommandRegistry.CreateDefault();
+
+        TerminalCompletion completion = registry.Complete("settings encoding-quality f");
+
+        Assert.Equal("settings encoding-quality fast", completion.Replacement);
         Assert.Empty(completion.Suggestions);
     }
 }

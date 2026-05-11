@@ -65,6 +65,7 @@ internal static class Program
         // in %LOCALAPPDATA%Low\WKVRCProxy\logs\watchdog-<utc>.log. Bug reports
         // become "attach this file" instead of "paste your scrollback".
         Logger.Install("watchdog");
+        Logger.SetDevConsoleDiagnostics(BuildInfo.IsDevBuild);
 
         // Anonymous failure reporting (default off; enable with
         // WKVRCPROXY_ANONYMOUS_REPORTING=1). Initialized early so the

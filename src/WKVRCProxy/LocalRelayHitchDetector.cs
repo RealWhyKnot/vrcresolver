@@ -48,8 +48,7 @@ internal static class LocalRelayHitchDetector
             return;
 
         LocalRelayHitchDiagnostic d = diagnostic.Value;
-        Logger.WriteFileOnly(
-            "[relay][hitch] reasons=" + d.Reasons
+        string line = "[relay][hitch] reasons=" + d.Reasons
             + " kind=" + d.Kind
             + " stream=" + Safe(d.StreamId, 64)
             + SegmentPart(d.Segment)
@@ -62,7 +61,18 @@ internal static class LocalRelayHitchDetector
             + " total_ms=" + d.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)
             + " bytes=" + sample.BytesOut.ToString(CultureInfo.InvariantCulture)
             + FailurePart(sample.Failure)
-            + " target=" + DescribeUrl(sample.TargetUrl));
+            + " target=" + DescribeUrl(sample.TargetUrl);
+        Logger.WarnDiagnostic(
+            LogComponent.Relay,
+            line,
+            "hitch reasons=" + d.Reasons
+                + " kind=" + d.Kind
+                + SegmentPart(d.Segment)
+                + " status=" + sample.StatusCode.ToString(CultureInfo.InvariantCulture)
+                + WaitPart(sample.LazyHlsWaitMilliseconds)
+                + GeneratorPart(sample.LazyHlsGenerator)
+                + " total_ms=" + d.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)
+                + FailurePart(sample.Failure));
     }
 
     internal static LocalRelayHitchDiagnostic? AnalyzeForTests(LocalRelayTimingSample sample, DateTime nowUtc)

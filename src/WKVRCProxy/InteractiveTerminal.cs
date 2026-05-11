@@ -180,7 +180,8 @@ internal sealed class InteractiveTerminal : IDisposable
         if (!char.IsControl(key.KeyChar))
         {
             _input.Append(key.KeyChar);
-            AutoCompleteInput();
+            _lastSuggestionInput = "";
+            Redraw();
         }
     }
 
@@ -227,37 +228,6 @@ internal sealed class InteractiveTerminal : IDisposable
         }
     }
 
-    private void AutoCompleteInput()
-    {
-        string text = _input.Text();
-        if (text == "/")
-        {
-            ShowCompletions(text, force: false);
-            return;
-        }
-
-        if (text.StartsWith("/", StringComparison.Ordinal) && !text.Contains(' ', StringComparison.Ordinal))
-        {
-            TerminalCompletion completion = _commands.Complete(text);
-            if (!string.IsNullOrEmpty(completion.Replacement))
-            {
-                _input.Set(completion.Replacement);
-                _lastSuggestionInput = "";
-                Redraw();
-                return;
-            }
-
-            if (completion.Suggestions.Count > 0)
-            {
-                ShowCompletions(text, completion.Suggestions, force: false);
-                return;
-            }
-        }
-
-        _lastSuggestionInput = "";
-        Redraw();
-    }
-
     private void CompleteInput(bool showSuggestionsWhenAmbiguous)
     {
         TerminalCompletion completion = _commands.Complete(_input.Text());
@@ -275,12 +245,7 @@ internal sealed class InteractiveTerminal : IDisposable
             Redraw();
     }
 
-    private void ShowCompletions(string input, bool force)
-    {
-        ShowCompletions(input, _commands.All, force);
-    }
-
-    private void ShowCompletions(string input, IReadOnlyList<TerminalCommand> suggestions, bool force)
+    private void ShowCompletions(string input, IReadOnlyList<TerminalCompletionItem> suggestions, bool force)
     {
         if (!force && string.Equals(_lastSuggestionInput, input, StringComparison.Ordinal))
         {
@@ -289,7 +254,7 @@ internal sealed class InteractiveTerminal : IDisposable
         }
 
         _lastSuggestionInput = input;
-        _renderer.RenderCompletions(suggestions);
+        _renderer.RenderCompletions(input, suggestions);
     }
 
     private void Redraw()

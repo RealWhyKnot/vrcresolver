@@ -44,7 +44,7 @@ public class FfmpegHelperTests
         HardwareEncoderCapability? selected = HardwareEncoderProbe.ChoosePreferred(encoders);
 
         Assert.NotNull(selected);
-        Assert.Equal(HardwareEncoderBackend.Qsv, selected!.Value.Backend);
+        Assert.Equal(HardwareEncoderBackend.Nvenc, selected!.Value.Backend);
     }
 
     [Fact]
@@ -85,7 +85,7 @@ public class FfmpegHelperTests
         Assert.Equal(FfmpegCapabilityProbeStatus.Ready, result.Status);
         Assert.True(result.CanUseHardwareH264);
         Assert.NotNull(result.PreferredEncoder);
-        Assert.Equal(HardwareEncoderBackend.Qsv, result.PreferredEncoder!.Value.Backend);
+        Assert.Equal(HardwareEncoderBackend.Nvenc, result.PreferredEncoder!.Value.Backend);
         Assert.Equal("7.1.1-full_build-www.gyan.dev", result.Version!.Value.Version);
     }
 
@@ -150,11 +150,14 @@ public class FfmpegHelperTests
 
         Assert.Equal("ffmpeg.exe", command.ExecutablePath);
         Assert.Contains("-nostdin", command.Arguments);
+        Assert.Contains(command.Arguments, argument => argument.Contains("Mozilla/5.0 (Windows NT 10.0; Win64; x64)", StringComparison.Ordinal));
         Assert.Contains("h264_nvenc", command.Arguments);
         Assert.Contains(command.Arguments, argument => argument.Contains("format=yuv420p", StringComparison.Ordinal));
         Assert.Contains("-force_key_frames", command.Arguments);
         Assert.Contains("-c:a", command.Arguments);
         Assert.Contains("aac", command.Arguments);
+        Assert.Contains("-headers", command.Arguments);
+        Assert.Contains("Referer: https://www.youtube.com/\r\n", command.Arguments);
         Assert.Equal("seg_000042.ts", command.Arguments[^1]);
     }
 
