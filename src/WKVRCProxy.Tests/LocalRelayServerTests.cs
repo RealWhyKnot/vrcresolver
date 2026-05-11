@@ -285,6 +285,80 @@ public class LocalRelayServerTests
         Assert.Equal(manifest, localized);
     }
 
+    [Fact]
+    public async Task ManifestLocalizer_StreamsLargePlaybackTokenManifest()
+    {
+        const int segmentCount = 5000;
+        var sb = new StringBuilder();
+        sb.Append("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n");
+        string token = new string('A', 900);
+        for (int i = 0; i < segmentCount; i++)
+        {
+            sb.Append("#EXTINF:2.000,\n");
+            sb.Append("https://node1.whyknot.dev/api/proxy/lazy-hls/wk_abc/seg_");
+            sb.Append(i.ToString("D6"));
+            sb.Append(".ts?playback_id=");
+            sb.Append(token);
+            sb.Append('\n');
+        }
+        sb.Append("#EXT-X-ENDLIST\n");
+        byte[] inputBytes = Encoding.UTF8.GetBytes(sb.ToString());
+
+        Assert.True(inputBytes.Length > 4 * 1024 * 1024,
+            "synthetic manifest must exceed the legacy 4 MiB cap to exercise the streaming path");
+
+        using var input = new MemoryStream(inputBytes, writable: false);
+        using var output = new MemoryStream();
+        var result = await LocalRelayManifestLocalizer.LocalizeStreamAsync(
+            input,
+            inputEncoding: null,
+            output,
+            LocalRelayManifestLocalizer.MaxManifestBytes,
+            CancellationToken.None);
+
+        Assert.False(result.Exceeded);
+        Assert.True(result.Changed);
+
+        output.Position = 0;
+        string localized = new StreamReader(output, Encoding.UTF8).ReadToEnd();
+
+        Assert.DoesNotContain("https://node1.whyknot.dev", localized);
+        int proxyLines = 0;
+        foreach (string line in localized.Split('\n'))
+        {
+            if (line.StartsWith("proxy/", StringComparison.Ordinal)) proxyLines++;
+        }
+        Assert.Equal(segmentCount, proxyLines);
+        Assert.Contains("#EXT-X-ENDLIST", localized);
+    }
+
+    [Fact]
+    public async Task ManifestLocalizer_StreamAndStringProduceSameOutput()
+    {
+        string manifest = "#EXTM3U\n"
+            + "#EXT-X-STREAM-INF:BANDWIDTH=1000000\n"
+            + "https://node1.whyknot.dev/api/proxy/a/index.m3u8?x=1\n"
+            + "#EXTINF:2,\n"
+            + "https://node2.whyknot.dev/api/proxy/lazy-hls/wk_abc/seg_000001.ts?playback_id=tok\n"
+            + "#EXT-X-KEY:METHOD=AES-128,URI=\"https://node2.whyknot.dev/api/proxy/key.bin?clientId=c\"\n"
+            + "https://cdn.example.com/video/seg.ts\n";
+
+        string stringResult = LocalRelayManifestLocalizer.Localize(manifest, "/play/abc/manifest.m3u8");
+
+        using var input = new MemoryStream(Encoding.UTF8.GetBytes(manifest));
+        using var output = new MemoryStream();
+        await LocalRelayManifestLocalizer.LocalizeStreamAsync(
+            input,
+            inputEncoding: null,
+            output,
+            LocalRelayManifestLocalizer.MaxManifestBytes,
+            CancellationToken.None);
+        output.Position = 0;
+        string streamResult = new StreamReader(output, Encoding.UTF8).ReadToEnd();
+
+        Assert.Equal(stringResult, streamResult);
+    }
+
     [Theory]
     [InlineData("/play/a/manifest.m3u8", "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc", "text/plain", true)]
     [InlineData("/play/a/manifest.bin", "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc", "application/octet-stream", true)]

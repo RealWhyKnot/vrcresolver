@@ -230,61 +230,56 @@ internal sealed partial class LocalRelayServer : IDisposable
 
             if (shouldLocalizeManifest)
             {
-                if (!LocalRelayManifestLocalizer.CanBuffer(resp.Content.Headers.ContentLength))
+                long? upstreamContentLength = resp.Content.Headers.ContentLength;
+                if (s_verbose
+                    && upstreamContentLength.HasValue
+                    && upstreamContentLength.Value > LocalRelayManifestLocalizer.MaxManifestBytes)
                 {
-                    if (s_verbose) Verbose("req=" + reqId + " -> 502 (manifest too large len="
-                        + resp.Content.Headers.ContentLength + ")");
-                    ctx.Response.StatusCode = 502;
-                    ctx.Response.ContentType = "text/plain; charset=utf-8";
-                    byte[] tooLarge = Encoding.UTF8.GetBytes("manifest too large for local relay");
-                    ctx.Response.ContentLength64 = tooLarge.Length;
-                    await ctx.Response.OutputStream.WriteAsync(tooLarge, _cts.Token).ConfigureAwait(false);
-                    return;
+                    Verbose("req=" + reqId + " upstream manifest unusually large len="
+                        + upstreamContentLength.Value);
                 }
 
                 using var manifestStream = await resp.Content.ReadAsStreamAsync(_cts.Token).ConfigureAwait(false);
-                var read = await ReadBoundedAsync(
-                    manifestStream,
-                    LocalRelayManifestLocalizer.MaxManifestBytes,
-                    _cts.Token).ConfigureAwait(false);
-                if (read.Exceeded)
-                {
-                    if (s_verbose) Verbose("req=" + reqId + " -> 502 (manifest exceeded cap)");
-                    ctx.Response.StatusCode = 502;
-                    ctx.Response.ContentType = "text/plain; charset=utf-8";
-                    byte[] tooLarge = Encoding.UTF8.GetBytes("manifest too large for local relay");
-                    ctx.Response.ContentLength64 = tooLarge.Length;
-                    await ctx.Response.OutputStream.WriteAsync(tooLarge, _cts.Token).ConfigureAwait(false);
-                    return;
-                }
-
-                string original = DecodeTextBody(read.Bytes, resp.Content.Headers.ContentType?.CharSet);
-                string localized = LocalRelayManifestLocalizer.Localize(original, path);
-                byte[] body = Encoding.UTF8.GetBytes(localized);
 
                 ctx.Response.StatusCode = (int)resp.StatusCode;
                 CopyResponseHeaders(
                     ctx.Response,
                     resp,
-                    contentLengthOverride: body.Length,
+                    contentLengthOverride: null,
                     contentTypeOverride: resp.Content.Headers.ContentType?.ToString()
                         ?? "application/vnd.apple.mpegurl",
                     bodyRewritten: true,
                     out int passedManifestHeaders,
                     out int droppedManifestHeaders);
+                ctx.Response.SendChunked = true;
+
+                Encoding? inputEncoding = TryResolveCharsetEncoding(
+                    resp.Content.Headers.ContentType?.CharSet);
+                var localizeResult = await LocalRelayManifestLocalizer.LocalizeStreamAsync(
+                    manifestStream,
+                    inputEncoding,
+                    ctx.Response.OutputStream,
+                    LocalRelayManifestLocalizer.MaxManifestBytes,
+                    _cts.Token).ConfigureAwait(false);
+                if (localizeResult.Exceeded)
+                {
+                    ConsoleUx.Warn(LogComponent.Relay,
+                        "manifest body exceeded sanity cap; truncated upstream="
+                        + ShortUrl(targetUrl));
+                }
                 if (s_verbose)
                 {
-                    Verbose("req=" + reqId + " localized-manifest bytes-in="
-                        + read.Bytes.Length + " bytes-out=" + body.Length
-                        + " changed=" + (!string.Equals(original, localized, StringComparison.Ordinal)));
+                    Verbose("req=" + reqId + " localized-manifest chars-in="
+                        + localizeResult.CharsIn + " chars-out=" + localizeResult.CharsOut
+                        + " changed=" + localizeResult.Changed
+                        + (localizeResult.Exceeded ? " EXCEEDED" : ""));
                     Verbose("req=" + reqId + " response-headers passed="
                         + passedManifestHeaders + " dropped=" + droppedManifestHeaders
-                        + " ct='" + ctx.Response.ContentType + "' len=" + body.Length);
+                        + " ct='" + ctx.Response.ContentType + "' chunked=true");
                     DumpHeaders("[relay] req=" + reqId + "  H>", ctx.Response.Headers);
                 }
-                await ctx.Response.OutputStream.WriteAsync(body, _cts.Token).ConfigureAwait(false);
-                bytesOut = body.Length;
-                WatchdogStats.RecordRelayBytes(targetUrl, body.Length);
+                bytesOut = localizeResult.CharsOut;
+                WatchdogStats.RecordRelayBytes(targetUrl, bytesOut);
                 return;
             }
 
@@ -407,33 +402,11 @@ internal sealed partial class LocalRelayServer : IDisposable
             downstream.ContentLength64 = contentLengthOverride.Value;
     }
 
-    private static async Task<(byte[] Bytes, bool Exceeded)> ReadBoundedAsync(
-        Stream stream,
-        int maxBytes,
-        CancellationToken ct)
+    private static Encoding? TryResolveCharsetEncoding(string? charset)
     {
-        using var ms = new MemoryStream(Math.Min(maxBytes, 64 * 1024));
-        byte[] buffer = new byte[16 * 1024];
-        while (true)
-        {
-            int n = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
-            if (n == 0) return (ms.ToArray(), false);
-            if (ms.Length + n > maxBytes) return (Array.Empty<byte>(), true);
-            ms.Write(buffer, 0, n);
-        }
-    }
-
-    private static string DecodeTextBody(byte[] bytes, string? charset)
-    {
-        if (!string.IsNullOrWhiteSpace(charset))
-        {
-            try
-            {
-                return Encoding.GetEncoding(charset.Trim('"')).GetString(bytes);
-            }
-            catch { /* fall through to UTF-8 */ }
-        }
-        return Encoding.UTF8.GetString(bytes);
+        if (string.IsNullOrWhiteSpace(charset)) return null;
+        try { return Encoding.GetEncoding(charset.Trim('"')); }
+        catch { return null; }
     }
 
     private static void DumpHeaders(string prefix, System.Collections.Specialized.NameValueCollection headers)

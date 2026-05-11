@@ -11,13 +11,26 @@ namespace WKVRCProxy;
 [SupportedOSPlatform("windows")]
 internal static partial class LocalRelayManifestLocalizer
 {
-    public const int MaxManifestBytes = 4 * 1024 * 1024;
+    // Soft sanity cap. The relay used to buffer the entire manifest into
+    // memory and 502 anything over 4 MiB. Once WhyKnot.dev started appending
+    // an HMAC playback_id token to every segment URL (co-watcher gating),
+    // long VOD playlists routinely crossed 4 MiB. The current path is a
+    // line-by-line streaming rewrite that never holds the full body, so the
+    // cap is now just a defense-in-depth bound against a pathological
+    // upstream.
+    public const int MaxManifestBytes = 64 * 1024 * 1024;
 
     private static readonly HashSet<string> s_manifestExts = new(StringComparer.OrdinalIgnoreCase)
     {
         "m3u8",
         "mpd",
     };
+
+    public readonly record struct LocalizeStreamResult(
+        long CharsIn,
+        long CharsOut,
+        bool Changed,
+        bool Exceeded);
 
     public static bool IsLikelyManifest(string localPath, string targetUrl, MediaTypeHeaderValue? contentType)
     {
@@ -37,11 +50,6 @@ internal static partial class LocalRelayManifestLocalizer
             || mediaType.Equals("text/xml", StringComparison.OrdinalIgnoreCase);
     }
 
-    public static bool CanBuffer(long? contentLength)
-    {
-        return !contentLength.HasValue || contentLength.Value <= MaxManifestBytes;
-    }
-
     public static string Localize(string content, string localPath)
     {
         if (string.IsNullOrEmpty(content)) return content;
@@ -55,26 +63,96 @@ internal static partial class LocalRelayManifestLocalizer
         {
             if (wrote) output.Append('\n');
             wrote = true;
-
-            string localized = RewriteAbsoluteWhyKnotProxyUrls(line);
-            if (!localized.StartsWith("#", StringComparison.Ordinal)
-                && !string.IsNullOrWhiteSpace(localized))
-            {
-                string trimmed = localized.Trim();
-                if (!trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
-                    && TryBuildLocalRelativeTarget(trimmed, out string replacement))
-                {
-                    int start = localized.IndexOf(trimmed, StringComparison.Ordinal);
-                    localized = localized.Substring(0, start)
-                        + replacement
-                        + localized.Substring(start + trimmed.Length);
-                }
-            }
-
-            output.Append(localized);
+            output.Append(LocalizeLine(line));
         }
 
         return output.ToString();
+    }
+
+    public static async Task<LocalizeStreamResult> LocalizeStreamAsync(
+        Stream input,
+        Encoding? inputEncoding,
+        Stream output,
+        long maxChars,
+        CancellationToken ct)
+    {
+        Encoding readerEncoding = inputEncoding ?? Encoding.UTF8;
+        using var reader = new StreamReader(
+            input,
+            readerEncoding,
+            detectEncodingFromByteOrderMarks: true,
+            bufferSize: 16 * 1024,
+            leaveOpen: true);
+        var writerEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        var writer = new StreamWriter(
+            output,
+            writerEncoding,
+            bufferSize: 16 * 1024,
+            leaveOpen: true)
+        {
+            NewLine = "\n",
+        };
+
+        long charsIn = 0;
+        long charsOut = 0;
+        bool changed = false;
+        bool exceeded = false;
+        bool first = true;
+        try
+        {
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                string? line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                if (line == null) break;
+                charsIn += line.Length;
+
+                string localized = LocalizeLine(line);
+                if (!ReferenceEquals(line, localized)) changed = true;
+
+                if (!first)
+                {
+                    await writer.WriteAsync('\n').ConfigureAwait(false);
+                    charsOut++;
+                }
+                first = false;
+
+                await writer.WriteAsync(localized.AsMemory(), ct).ConfigureAwait(false);
+                charsOut += localized.Length;
+
+                if (charsOut > maxChars)
+                {
+                    exceeded = true;
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            await writer.FlushAsync(ct).ConfigureAwait(false);
+            writer.Dispose();
+        }
+
+        return new LocalizeStreamResult(charsIn, charsOut, changed, exceeded);
+    }
+
+    private static string LocalizeLine(string line)
+    {
+        string localized = RewriteAbsoluteWhyKnotProxyUrls(line);
+        if (!localized.StartsWith("#", StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(localized))
+        {
+            string trimmed = localized.Trim();
+            if (!trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                && TryBuildLocalRelativeTarget(trimmed, out string replacement))
+            {
+                int start = localized.IndexOf(trimmed, StringComparison.Ordinal);
+                localized = localized.Substring(0, start)
+                    + replacement
+                    + localized.Substring(start + trimmed.Length);
+            }
+        }
+        return localized;
     }
 
     private static string RewriteAbsoluteWhyKnotProxyUrls(string line)
