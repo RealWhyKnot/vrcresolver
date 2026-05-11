@@ -174,7 +174,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
     //
     // Feature-gated on welcome.features containing "playback_feedback" so an
     // older server (before 2026.5.4.0-0AFF) doesn't see an unknown action.
-    public async Task SendPlaybackFeedbackAsync(string url, string kind, int msSinceOpen)
+    public async Task SendPlaybackFeedbackAsync(string url, string kind, int msSinceOpen, int? deliveredHeight = null)
     {
         var ws = _ws;
         if (ws is not { State: WebSocketState.Open }) return;
@@ -190,7 +190,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
         try
         {
             payload = BuildPlaybackFeedbackPayload(
-                url, kind, msSinceOpen, _clientId, cid, DateTime.UtcNow);
+                url, kind, msSinceOpen, _clientId, cid, DateTime.UtcNow, deliveredHeight);
         }
         catch { return; }
 
@@ -334,7 +334,8 @@ internal sealed partial class MeshClient : IAsyncDisposable
         int msSinceOpen,
         string clientId,
         string? correlationId,
-        DateTime timestampUtc)
+        DateTime timestampUtc,
+        int? deliveredHeight = null)
     {
         // AOT migration: Dictionary<string, object?> + reflection-based
         // SerializeToUtf8Bytes replaced with the typed PlaybackFeedbackFrame
@@ -350,6 +351,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
             MsSinceOpen = msSinceOpen,
             ClientId = clientId,
             CorrelationId = string.IsNullOrEmpty(correlationId) ? null : correlationId,
+            DeliveredHeight = deliveredHeight is > 0 ? deliveredHeight : null,
         };
         return JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.PlaybackFeedbackFrame);
     }

@@ -188,6 +188,27 @@ public class ProtocolRoundTripTests
     }
 
     [Fact]
+    public void PlaybackFeedback_frame_includes_playing_delivered_height()
+    {
+        byte[] bytes = MeshClient.BuildPlaybackFeedbackPayload(
+            url: "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc",
+            kind: WireConstants.PlaybackFeedbackPlaying,
+            msSinceOpen: 15000,
+            clientId: "client-xyz",
+            correlationId: "cid-42",
+            timestampUtc: new DateTime(2026, 5, 11, 3, 30, 0, DateTimeKind.Utc),
+            deliveredHeight: 720);
+
+        string json = System.Text.Encoding.UTF8.GetString(bytes);
+        Assert.Contains("\"kind\":\"playing\"", json);
+        Assert.Contains("\"delivered_height\":720", json);
+
+        using var doc = JsonDocument.Parse(bytes);
+        Assert.Equal(720, doc.RootElement.GetProperty("delivered_height").GetInt32());
+        Assert.Equal("playing", doc.RootElement.GetProperty("kind").GetString());
+    }
+
+    [Fact]
     public void WireConstants_match_server_spec_strings()
     {
         // These are the constants the server-side audit explicitly listed
@@ -200,12 +221,14 @@ public class ProtocolRoundTripTests
         Assert.Equal("max_audio_channels", WireConstants.FieldMaxAudioChannels);
         Assert.Equal("vrchat_format_arg", WireConstants.FieldVrchatFormatArg);
         Assert.Equal("correlation_id", WireConstants.FieldCorrelationId);
+        Assert.Equal("delivered_height", WireConstants.FieldDeliveredHeight);
         Assert.Equal("helper_status", WireConstants.ActionHelperStatus);
         Assert.Equal("helper_transcode_lease", WireConstants.ActionHelperTranscodeLease);
         Assert.Equal("helper_transcode_result", WireConstants.ActionHelperTranscodeResult);
         Assert.Equal("helper_transcode", WireConstants.FeatureHelperTranscode);
         Assert.Equal("unity_unsupported_format", WireConstants.ReasonUnityUnsupportedFormat);
         Assert.Equal("warp_down", WireConstants.ReasonWarpDown);
+        Assert.Equal("playing", WireConstants.PlaybackFeedbackPlaying);
         Assert.Equal("avpro", WireConstants.PlayerAvPro);
         Assert.Equal("unity", WireConstants.PlayerUnity);
         // Bumped 2 → 3 alongside v3 wire-protocol shipping. v2 servers

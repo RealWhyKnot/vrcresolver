@@ -64,6 +64,7 @@ public static class WireConstants
 
     public const string PlaybackFeedbackLoadFailure = "load_failure";
     public const string PlaybackFeedbackSilentStall = "silent_stall";
+    public const string PlaybackFeedbackPlaying = "playing";
 
     // v3.2: wrapper -> watchdog one-shot notification. The patched yt-dlp
     // wrapper sends one of these on a fresh pipe connection just before
@@ -88,6 +89,7 @@ public static class WireConstants
     public const string FieldMaxAudioChannels = "max_audio_channels";
     public const string FieldVrchatFormatArg = "vrchat_format_arg";
     public const string FieldCorrelationId = "correlation_id";
+    public const string FieldDeliveredHeight = "delivered_height";
     // v3 field on welcome / client_hello.
     public const string FieldWelcomeHash = "welcome_hash";
 
@@ -293,9 +295,9 @@ public sealed class WelcomeCachedFrame
 // Client -> server fire-and-forget telemetry frame. Emitted by
 // VrcLogMonitor when AVPro fails to load a URL the resolver returned
 // (load_failure within 10 s of Opening, or silent_stall after 12 s of
-// nothing). Server attributes the failure to the (domain, config) the
-// resolver picked so future resolves for that domain can demote the
-// failed config.
+// nothing), or when VRChat reports the active playback resolution
+// (kind=playing). Server attributes the signal to the (domain, config)
+// the resolver picked so future resolves can use real playback feedback.
 //
 // Pre-AOT migration this was built as a Dictionary<string, object?>
 // and serialized via reflection. Replaced with a typed DTO so the
@@ -315,6 +317,8 @@ public sealed class PlaybackFeedbackFrame
     [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
     [JsonPropertyName("correlation_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CorrelationId { get; set; }
+    [JsonPropertyName("delivered_height"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? DeliveredHeight { get; set; }
 }
 
 public sealed class HelperStatusFrame

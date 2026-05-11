@@ -32,8 +32,16 @@ internal sealed partial class VrcLogMonitor : IDisposable
 {
     private static readonly TimeSpan AvProOpenFailCorrelationWindow = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan SilentStallWindow = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan DeliveredHeightTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan PlayingFeedbackInterval = TimeSpan.FromSeconds(15);
+    private const int MaxDeliveredHeightEntries = 64;
+
     [GeneratedRegex(@"\[AVProVideo\] Opening\s+(\S+)", RegexOptions.IgnoreCase)]
     private static partial Regex AvProOpeningRegex();
+    [GeneratedRegex(@"\bSwitched\s+to(?:\s+Resolution)?\s+(\d{2,5})x(\d{2,5})\b", RegexOptions.IgnoreCase)]
+    private static partial Regex SwitchedResolutionRegex();
+    [GeneratedRegex(@"\bfwidth=(\d{2,5})\b.*\bfheight=(\d{2,5})\b", RegexOptions.IgnoreCase)]
+    private static partial Regex AvProStateResolutionRegex();
 
     private readonly MeshClient _mesh;
     private readonly ResolveCache? _cache;
@@ -45,11 +53,17 @@ internal sealed partial class VrcLogMonitor : IDisposable
     // Openings are cleared when consumed or superseded.
     private string? _lastOpeningUrl;
     private DateTime _lastOpeningAt;
+    private string? _activePlaybackUrl;
+    private DateTime _activePlaybackAt;
 
     private CancellationTokenSource? _stallCts;
     private string? _stallUrl;
     private DateTime _stallAt;
     private readonly object _stallLock = new();
+    private readonly object _deliveredHeightLock = new();
+    private readonly Dictionary<string, (int Height, DateTime At)> _deliveredHeights = new();
+    private CancellationTokenSource? _playingFeedbackCts;
+    private string? _playingFeedbackUrl;
 
     public VrcLogMonitor(MeshClient mesh, ResolveCache? cache = null)
     {
@@ -66,6 +80,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
     {
         _cts.Cancel();
         CancelStallWatchdog();
+        CancelPlayingFeedbackLoop();
         if (_loop != null)
         {
             try { await _loop.ConfigureAwait(false); } catch { /* ignore */ }
@@ -144,7 +159,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
         }
     }
 
-    private void ProcessNewContent(string content)
+    internal void ProcessNewContent(string content)
     {
         foreach (string rawLine in content.Split('\n'))
         {
@@ -155,9 +170,30 @@ internal sealed partial class VrcLogMonitor : IDisposable
             if (openingMatch.Success)
             {
                 string opened = openingMatch.Groups[1].Value;
+                string canonicalOpened = CanonicalPlaybackObservationUrl(opened);
                 _lastOpeningUrl = opened;
                 _lastOpeningAt = DateTime.UtcNow;
+                _activePlaybackUrl = canonicalOpened;
+                _activePlaybackAt = _lastOpeningAt;
+                CancelPlayingFeedbackLoop();
                 StartStallWatchdog(opened);
+                if (TryGetDeliveredHeight(canonicalOpened, out _))
+                    StartPlayingFeedbackLoop(canonicalOpened, _lastOpeningAt);
+                continue;
+            }
+
+            if (TryParseObservedResolution(line, out _, out int observedHeight)
+                && !string.IsNullOrEmpty(_activePlaybackUrl))
+            {
+                string activeUrl = _activePlaybackUrl!;
+                DateTime activeAt = _activePlaybackAt == default ? DateTime.UtcNow : _activePlaybackAt;
+                RememberDeliveredHeight(activeUrl, observedHeight);
+                StartPlayingFeedbackLoop(activeUrl, activeAt);
+                _ = _mesh.SendPlaybackFeedbackAsync(
+                    activeUrl,
+                    WireConstants.PlaybackFeedbackPlaying,
+                    ElapsedMsSince(activeAt),
+                    observedHeight);
                 continue;
             }
 
@@ -170,7 +206,12 @@ internal sealed partial class VrcLogMonitor : IDisposable
                     string failed = CanonicalPlaybackObservationUrl(observed);
                     int ms = (int)(DateTime.UtcNow - _lastOpeningAt).TotalMilliseconds;
                     _lastOpeningUrl = null; // consume
-                    _ = _mesh.SendPlaybackFeedbackAsync(failed, WireConstants.PlaybackFeedbackLoadFailure, ms);
+                    int? deliveredHeight = TryGetDeliveredHeight(failed, out int height) ? height : null;
+                    _ = _mesh.SendPlaybackFeedbackAsync(
+                        failed,
+                        WireConstants.PlaybackFeedbackLoadFailure,
+                        ms,
+                        deliveredHeight);
                     // v3.2: AVPro hard-failed on a URL we just served.
                     // If it was cached, the cached entry is poison --
                     // evict so the next resolve goes back to mesh and
@@ -180,6 +221,9 @@ internal sealed partial class VrcLogMonitor : IDisposable
                         + (evicted > 0 ? " evicted=" + evicted : ""));
                 }
                 CancelStallWatchdog();
+                CancelPlayingFeedbackLoop();
+                _activePlaybackUrl = null;
+                _activePlaybackAt = default;
                 continue;
             }
 
@@ -237,7 +281,15 @@ internal sealed partial class VrcLogMonitor : IDisposable
 
             int ms = (int)(DateTime.UtcNow - activeAt).TotalMilliseconds;
             string reportedUrl = CanonicalPlaybackObservationUrl(activeUrl);
-            _ = _mesh.SendPlaybackFeedbackAsync(reportedUrl, WireConstants.PlaybackFeedbackSilentStall, ms);
+            int? deliveredHeight = TryGetDeliveredHeight(reportedUrl, out int height) ? height : null;
+            _ = _mesh.SendPlaybackFeedbackAsync(
+                reportedUrl,
+                WireConstants.PlaybackFeedbackSilentStall,
+                ms,
+                deliveredHeight);
+            CancelPlayingFeedbackLoop();
+            _activePlaybackUrl = null;
+            _activePlaybackAt = default;
             // v3.2: AVPro fell silent on a URL we just served. If it was
             // cached, the cached entry is poison -- evict so the next
             // resolve goes back to mesh and gets a fresh URL.
@@ -245,6 +297,161 @@ internal sealed partial class VrcLogMonitor : IDisposable
             ConsoleUx.Warn(LogComponent.VrcLog, "silent_stall ms=" + ms + " url=" + LogUtil.RedactUrl(reportedUrl)
                 + (evicted > 0 ? " evicted=" + evicted : ""));
         });
+    }
+
+    internal static bool TryParseObservedResolution(string line, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        if (string.IsNullOrWhiteSpace(line)) return false;
+
+        var switched = SwitchedResolutionRegex().Match(line);
+        if (switched.Success
+            && TryParseResolution(switched.Groups[1].Value, switched.Groups[2].Value, out width, out height))
+        {
+            return true;
+        }
+
+        var state = AvProStateResolutionRegex().Match(line);
+        return state.Success
+            && TryParseResolution(state.Groups[1].Value, state.Groups[2].Value, out width, out height);
+    }
+
+    internal int? GetObservedDeliveredHeightForTests(string url)
+    {
+        string canonical = CanonicalPlaybackObservationUrl(url);
+        return TryGetDeliveredHeight(canonical, out int height) ? height : null;
+    }
+
+    private static bool TryParseResolution(string widthText, string heightText, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        if (!int.TryParse(widthText, out width) || !int.TryParse(heightText, out height))
+            return false;
+        return width is >= 16 and <= 16384 && height is >= 16 and <= 4320;
+    }
+
+    private void RememberDeliveredHeight(string url, int height)
+    {
+        if (string.IsNullOrWhiteSpace(url) || height <= 0) return;
+        lock (_deliveredHeightLock)
+        {
+            _deliveredHeights[url] = (height, DateTime.UtcNow);
+            PruneDeliveredHeightsLocked();
+        }
+    }
+
+    private bool TryGetDeliveredHeight(string url, out int height)
+    {
+        height = 0;
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        lock (_deliveredHeightLock)
+        {
+            if (!_deliveredHeights.TryGetValue(url, out var entry))
+                return false;
+            if (DateTime.UtcNow - entry.At > DeliveredHeightTtl)
+            {
+                _deliveredHeights.Remove(url);
+                return false;
+            }
+            height = entry.Height;
+            return true;
+        }
+    }
+
+    private void PruneDeliveredHeightsLocked()
+    {
+        var now = DateTime.UtcNow;
+        foreach (var key in _deliveredHeights
+            .Where(kvp => now - kvp.Value.At > DeliveredHeightTtl)
+            .Select(kvp => kvp.Key)
+            .ToArray())
+        {
+            _deliveredHeights.Remove(key);
+        }
+
+        while (_deliveredHeights.Count > MaxDeliveredHeightEntries)
+        {
+            string? oldestKey = null;
+            DateTime oldestAt = DateTime.MaxValue;
+            foreach (var kvp in _deliveredHeights)
+            {
+                if (kvp.Value.At < oldestAt)
+                {
+                    oldestAt = kvp.Value.At;
+                    oldestKey = kvp.Key;
+                }
+            }
+            if (oldestKey == null) break;
+            _deliveredHeights.Remove(oldestKey);
+        }
+    }
+
+    private void StartPlayingFeedbackLoop(string url, DateTime openedAt)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        CancellationTokenSource? oldCts = null;
+        var newCts = new CancellationTokenSource();
+        lock (_stallLock)
+        {
+            if (string.Equals(_playingFeedbackUrl, url, StringComparison.Ordinal)
+                && _playingFeedbackCts != null
+                && !_playingFeedbackCts.IsCancellationRequested)
+            {
+                try { newCts.Dispose(); } catch { }
+                return;
+            }
+            oldCts = _playingFeedbackCts;
+            _playingFeedbackCts = newCts;
+            _playingFeedbackUrl = url;
+        }
+        try { oldCts?.Cancel(); oldCts?.Dispose(); } catch { }
+
+        _ = Task.Run(async () =>
+        {
+            while (!newCts.IsCancellationRequested)
+            {
+                try { await Task.Delay(PlayingFeedbackInterval, newCts.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+                catch (ObjectDisposedException) { return; }
+
+                if (!TryGetDeliveredHeight(url, out int height))
+                {
+                    CancelPlayingFeedbackLoop(newCts);
+                    return;
+                }
+
+                _ = _mesh.SendPlaybackFeedbackAsync(
+                    url,
+                    WireConstants.PlaybackFeedbackPlaying,
+                    ElapsedMsSince(openedAt),
+                    height);
+            }
+        });
+    }
+
+    private void CancelPlayingFeedbackLoop(CancellationTokenSource? expected = null)
+    {
+        CancellationTokenSource? cts;
+        lock (_stallLock)
+        {
+            if (expected != null && !ReferenceEquals(_playingFeedbackCts, expected))
+                return;
+            cts = _playingFeedbackCts;
+            _playingFeedbackCts = null;
+            _playingFeedbackUrl = null;
+        }
+        try { cts?.Cancel(); cts?.Dispose(); } catch { }
+    }
+
+    private static int ElapsedMsSince(DateTime startedAt)
+    {
+        if (startedAt == default) return 0;
+        double elapsed = (DateTime.UtcNow - startedAt).TotalMilliseconds;
+        if (elapsed <= 0) return 0;
+        return elapsed >= int.MaxValue ? int.MaxValue : (int)elapsed;
     }
 
     internal static string CanonicalPlaybackObservationUrl(string url)
@@ -271,6 +478,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
     {
         _cts.Cancel();
         CancelStallWatchdog();
+        CancelPlayingFeedbackLoop();
         _cts.Dispose();
     }
 }
