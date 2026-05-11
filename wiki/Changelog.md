@@ -17,6 +17,9 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **helper:** Ship ffmpeg and handle transcode leases (f150370)
 - **helper:** Add hitch diagnostics and benchmarked presets (036692e)
 
+### Changed
+- Improve helper diagnostics and terminal input (3988dad)
+
 ---
 
 ## [v2026.5.10.4](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.5.10.4) - 2026-05-10
