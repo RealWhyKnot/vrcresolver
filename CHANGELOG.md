@@ -17,6 +17,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **helper:** Ship ffmpeg and handle transcode leases (f150370)
 - **helper:** Add hitch diagnostics and benchmarked presets (036692e)
 - **mesh:** Playback_feedback emits delivered_height + kind=playing telemetry (f133ffb)
+- **helper:** Add ffmpeg hardware decode fallback (2caac69)
 
 ### Changed
 - Improve helper diagnostics and terminal input (3988dad)
