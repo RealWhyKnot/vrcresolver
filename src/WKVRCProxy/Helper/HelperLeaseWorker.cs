@@ -64,12 +64,14 @@ internal static class HelperLeaseWorker
                 settings,
                 probe,
                 ct).ConfigureAwait(false);
-            encoderName = probe.PreferredEncoder.Value.EncoderName;
+            FfmpegLocation ffmpegLocation = probe.Location.Value;
+            HardwareEncoderCapability encoder = probe.PreferredEncoder.Value;
+            encoderName = encoder.EncoderName;
             var lease = ToLease(leaseFrame);
             TranscodeFfmpegCommand command = TranscodeWorkerProcess.BuildSegmentCommand(
-                probe.Location.Value.Path,
+                ffmpegLocation.Path,
                 lease,
-                probe.PreferredEncoder.Value,
+                encoder,
                 outputPath,
                 leaseFrame.TargetWidth,
                 leaseFrame.TargetHeight,
@@ -85,33 +87,54 @@ internal static class HelperLeaseWorker
                 + " duration=" + leaseFrame.Duration.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
                 + " deadline_ms=" + deadlineMs);
 
-            using var process = new Process { StartInfo = command.ToStartInfo() };
             using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deadlineCts.CancelAfter(deadlineMs);
-            process.Start();
-            TranscodeWorkerProcess.ApplySafePriority(process);
-            Task<string> stderrTask = process.StandardError.ReadToEndAsync(ct);
-            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-
-            try
+            FfmpegProcessResult ffmpegResult = await RunFfmpegAsync(command, deadlineCts.Token, ct)
+                .ConfigureAwait(false);
+            if (ffmpegResult.TimedOut)
             {
-                await process.WaitForExitAsync(deadlineCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                TryKill(process);
                 WarnLease(leaseFrame, "deadline", "ffmpeg exceeded "
-                    + deadlineMs + "ms stderr=" + CompletedTaskText(stderrTask, 180));
+                    + deadlineMs + "ms stderr=" + Snip(ffmpegResult.Stderr, 180));
                 return Result(false, "deadline", "helper encode exceeded the server deadline");
             }
 
-            string stderr = await stderrTask.ConfigureAwait(false);
-            _ = await stdoutTask.ConfigureAwait(false);
-            if (process.ExitCode != 0)
+            if (ffmpegResult.ExitCode != 0)
             {
-                WarnLease(leaseFrame, "ffmpeg failed", "exit=" + process.ExitCode
-                    + " stderr=" + Snip(stderr, 180));
-                return Result(false, "ffmpeg_failed", Snip(stderr, 240));
+                WarnLease(leaseFrame, "ffmpeg hwaccel failed", "exit=" + ffmpegResult.ExitCode
+                    + " retry=software stderr=" + Snip(ffmpegResult.Stderr, 180));
+                TryDeleteOutput(outputPath);
+
+                TranscodeFfmpegCommand fallbackCommand = TranscodeWorkerProcess.BuildSegmentCommandSoftwareFallback(
+                    ffmpegLocation.Path,
+                    lease,
+                    encoder,
+                    outputPath,
+                    leaseFrame.TargetWidth,
+                    leaseFrame.TargetHeight,
+                    leaseFrame.TargetBitrateKbps,
+                    hasAudio: leaseFrame.HasAudio,
+                    quality: quality);
+
+                LogLease(leaseFrame, "ffmpeg fallback start", "encoder=" + encoderName
+                    + " quality=" + HelperEncodingQualityNames.Format(quality)
+                    + " segment=" + leaseFrame.SegmentIndex
+                    + " deadline_ms=" + deadlineMs);
+
+                ffmpegResult = await RunFfmpegAsync(fallbackCommand, deadlineCts.Token, ct)
+                    .ConfigureAwait(false);
+                if (ffmpegResult.TimedOut)
+                {
+                    WarnLease(leaseFrame, "deadline", "fallback ffmpeg exceeded "
+                        + deadlineMs + "ms stderr=" + Snip(ffmpegResult.Stderr, 180));
+                    return Result(false, "deadline", "helper encode exceeded the server deadline");
+                }
+            }
+
+            if (ffmpegResult.ExitCode != 0)
+            {
+                WarnLease(leaseFrame, "ffmpeg failed", "fallback_exit=" + ffmpegResult.ExitCode
+                    + " stderr=" + Snip(ffmpegResult.Stderr, 180));
+                return Result(false, "ffmpeg_failed", Snip(ffmpegResult.Stderr, 240));
             }
 
             var info = new FileInfo(outputPath);
@@ -204,9 +227,42 @@ internal static class HelperLeaseWorker
             ConsecutiveFailures: 0);
     }
 
+    private sealed record FfmpegProcessResult(bool TimedOut, int ExitCode, string Stderr);
+
+    private static async Task<FfmpegProcessResult> RunFfmpegAsync(
+        TranscodeFfmpegCommand command,
+        CancellationToken deadlineToken,
+        CancellationToken ct)
+    {
+        using var process = new Process { StartInfo = command.ToStartInfo() };
+        process.Start();
+        TranscodeWorkerProcess.ApplySafePriority(process);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(ct);
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+
+        try
+        {
+            await process.WaitForExitAsync(deadlineToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            TryKill(process);
+            return new FfmpegProcessResult(true, -1, CompletedTaskText(stderrTask, 180));
+        }
+
+        string stderr = await stderrTask.ConfigureAwait(false);
+        _ = await stdoutTask.ConfigureAwait(false);
+        return new FfmpegProcessResult(false, process.ExitCode, stderr);
+    }
+
     private static void TryKill(Process process)
     {
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+    }
+
+    private static void TryDeleteOutput(string outputPath)
+    {
+        try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
     }
 
     private static string Snip(string value, int max)

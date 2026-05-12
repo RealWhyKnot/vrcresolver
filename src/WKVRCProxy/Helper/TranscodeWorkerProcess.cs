@@ -42,6 +42,55 @@ internal static class TranscodeWorkerProcess
         bool hasAudio = true,
         int audioBitrateKbps = 128,
         HelperEncodingQuality quality = HelperEncodingQuality.Fast)
+        => BuildSegmentCommandCore(
+            ffmpegPath,
+            lease,
+            encoder,
+            outputPath,
+            targetWidth,
+            targetHeight,
+            targetBitrateKbps,
+            hasAudio,
+            audioBitrateKbps,
+            quality,
+            useHardwareDecode: true);
+
+    public static TranscodeFfmpegCommand BuildSegmentCommandSoftwareFallback(
+        string ffmpegPath,
+        TranscodeLease lease,
+        HardwareEncoderCapability encoder,
+        string outputPath,
+        int targetWidth,
+        int targetHeight,
+        int targetBitrateKbps,
+        bool hasAudio = true,
+        int audioBitrateKbps = 128,
+        HelperEncodingQuality quality = HelperEncodingQuality.Fast)
+        => BuildSegmentCommandCore(
+            ffmpegPath,
+            lease,
+            encoder,
+            outputPath,
+            targetWidth,
+            targetHeight,
+            targetBitrateKbps,
+            hasAudio,
+            audioBitrateKbps,
+            quality,
+            useHardwareDecode: false);
+
+    private static TranscodeFfmpegCommand BuildSegmentCommandCore(
+        string ffmpegPath,
+        TranscodeLease lease,
+        HardwareEncoderCapability encoder,
+        string outputPath,
+        int targetWidth,
+        int targetHeight,
+        int targetBitrateKbps,
+        bool hasAudio,
+        int audioBitrateKbps,
+        HelperEncodingQuality quality,
+        bool useHardwareDecode)
     {
         if (string.IsNullOrWhiteSpace(ffmpegPath))
             throw new ArgumentException("FFmpeg path is required.", nameof(ffmpegPath));
@@ -56,9 +105,11 @@ internal static class TranscodeWorkerProcess
         int audioBitrate = Math.Clamp(audioBitrateKbps, 64, 320);
         int gopSeconds = Math.Clamp(lease.OutputSpec.GopSeconds <= 0 ? 2 : lease.OutputSpec.GopSeconds, 1, 6);
         int gopFrames = gopSeconds * 30;
-        string pixFmt = PixelFormatFor(encoder, lease.OutputSpec.PixelFormat);
         string segment = lease.DurationSeconds.ToString("0.###", CultureInfo.InvariantCulture);
         string start = lease.StartPtsSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+        string videoFilter = useHardwareDecode
+            ? HardwareScaleFilterFor(encoder, safeWidth, safeHeight)
+            : SoftwareScaleFilterFor(encoder, lease.OutputSpec.PixelFormat, safeWidth, safeHeight);
 
         var args = new List<string>
         {
@@ -77,11 +128,18 @@ internal static class TranscodeWorkerProcess
             "Referer: https://www.youtube.com/\r\n",
             "-fflags",
             "+genpts+discardcorrupt",
+        };
+
+        if (useHardwareDecode)
+            args.AddRange(HardwareDecodeOptionsFor(encoder));
+
+        args.AddRange(new[]
+        {
             "-ss",
             start,
             "-i",
             lease.InputChunkUrl.ToString(),
-        };
+        });
 
         if (!hasAudio)
         {
@@ -118,9 +176,7 @@ internal static class TranscodeWorkerProcess
         args.AddRange(new[]
         {
             "-vf",
-            "scale=" + safeWidth.ToString(CultureInfo.InvariantCulture) + ":"
-                + safeHeight.ToString(CultureInfo.InvariantCulture)
-                + ":force_original_aspect_ratio=decrease,format=" + pixFmt,
+            videoFilter,
             "-c:v",
             encoder.EncoderName,
         });
@@ -183,6 +239,45 @@ internal static class TranscodeWorkerProcess
         return encoder.Backend is HardwareEncoderBackend.Qsv or HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation
             ? "nv12"
             : "yuv420p";
+    }
+
+    private static IReadOnlyList<string> HardwareDecodeOptionsFor(HardwareEncoderCapability encoder)
+    {
+        return encoder.Backend switch
+        {
+            HardwareEncoderBackend.Nvenc => new[] { "-hwaccel", "cuda", "-hwaccel_output_format", "cuda" },
+            HardwareEncoderBackend.Qsv => new[] { "-hwaccel", "qsv", "-hwaccel_output_format", "qsv" },
+            HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation =>
+                new[] { "-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11" },
+            _ => Array.Empty<string>(),
+        };
+    }
+
+    private static string HardwareScaleFilterFor(HardwareEncoderCapability encoder, int safeWidth, int safeHeight)
+    {
+        string width = safeWidth.ToString(CultureInfo.InvariantCulture);
+        string height = safeHeight.ToString(CultureInfo.InvariantCulture);
+        return encoder.Backend switch
+        {
+            HardwareEncoderBackend.Nvenc =>
+                "scale_cuda=" + width + ":" + height + ":force_original_aspect_ratio=decrease,format=nv12",
+            HardwareEncoderBackend.Qsv =>
+                "scale_qsv=w=" + width + ":h=" + height + ":format=nv12",
+            HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation =>
+                "scale=" + width + ":" + height + ":force_original_aspect_ratio=decrease,format=nv12,hwupload=extra_hw_frames=8",
+            _ => SoftwareScaleFilterFor(encoder, "yuv420p", safeWidth, safeHeight),
+        };
+    }
+
+    private static string SoftwareScaleFilterFor(
+        HardwareEncoderCapability encoder,
+        string requestedPixelFormat,
+        int safeWidth,
+        int safeHeight)
+    {
+        return "scale=" + safeWidth.ToString(CultureInfo.InvariantCulture) + ":"
+            + safeHeight.ToString(CultureInfo.InvariantCulture)
+            + ":force_original_aspect_ratio=decrease,format=" + PixelFormatFor(encoder, requestedPixelFormat);
     }
 
     internal static HelperEncodingQuality NormalizeQuality(HelperEncodingQuality quality)

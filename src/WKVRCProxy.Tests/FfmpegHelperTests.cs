@@ -152,13 +152,64 @@ public class FfmpegHelperTests
         Assert.Contains("-nostdin", command.Arguments);
         Assert.Contains(command.Arguments, argument => argument.Contains("Mozilla/5.0 (Windows NT 10.0; Win64; x64)", StringComparison.Ordinal));
         Assert.Contains("h264_nvenc", command.Arguments);
-        Assert.Contains(command.Arguments, argument => argument.Contains("format=yuv420p", StringComparison.Ordinal));
+        AssertHardwareDecodeBeforeInput(command.Arguments, "cuda", "cuda");
+        Assert.Contains(command.Arguments, argument => argument.StartsWith("scale_cuda=1280:720:", StringComparison.Ordinal));
+        Assert.Contains(command.Arguments, argument => argument.Contains("format=nv12", StringComparison.Ordinal));
         Assert.Contains("-force_key_frames", command.Arguments);
         Assert.Contains("-c:a", command.Arguments);
         Assert.Contains("aac", command.Arguments);
         Assert.Contains("-headers", command.Arguments);
         Assert.Contains("Referer: https://www.youtube.com/\r\n", command.Arguments);
         Assert.Equal("seg_000042.ts", command.Arguments[^1]);
+    }
+
+    [Fact]
+    public void TranscodeWorkerProcess_BuildsQsvGpuDecodeAndScaleCommand()
+    {
+        TranscodeFfmpegCommand command = BuildSegmentCommand(
+            HardwareEncoderBackend.Qsv,
+            "h264_qsv");
+
+        Assert.Contains("h264_qsv", command.Arguments);
+        AssertHardwareDecodeBeforeInput(command.Arguments, "qsv", "qsv");
+        Assert.Contains(command.Arguments, argument => argument == "scale_qsv=w=1280:h=720:format=nv12");
+    }
+
+    [Theory]
+    [InlineData("Amf", "h264_amf")]
+    [InlineData("MediaFoundation", "h264_mf")]
+    public void TranscodeWorkerProcess_BuildsD3d11DecodeForWindowsBackends(
+        string backendName,
+        string encoderName)
+    {
+        HardwareEncoderBackend backend = Enum.Parse<HardwareEncoderBackend>(backendName);
+        TranscodeFfmpegCommand command = BuildSegmentCommand(backend, encoderName);
+
+        Assert.Contains(encoderName, command.Arguments);
+        AssertHardwareDecodeBeforeInput(command.Arguments, "d3d11va", "d3d11");
+        Assert.Contains(command.Arguments, argument => argument == "scale=1280:720:force_original_aspect_ratio=decrease,format=nv12,hwupload=extra_hw_frames=8");
+    }
+
+    [Fact]
+    public void TranscodeWorkerProcess_BuildSegmentCommandSoftwareFallbackUsesCpuScale()
+    {
+        var lease = NewLease();
+        var encoder = new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC");
+
+        TranscodeFfmpegCommand command = TranscodeWorkerProcess.BuildSegmentCommandSoftwareFallback(
+            "ffmpeg.exe",
+            lease,
+            encoder,
+            "seg_000042.ts",
+            targetWidth: 1280,
+            targetHeight: 720,
+            targetBitrateKbps: 2800);
+
+        Assert.DoesNotContain("-hwaccel", command.Arguments);
+        Assert.DoesNotContain("-hwaccel_output_format", command.Arguments);
+        Assert.Contains(command.Arguments, argument => argument == "scale=1280:720:force_original_aspect_ratio=decrease,format=yuv420p");
+        Assert.DoesNotContain(command.Arguments, argument => argument.Contains("scale_cuda", StringComparison.Ordinal));
+        Assert.Contains("h264_nvenc", command.Arguments);
     }
 
     [Fact]
@@ -312,5 +363,37 @@ public class FfmpegHelperTests
                 Profile: "high",
                 GopSeconds: 2,
                 Audio: "server"));
+    }
+
+    private static TranscodeFfmpegCommand BuildSegmentCommand(
+        HardwareEncoderBackend backend,
+        string encoderName)
+    {
+        var encoder = new HardwareEncoderCapability(encoderName, backend, encoderName);
+        return TranscodeWorkerProcess.BuildSegmentCommand(
+            "ffmpeg.exe",
+            NewLease(),
+            encoder,
+            "seg_000042.ts",
+            targetWidth: 1280,
+            targetHeight: 720,
+            targetBitrateKbps: 2800);
+    }
+
+    private static void AssertHardwareDecodeBeforeInput(
+        IReadOnlyList<string> arguments,
+        string hwaccel,
+        string outputFormat)
+    {
+        var args = arguments.ToList();
+        int inputIndex = args.IndexOf("-i");
+        int hwaccelIndex = args.IndexOf("-hwaccel");
+        int outputFormatIndex = args.IndexOf("-hwaccel_output_format");
+
+        Assert.True(inputIndex >= 0);
+        Assert.True(hwaccelIndex >= 0 && hwaccelIndex < inputIndex);
+        Assert.Equal(hwaccel, args[hwaccelIndex + 1]);
+        Assert.True(outputFormatIndex >= 0 && outputFormatIndex < inputIndex);
+        Assert.Equal(outputFormat, args[outputFormatIndex + 1]);
     }
 }
