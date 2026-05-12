@@ -20,7 +20,7 @@ We try to acknowledge new reports within **7 days** and aim for an initial asses
 
 ## Out of scope
 
-- Bugs in vendored third-party binaries (`yt-dlp`, `curl-impersonate`, `streamlink`, `wgcf`, `wireproxy`, `bgutil-ytdlp-pot-provider`, `deno`). Please report those upstream — we'll bump the pinned version when the upstream fix lands.
+- Bugs in vendored third-party binaries (`yt-dlp`, `streamlink`, `wgcf`, `wireproxy`, `bgutil-ytdlp-pot-provider`, `deno`). Please report those upstream -- we'll bump the pinned version when the upstream fix lands.
 - VRChat client behaviour, AVPro behaviour, or the trusted-host allowlist itself.
 - Issues that require an attacker to already have admin access on the user's machine.
 - "Loading failed" / playback failures — those are functional bugs, not security issues; use the bug-report issue template.

@@ -17,10 +17,6 @@ yt-dlp (Unlicense)
   https://github.com/yt-dlp/yt-dlp
   Public domain dedication; ships as vendor/yt-dlp.exe.
 ============================================================
-curl-impersonate (MIT)
-  https://github.com/lwthiker/curl-impersonate
-  Ships as vendor/curl-impersonate-win.exe.
-============================================================
 Deno (MIT)
   https://github.com/denoland/deno
   Ships as vendor/deno.exe.

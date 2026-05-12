@@ -127,7 +127,6 @@ body:
         - label: "`tier0:streamlink` (Twitch / live-HLS)"
         - label: "`tier1:plain`"
         - label: "`tier1:pot` (PO-token via bgutil sidecar)"
-        - label: "`tier1:impersonate` (curl-impersonate Chrome TLS)"
         - label: "`tier1:vrchat-ua`"
         - label: "`tier1:mweb`"
         - label: "`tier1:yt-combo`"
