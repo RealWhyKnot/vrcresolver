@@ -16,6 +16,9 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **helper:** Trust key challenge, encoder smoke test, pre-upload validation (9f913f4)
 - **wrapper:** Retry resolve on discovery_in_progress with deadline-aware hold (49fb3b7)
 
+### Fixed
+- **wrapper:** Re-establish pipe per retry so resolve retries can actually send (5070472)
+
 ---
 
 ## [v2026.5.14.0](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.5.14.0) - 2026-05-14
