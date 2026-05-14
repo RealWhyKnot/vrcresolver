@@ -18,6 +18,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ### Fixed
 - **wrapper:** Re-establish pipe per retry so resolve retries can actually send (5070472)
+- **ipc:** Align watchdog per-request budget with wrapper deadline (c64298e)
 
 ---
 
