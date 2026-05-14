@@ -14,6 +14,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 ### Added
 - **helper:** Expand helper lease + resolve diagnostics (29d82cf)
 - **helper:** Trust key challenge, encoder smoke test, pre-upload validation (9f913f4)
+- **wrapper:** Retry resolve on discovery_in_progress with deadline-aware hold (49fb3b7)
 
 ---
 
