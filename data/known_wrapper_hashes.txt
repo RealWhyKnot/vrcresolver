@@ -6,3 +6,4 @@
 # Used by WrapperIdentity (src/WKVRCProxy.Shared/WrapperIdentity.cs) as the
 # third of four "is this our binary?" signals. Released versions are matched
 # here; dev builds fall through to PE metadata + embedded marker signals.
+219aa99013999f2352d2e8cadade96c84a5929c154d92f728eb0bd07e9e54123  2026.5.14.0  2026-05-14T11:41:48Z
