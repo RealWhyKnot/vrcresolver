@@ -33,13 +33,21 @@ namespace WKVRCProxy;
 [SupportedOSPlatform("windows")]
 internal sealed partial class LocalIpcServer : IDisposable
 {
-    // Per-request budget. Sized so the server has room to escalate from
-    // its standard tier (yt-dlp:youtube-tv-combo, ~3-8 s) to a heavier
-    // tier (browser-extract, vrchat-impersonate) without the watchdog
-    // synthesizing a fallback_native too eagerly. The wrapper's read
-    // budget (18 s) sits above this so the synthesized response always
-    // wins the race when this timeout fires.
+    // Default per-request budget when the wrapper does not declare its
+    // own deadline (old clients, manual JSON over the pipe, etc.). The
+    // wrapper now sends `wrapper_deadline_ms` on every resolve and the
+    // watchdog overrides this default so the mesh-side wait aligns with
+    // however long the wrapper is actually willing to wait, minus a
+    // 500 ms safety margin so the synthesized fallback_native still
+    // wins the race if the timeout fires.
     private static readonly TimeSpan PerRequestTimeout = TimeSpan.FromSeconds(15);
+    // Hard floor + ceiling on the per-request budget when honoring a
+    // wrapper-declared deadline. The floor prevents a zero / tiny budget
+    // from making every resolve insta-fail. The ceiling caps trust in a
+    // misbehaving wrapper to a value still well below the WS keepalive.
+    private const int WrapperBudgetFloorMs = 5_000;
+    private const int WrapperBudgetCeilingMs = 90_000;
+    private const int WrapperBudgetSafetyMarginMs = 500;
     // Match the WS-side 4 MiB cap so a giant vrchat_format_arg (raw yt-dlp
     // -f selector) round-trips end-to-end. Pre-fix this was 64 KiB which
     // silently truncated large selectors mid-string; the resulting
@@ -207,6 +215,24 @@ internal sealed partial class LocalIpcServer : IDisposable
                     " -- must be \"avpro\" or \"unity\" (case-sensitive)");
                 await WriteFallbackAsync(pipe, id, WireConstants.FallbackInternalError, perReqCts.Token).ConfigureAwait(false);
                 return;
+            }
+
+            // If the wrapper declared its own deadline, align the watchdog's
+            // per-request budget with it (minus a 500 ms safety margin so the
+            // synthesized fallback_native lands before the wrapper gives up).
+            // Old wrappers that omit the field keep the PerRequestTimeout
+            // default armed at the top of HandleAsync. Floor and ceiling
+            // bound the trust placed in a misbehaving wrapper.
+            if (req.WrapperDeadlineMs is int wrapperBudgetMs && wrapperBudgetMs > 0)
+            {
+                int effectiveMs = Math.Clamp(
+                    wrapperBudgetMs - WrapperBudgetSafetyMarginMs,
+                    WrapperBudgetFloorMs,
+                    WrapperBudgetCeilingMs);
+                perReqCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveMs));
+                Logger.WriteFileOnly("[ipc] honoring wrapper_deadline_ms id=" + id +
+                    " wrapper_deadline_ms=" + wrapperBudgetMs +
+                    " effective_ms=" + effectiveMs);
             }
 
             // Capture the host + player labels for the single per-resolve
