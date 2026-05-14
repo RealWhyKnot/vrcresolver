@@ -154,22 +154,20 @@ internal static class AppSettingsRegistry
             "video-support-updates",
             "Keep playback compatibility helpers current.",
             ["on", "off"],
-            static s => FormatBool(s.Maintenance.CodecAutoInstall && s.Maintenance.YtDlpFallbackAutoUpdate),
+            static s => FormatBool(s.Maintenance.CodecAutoInstall),
             static (AppSettings s, string value, out string error) =>
             {
                 if (!TryParseBool(value, out bool parsed, out error)) return false;
                 s.Maintenance.CodecAutoInstall = parsed;
-                s.Maintenance.YtDlpFallbackAutoUpdate = parsed;
                 return true;
             },
             static s =>
             {
                 s.Maintenance.CodecAutoInstall = s_defaults.Maintenance.CodecAutoInstall;
-                s.Maintenance.YtDlpFallbackAutoUpdate = s_defaults.Maintenance.YtDlpFallbackAutoUpdate;
             },
             restartRequired: true,
             completionValues: ["on", "off"],
-            aliases: ["video-updates", "codec-install", "fallback-updater", "maintenance.codec-install", "maintenance.ytdlp-update"]),
+            aliases: ["video-updates", "codec-install", "maintenance.codec-install"]),
     ];
 
     public static bool TryFind(string key, out AppSettingDefinition? setting)

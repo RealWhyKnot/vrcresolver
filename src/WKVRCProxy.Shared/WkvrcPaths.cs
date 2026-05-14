@@ -16,9 +16,9 @@ namespace WKVRCProxy.Shared;
 //
 // Pre-fix every state path was rooted at LocalApplicationData (Medium).
 // Logger.cs, CrashHandler.cs, PatchManager (clean_exit / halt flags),
-// CodecInstaller (codec-state.json), YtDlpUpdater (yt-dlp-update-check.json),
-// and the YtDlp wrapper's Log() all wrote there. Wrapper writes silently
-// failed; pipe connect from wrapper silently failed. Mesh path bypassed.
+// CodecInstaller (codec-state.json), and the YtDlp wrapper's Log() all
+// wrote there. Wrapper writes silently failed; pipe connect from wrapper
+// silently failed. Mesh path bypassed.
 public static class WkvrcPaths
 {
     // C:\Users\<user>\AppData\Local\... → C:\Users\<user>\AppData\LocalLow\...

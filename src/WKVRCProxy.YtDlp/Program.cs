@@ -51,6 +51,10 @@ namespace WKVRCProxy.YtDlp;
 internal static partial class Program
 {
     private static readonly TimeSpan PipeConnectTimeout = TimeSpan.FromSeconds(1);
+    // Overall budget for a complete response. Sized to sit above the
+    // watchdog's PerRequestTimeout (15s) + room for one mesh retry on a
+    // transient reason -- the watchdog always synthesizes a fallback
+    // frame within its own ceiling, so this just needs a small margin.
     private static readonly TimeSpan ResolveDeadline = TimeSpan.FromSeconds(18);
 
     // Per-invocation correlation id. 8 hex chars — enough to tell two
@@ -85,7 +89,7 @@ internal static partial class Program
                 // straight to vanilla so diagnostic invocations work.
                 Log("no URL in argv -- exec og fallback (diagnostic invocation)");
                 await TrySendOgFallbackNotifyAsync(null, WireConstants.OgFallbackReasonNoUrlDiagnostic, swTotal.ElapsedMilliseconds).ConfigureAwait(false);
-                exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
+                exitCode = await ExecFallbackAsync(args, null).ConfigureAwait(false);
                 outcome = "no-url-fallback";
             }
             else
@@ -147,7 +151,7 @@ internal static partial class Program
                         string reason = result.fallbackReason ?? WireConstants.OgFallbackReasonPipeResolveFailed;
                         await TrySendOgFallbackNotifyAsync(url, reason, swTotal.ElapsedMilliseconds).ConfigureAwait(false);
 
-                        exitCode = await ExecFallbackAsync(args).ConfigureAwait(false);
+                        exitCode = await ExecFallbackAsync(args, url).ConfigureAwait(false);
                         outcome = "pipe-failed-og-fallback";
                     }
                 }
@@ -255,6 +259,18 @@ internal static partial class Program
 
         if (resp.Action == WireConstants.ActionResolved && !string.IsNullOrEmpty(resp.Url))
         {
+            // AVPro sanity check (defense-in-depth). The server's
+            // FormatSelectorBuilder filters codecs upstream; if a domain
+            // config regression slips through and hands us an .flv / rtmp /
+            // .f4v URL while the player is AVPro, AVPro will silently fail
+            // playback. Exec og instead -- yt-dlp can often pick a working
+            // format itself when the server's strategy was wrong.
+            if (player == WireConstants.PlayerAvPro && !IsAvProCompatibleUrl(resp.Url))
+            {
+                Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] +
+                    " but URL fails AVPro shape check (host=" + ExtractHost(resp.Url) + ") -- falling back");
+                return (null, WireConstants.OgFallbackReasonAvProIncompatible);
+            }
             Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] + " url-host=" + ExtractHost(resp.Url));
             return (resp.Url, null);
         }
@@ -319,6 +335,58 @@ internal static partial class Program
         catch { /* fire-and-forget */ }
     }
 
+    // Mirror of TrySendOgFallbackNotifyAsync for the og-failed signal.
+    // Carries exit code + stderr preview so the watchdog can decide
+    // whether to evict the cache entry and surface a console line.
+    // Fire-and-forget; bounded 1.5s budget.
+    private static async Task TrySendOgFailedNotifyAsync(string? url, string reason, int exitCode, string errorPreview, long elapsedMs)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(1500));
+            using var pipe = new NamedPipeClientStream(
+                ".",
+                WireConstants.PipeName,
+                PipeDirection.InOut,
+                PipeOptions.Asynchronous);
+            try { await pipe.ConnectAsync(cts.Token).ConfigureAwait(false); }
+            catch { return; }
+
+            var notify = new WrapperEventNotify
+            {
+                Action = WireConstants.ActionWrapperOgFailedNotify,
+                Url = url,
+                Reason = reason,
+                ExitCode = exitCode,
+                ErrorPreview = errorPreview,
+                ElapsedMs = elapsedMs,
+                Rid = s_rid,
+            };
+            byte[] body = JsonSerializer.SerializeToUtf8Bytes(notify, WrapperJsonContext.Default.WrapperEventNotify);
+            byte[] framed = new byte[body.Length + 1];
+            Buffer.BlockCopy(body, 0, framed, 0, body.Length);
+            framed[body.Length] = (byte)'\n';
+            try { await pipe.WriteAsync(framed, cts.Token).ConfigureAwait(false); }
+            catch { /* fire-and-forget */ }
+        }
+        catch { /* fire-and-forget */ }
+    }
+
+    // Map og's stderr to a coarse failure-reason tag. The patterns cover
+    // the common upstream blockers we've seen in the field: Cloudflare
+    // anti-bot (403), rate limits (429), and YouTube/auth-gated sign-in
+    // prompts. Anything else is "unknown" -- still worth a notify so the
+    // user sees something failed.
+    private static string ClassifyOgFailure(string stderr)
+    {
+        if (string.IsNullOrEmpty(stderr)) return "unknown";
+        if (stderr.Contains("HTTP Error 403", StringComparison.OrdinalIgnoreCase)) return "cf_403";
+        if (stderr.Contains("HTTP Error 429", StringComparison.OrdinalIgnoreCase)) return "rate_limited";
+        if (stderr.Contains("Sign in to confirm", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("Sign in to verify", StringComparison.OrdinalIgnoreCase)) return "sign_in_required";
+        return "unknown";
+    }
+
     // Buffered NDJSON read. Mirrors LocalIpcServer's read loop so a single
     // response line is consumed up to the first '\n'.
     private static async Task<string?> ReadLineAsync(Stream s, CancellationToken ct)
@@ -361,13 +429,31 @@ internal static partial class Program
     // uninstalled mid-runtime. NEVER emit the input URL as if we'd resolved
     // it — that confuses VRChat into "resolved to same URL" and the player
     // tries to open a watch-page URL it can't decode.
-    private static async Task<int> ExecFallbackAsync(string[] args)
+    private static async Task<int> ExecFallbackAsync(string[] args, string? url)
     {
         string exeDir = AppContext.BaseDirectory;
         string ogPath = Path.Combine(exeDir, "yt-dlp-og.exe");
         if (!File.Exists(ogPath))
         {
-            Log("FALLBACK no-og: yt-dlp-og.exe missing at " + ogPath + " — emitting empty stdout, exit 0");
+            Log("FALLBACK no-og: yt-dlp-og.exe missing at " + ogPath + " -- emitting empty stdout, exit 0");
+            return 0;
+        }
+
+        // Recursive-exec guard. If yt-dlp-og.exe classifies as one of our
+        // own wrappers (current build, prior release in the hash list, or
+        // a dev build with the embedded marker), spawning it would loop
+        // back into this same code path. Hand VRChat empty stdout instead
+        // so it lands in its own no-URL error path -- same as the no-og
+        // branch above.
+        //
+        // Hash list lives in LocalLow (the watchdog stages it on startup);
+        // marker + PE-info signals cover dev builds even when the list is
+        // missing.
+        string knownHashesPath = Path.Combine(WkvrcPaths.StateRoot(), "known_wrapper_hashes.txt");
+        WrapperKind ogKind = WrapperIdentity.Classify(ogPath, knownHashesPath);
+        if (ogKind == WrapperKind.Ours)
+        {
+            Log("FALLBACK refused: yt-dlp-og.exe classifies as our wrapper -- would recurse. Emitting empty stdout, exit 0.");
             return 0;
         }
 
@@ -405,6 +491,16 @@ internal static partial class Program
                 Log("FALLBACK og stdout-preview: " + Preview(ogStdout, 240));
             if (ogStderr.Length > 0)
                 Log("FALLBACK og stderr-preview: " + Preview(ogStderr, 240));
+
+            // og itself failed. Notify the watchdog so it can evict any
+            // stale cache entry for this URL and surface "og also failed"
+            // on the console. Fire-and-forget; pure diagnostic channel.
+            if (proc.ExitCode != 0 && !string.IsNullOrEmpty(url))
+            {
+                string failureReason = ClassifyOgFailure(ogStderr);
+                string preview = ogStderr.Length > 0 ? Preview(ogStderr.Trim(), 200) : "";
+                await TrySendOgFailedNotifyAsync(url, failureReason, proc.ExitCode, preview, sw.ElapsedMilliseconds).ConfigureAwait(false);
+            }
 
             // Pass through to our stdout/stderr so VRChat sees exactly what
             // vanilla yt-dlp would emit. Bytes copied verbatim — no encoding
@@ -498,5 +594,22 @@ internal static partial class Program
         }
         catch { /* best-effort */ }
         return "?";
+    }
+
+    // Blacklist check: reject the formats AVPro can't decode (rtmp/rtmps
+    // schemes, .flv/.f4v containers). Trust by default -- this is a
+    // backstop against a server-side regression, not an allowlist of
+    // every legitimate CDN URL shape.
+    private static bool IsAvProCompatibleUrl(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return false;
+        string lower = url.ToLowerInvariant();
+        if (lower.StartsWith("rtmp://", StringComparison.Ordinal)
+            || lower.StartsWith("rtmps://", StringComparison.Ordinal)) return false;
+        int q = lower.IndexOf('?');
+        string pathLower = q >= 0 ? lower.Substring(0, q) : lower;
+        if (pathLower.EndsWith(".flv", StringComparison.Ordinal)
+            || pathLower.EndsWith(".f4v", StringComparison.Ordinal)) return false;
+        return true;
     }
 }

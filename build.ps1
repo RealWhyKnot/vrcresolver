@@ -108,25 +108,6 @@ internal static class BuildInfo
 [System.IO.File]::WriteAllText($BuildInfoPath, $buildInfoContent, [System.Text.UTF8Encoding]::new($false))
 Write-Host "BuildInfo: GitSha=$gitSha$gitDirty BuildTime=$buildTime IsDevBuild=$isDevLiteral" -ForegroundColor DarkGray
 
-# --- Bundled yt-dlp fallback (vanilla, for og-restore on missing backup) ---
-$YtDlpFallback = Join-Path $ToolsStage "yt-dlp-og-fallback.exe"
-$YtDlpVerFile  = Join-Path $ToolsStage "yt-dlp-og-fallback.version.txt"
-Write-Host "`n--- Fetching bundled yt-dlp fallback ---" -ForegroundColor Cyan
-$ApiHeaders = @{ "User-Agent" = "WKVRCProxy-build" }
-$LatestYtDlp = (Invoke-RestMethod -Uri "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" -Headers $ApiHeaders).tag_name
-$NeedRefresh = $true
-if ((Test-Path $YtDlpFallback) -and (Test-Path $YtDlpVerFile)) {
-    $current = (Get-Content $YtDlpVerFile -Raw -ErrorAction SilentlyContinue).Trim()
-    if ($current -eq $LatestYtDlp) { $NeedRefresh = $false }
-}
-if ($NeedRefresh) {
-    Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile $YtDlpFallback -UseBasicParsing
-    $LatestYtDlp | Out-File $YtDlpVerFile -Encoding utf8 -NoNewline
-    Write-Host "Fetched yt-dlp $LatestYtDlp." -ForegroundColor Green
-} else {
-    Write-Host "yt-dlp fallback up-to-date ($LatestYtDlp)." -ForegroundColor Green
-}
-
 # --- Bundled FFmpeg / FFprobe for local helper encoding ---
 # WKVRCProxy helpers should not depend on a user-installed FFmpeg. Stage a
 # static Windows build into dist/tools/ffmpeg.exe and dist/tools/ffprobe.exe,
@@ -217,8 +198,6 @@ if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Uninstaller publish failed" }
 # --- Stage tools/ subdir in dist ---
 $BuildTools = Join-Path $BuildDir "tools"
 New-Item -ItemType Directory $BuildTools -Force | Out-Null
-Copy-Item $YtDlpFallback (Join-Path $BuildTools "yt-dlp-og-fallback.exe") -Force
-Copy-Item $YtDlpVerFile  (Join-Path $BuildTools "yt-dlp-og-fallback.version.txt") -Force
 Copy-Item $FfmpegExe.FullName (Join-Path $BuildTools "ffmpeg.exe") -Force
 Copy-Item $FfprobeExe.FullName (Join-Path $BuildTools "ffprobe.exe") -Force
 $FfmpegNoticeDir = Join-Path $BuildTools "ffmpeg-notices"
@@ -248,6 +227,23 @@ if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.YtDlp publish failed" }
 
 # AOT publish leaves a yt-dlp.pdb (~14 MB) we don't need to ship — the .pdb
 # strip below picks it up.
+
+# --- Stage data/ subdir in dist (known wrapper hashes list) ---
+# Ships `data/known_wrapper_hashes.txt` alongside WKVRCProxy.exe so the
+# watchdog can identify older WKVRCProxy wrapper binaries that pre-date the
+# current install. The file is repo-tracked and maintained by the release
+# workflow (one SHA appended per published release). Dev builds carry
+# whatever state the working tree has and rely on the PE-metadata + embedded
+# marker signals for self-identification.
+$BuildData = Join-Path $BuildDir "data"
+New-Item -ItemType Directory $BuildData -Force | Out-Null
+$KnownHashesSrc = Join-Path $PSScriptRoot "data/known_wrapper_hashes.txt"
+if (Test-Path $KnownHashesSrc) {
+    Copy-Item $KnownHashesSrc (Join-Path $BuildData "known_wrapper_hashes.txt") -Force
+} else {
+    Write-Warning "data/known_wrapper_hashes.txt missing from repo -- shipping empty list"
+    "" | Out-File (Join-Path $BuildData "known_wrapper_hashes.txt") -Encoding utf8 -NoNewline
+}
 
 # --- Trim debug symbols we don't ship ---
 Get-ChildItem $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue

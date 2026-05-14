@@ -3,17 +3,24 @@ using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
-// Keeps VRChat's Tools\yt-dlp.exe pointed at the patched build that talks to our
-// pipe, while preserving the vanilla original at yt-dlp-og.exe so the patched
-// binary can fall back to it on resolve failure.
+// Keeps VRChat's Tools\yt-dlp.exe pointed at the patched build that talks to
+// our pipe, while preserving VRChat's bundled yt-dlp (a modified upstream
+// distribution VRChat maintains, not vanilla yt-dlp) at yt-dlp-og.exe so the
+// wrapper can exec it on resolve failure.
 //
-// Hardening over the legacy PatcherService:
-//   - Refuses to start if there's nothing to preserve (Tools dir empty AND no
-//     bundled fallback) — exits cleanly instead of looping.
-//   - On every 3s tick, restores yt-dlp-og.exe from the bundled fallback if it
-//     went missing, so the server-side fallback path stays functional.
-//   - Halts (single line "Reinstall WKVRCProxy") if both the patched binary and
-//     the bundled fallback are gone — should be unreachable.
+// Identification uses WrapperIdentity.Classify (marker + PE metadata + known
+// release hashes + size band) so older WKVRCProxy wrappers from prior
+// installs and dev builds are never confused with the VRChat-bundled yt-dlp.
+//
+// Behaviour:
+//   - On every 3s tick, classify whatever is at Tools/yt-dlp.exe and act on
+//     the three cases (Ours / VrcBundledYtDlp / Unknown).
+//   - If VRChat hasn't installed its yt-dlp yet, wait silently for it to
+//     appear -- never substitute a vanilla copy from elsewhere.
+//   - If the og backup goes missing but Tools/yt-dlp.exe is our wrapper,
+//     remove the wrapper so VRChat re-downloads its modified yt-dlp; we
+//     never want to leave VRChat with our wrapper as the only file in Tools
+//     and no upstream copy preserved.
 [SupportedOSPlatform("windows")]
 internal sealed class PatchManager : IDisposable
 {
@@ -21,8 +28,7 @@ internal sealed class PatchManager : IDisposable
     private const int MinReapplyGapSec = 3;
 
     private readonly string _patchedYtDlpPath;
-    private readonly string _bundledFallbackPath;
-    private readonly string _bundledFallbackVerPath;
+    private readonly string _knownHashesPath;
     private readonly string _cleanExitFlagPath;
     private readonly string _haltFlagPath;
     private readonly CancellationTokenSource _cts = new();
@@ -33,19 +39,22 @@ internal sealed class PatchManager : IDisposable
     private int _started;  // Interlocked: 0 = not started, 1 = started
     private int _stopping; // Interlocked: 0 = idle, 1 = stop in flight / done
 
-    // Patched binary's size + SHA, computed once on first read and reused
-    // for every tick comparison thereafter. Pre-fix every 3 s tick re-hashed
-    // BOTH files (~25 MiB × 2) even though the patched side never changes
-    // mid-run.
-    private long _patchedYtDlpSize;
-    private string? _patchedYtDlpHash;
+    // Single-slot classify cache. WrapperIdentity.Classify reads up to 16 MiB
+    // to scan for the embedded marker; running it on every 3s tick would
+    // burn ~19 GiB/h of disk reads on an idle watchdog. The (path, size,
+    // mtime) tuple keys the cache -- any of those changing invalidates and
+    // forces a re-classify.
+    private string? _classifyCachePath;
+    private long _classifyCacheSize;
+    private DateTime _classifyCacheMtime;
+    private WrapperKind _classifyCacheKind;
 
     // Last decision the watchdog logged. Tick logging is state-change-gated
     // so a sustained "no action" loop doesn't fill scrollback every 3 s.
     // Distinct values mirror TickOutcome below.
     private TickOutcome _lastTickOutcome = TickOutcome.None;
 
-    private enum TickOutcome { None, Match, Locked, Reapplied, ReapplyFailed, BackupCreated, InitialStaged }
+    private enum TickOutcome { None, Match, Locked, Reapplied, ReapplyFailed, BackupCreated, InitialStaged, Waiting, UnknownTarget, BackupLost }
 
     public string? VrcToolsDir => _vrcToolsDir;
     public bool Halted => _halted;
@@ -102,8 +111,7 @@ internal sealed class PatchManager : IDisposable
     public PatchManager(string installDir)
     {
         _patchedYtDlpPath = Path.Combine(installDir, "tools", "yt-dlp.exe");
-        _bundledFallbackPath = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.exe");
-        _bundledFallbackVerPath = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.version.txt");
+        _knownHashesPath = Path.Combine(installDir, "data", "known_wrapper_hashes.txt");
 
         string stateDir = WkvrcPaths.StateRoot();
         Directory.CreateDirectory(stateDir);
@@ -111,6 +119,35 @@ internal sealed class PatchManager : IDisposable
         _haltFlagPath = Path.Combine(stateDir, "halt.flag");
 
         _vrcToolsDir = VrcPathLocator.Find();
+    }
+
+    private WrapperKind ClassifyTarget(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Exists
+                && _classifyCachePath == path
+                && _classifyCacheSize == info.Length
+                && _classifyCacheMtime == info.LastWriteTimeUtc)
+            {
+                return _classifyCacheKind;
+            }
+
+            WrapperKind kind = WrapperIdentity.Classify(path, _knownHashesPath);
+            if (info.Exists)
+            {
+                _classifyCachePath = path;
+                _classifyCacheSize = info.Length;
+                _classifyCacheMtime = info.LastWriteTimeUtc;
+                _classifyCacheKind = kind;
+            }
+            return kind;
+        }
+        catch
+        {
+            return WrapperKind.Unknown;
+        }
     }
 
     // Run once at startup before Start(). If the previous shutdown was unclean,
@@ -137,36 +174,26 @@ internal sealed class PatchManager : IDisposable
 
         if (File.Exists(backupPath))
         {
-            ConsoleUx.Warn(LogComponent.Patch, "Recovery: previous run exited uncleanly -- restoring vanilla yt-dlp from yt-dlp-og.exe.");
+            ConsoleUx.Warn(LogComponent.Patch, "Recovery: previous run exited uncleanly -- restoring VRChat's yt-dlp from yt-dlp-og.exe.");
             RestoreYtDlpInTools(_vrcToolsDir);
             return;
         }
 
-        if (File.Exists(targetPath) && File.Exists(_patchedYtDlpPath) && TargetEqualsPatched(targetPath))
+        if (File.Exists(targetPath) && ClassifyTarget(targetPath) == WrapperKind.Ours)
         {
-            // Orphan: yt-dlp.exe is our patched binary AND there's no og to
-            // restore from. Don't just delete — we'd leave VRChat with no
-            // yt-dlp.exe at all and Start()'s refuse-to-apply guard would
-            // then trip on the missing target+backup pair. Replace with the
-            // bundled vanilla so VRChat sees a working yt-dlp at all times.
+            // Orphan: yt-dlp.exe is our wrapper AND there's no og to restore
+            // from. Delete it so VRChat will re-download its modified yt-dlp
+            // the next time it tries to play a video. Start()'s refuse-to-
+            // apply guard then trips cleanly with the "Launch VRChat once
+            // first" message.
             try
             {
-                if (File.Exists(_bundledFallbackPath))
-                {
-                    AtomicCopy(_bundledFallbackPath, targetPath);
-                    ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan patched yt-dlp.exe replaced with bundled vanilla (" + ReadBundledFallbackVersion() + ").");
-                }
-                else
-                {
-                    // Last resort: delete and let Start() halt. There's no
-                    // viable yt-dlp anywhere we can reach.
-                    File.Delete(targetPath);
-                    ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan patched yt-dlp.exe deleted (no bundled fallback available).");
-                }
+                File.Delete(targetPath);
+                ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan WKVRCProxy wrapper deleted from Tools (no backup to restore from). VRChat will re-download its yt-dlp on next session.");
             }
             catch (Exception ex)
             {
-                ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan replacement failed: " + ex.Message);
+                ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan deletion failed: " + ex.Message);
             }
         }
     }
@@ -276,66 +303,95 @@ internal sealed class PatchManager : IDisposable
         string targetPath = Path.Combine(_vrcToolsDir, "yt-dlp.exe");
         string backupPath = Path.Combine(_vrcToolsDir, "yt-dlp-og.exe");
 
-        if (!File.Exists(backupPath))
+        bool targetExists = File.Exists(targetPath);
+        bool backupExists = File.Exists(backupPath);
+
+        if (!backupExists)
         {
-            if (File.Exists(targetPath) && !TargetEqualsPatched(targetPath))
+            if (!targetExists)
             {
-                // First-run rename. Gate on a FileShare.None probe so we
-                // don't try to rename yt-dlp.exe out from under a VRChat
-                // CreateProcess that's currently mapping its sections —
-                // that race could land VRChat with a half-loaded image
-                // and crash it. If the file is in use, defer one tick and
-                // retry on the next pass.
+                // Both missing -- waiting for VRChat to install its yt-dlp.
+                // No mutation; next tick re-checks. This is a normal state
+                // for a fresh VRChat install or a freshly-wiped Tools dir.
+                EmitTickStateChange(TickOutcome.Waiting,
+                    "[patch] tick: VRChat has not installed yt-dlp yet -- waiting");
+                return;
+            }
+
+            WrapperKind kind = ClassifyTarget(targetPath);
+            if (kind == WrapperKind.VrcBundledYtDlp)
+            {
+                // First-run rename: VRChat-bundled yt-dlp is sitting at
+                // target, preserve it as the og backup. Lock-probe so we
+                // don't race a VRChat CreateProcess mid-mapping the PE
+                // sections (would land VRChat with a half-loaded image).
                 if (IsTargetInUse(targetPath))
                 {
                     EmitTickStateChange(TickOutcome.Locked,
-                        "[patch] tick: yt-dlp.exe locked (VRChat may be mid-CreateProcess) — deferring backup creation");
+                        "[patch] tick: yt-dlp.exe locked (VRChat may be mid-CreateProcess) -- deferring backup creation");
                     return;
                 }
-                try { File.Move(targetPath, backupPath); }
-                catch (IOException) { return; } // raced — retry next tick
-            }
-            else if (File.Exists(_bundledFallbackPath))
-            {
                 try
                 {
-                    AtomicCopy(_bundledFallbackPath, backupPath);
-                    ConsoleUx.Write(LogComponent.Patch, "yt-dlp-og.exe was missing -- restored from bundled fallback (" + ReadBundledFallbackVersion() + "). Server-side fallback path is now functional again.");
+                    File.Move(targetPath, backupPath);
+                    EmitTickStateChange(TickOutcome.BackupCreated,
+                        "[patch] tick: preserved VRChat's yt-dlp.exe as yt-dlp-og.exe");
                 }
-                catch (IOException) { return; } // disk-full / locked — retry next tick
+                catch (IOException) { return; }
+                // Fall through to the initial-stage branch below.
+                targetExists = false;
+                backupExists = true;
+            }
+            else if (kind == WrapperKind.Ours)
+            {
+                // Our wrapper is at target but the backup is gone. We can't
+                // leave VRChat with only our wrapper and no upstream copy --
+                // there'd be nothing to exec on fallback. Delete the wrapper
+                // so VRChat re-downloads its modified yt-dlp on the next
+                // session; the resulting both-missing state hits the Waiting
+                // branch on the next tick. Probe for locks first to honour
+                // the never-crash-VRChat invariant.
+                if (IsTargetInUse(targetPath))
+                {
+                    EmitTickStateChange(TickOutcome.Locked,
+                        "[patch] tick: yt-dlp.exe locked -- deferring recovery delete");
+                    return;
+                }
+                try
+                {
+                    File.Delete(targetPath);
+                    EmitTickStateChange(TickOutcome.BackupLost,
+                        "[patch] tick: yt-dlp-og.exe is missing and target is our wrapper -- removed the wrapper so VRChat redownloads its yt-dlp");
+                }
+                catch (IOException ex) { ReportLockFailure("recovery-delete", ex); }
+                return;
             }
             else
             {
-                // No backup AND no bundled fallback AND target == patched. We have
-                // nothing to roll back to — VRChat will be stuck with the patched
-                // binary even after we shut down. The patched yt-dlp's own
-                // "exec yt-dlp-og.exe" fallback can't fire because og.exe is gone.
-                // RestoreYtDlpInTools will return false (no backup); the halt
-                // banner stays visible regardless.
-                Halt("install_corrupted_no_backup_no_fallback");
+                // Unknown: don't touch. Some other tool may have put a file
+                // here we don't recognize. The wait-and-watch policy says
+                // we wait until state changes to something classifiable.
+                EmitTickStateChange(TickOutcome.UnknownTarget,
+                    "[patch] tick: Tools/yt-dlp.exe is not classified as ours or VRChat-bundled -- not mutating");
                 return;
             }
         }
 
         if (!File.Exists(_patchedYtDlpPath))
         {
-            // Our own patched build is missing from the install. og.exe should
-            // still be present (otherwise the previous branch would have halted
-            // first). Restore from og so VRChat is left with vanilla yt-dlp.
             Halt("patched_binary_missing");
             return;
         }
 
-        if (!File.Exists(targetPath))
+        if (!targetExists)
         {
-            // Initial stage. Target doesn't exist (we just renamed it away,
-            // or it never existed). No active CreateProcess to race with on
-            // a non-existent path. Probe is defense-in-depth in case some
-            // other process is mid-write.
+            // Initial stage. Target doesn't exist (we just renamed it away
+            // in the first-run branch above, or it never existed). No active
+            // CreateProcess to race with on a non-existent path.
             if (IsTargetInUse(targetPath))
             {
                 EmitTickStateChange(TickOutcome.Locked,
-                    "[patch] tick: yt-dlp.exe locked at initial-stage — deferring");
+                    "[patch] tick: yt-dlp.exe locked at initial-stage -- deferring");
                 return;
             }
             try
@@ -350,41 +406,52 @@ internal sealed class PatchManager : IDisposable
             return;
         }
 
-        if (TargetEqualsPatched(targetPath))
+        // Target exists alongside a backup. Classify it.
+        WrapperKind targetKind = ClassifyTarget(targetPath);
+        if (targetKind == WrapperKind.Ours)
         {
             _consecutiveLockFailures = 0;
-            // File-only: redundant with the "wrapper installed at <path>"
-            // line that fires on the first tick after install. Sustained
-            // "no action" stretches now stay completely silent on console.
-            EmitTickStateChangeFileOnly(TickOutcome.Match, "[patch] tick: target matches patched, no action");
+            EmitTickStateChangeFileOnly(TickOutcome.Match,
+                "[patch] tick: target is our wrapper, no action");
             return;
         }
+
         if ((DateTime.UtcNow - _lastPatchTime).TotalSeconds < MinReapplyGapSec) return;
 
-        // Re-apply path. VRChat (or its own auto-updater) overwrote our
-        // wrapper. Gate on the same lock-probe so we don't atomic-rename
-        // over a file VRChat is currently mid-loading.
-        if (IsTargetInUse(targetPath))
+        if (targetKind == WrapperKind.VrcBundledYtDlp)
         {
-            EmitTickStateChange(TickOutcome.Locked,
-                "[patch] tick: yt-dlp.exe locked (VRChat or yt-dlp running) — deferring re-apply");
+            // VRChat (or its auto-updater) replaced our wrapper with a new
+            // bundled yt-dlp. Refresh the backup to the new copy BEFORE
+            // re-staging our wrapper so the fallback chain reflects what
+            // VRChat currently ships, then re-apply.
+            if (IsTargetInUse(targetPath))
+            {
+                EmitTickStateChange(TickOutcome.Locked,
+                    "[patch] tick: yt-dlp.exe locked (VRChat or yt-dlp running) -- deferring re-apply");
+                return;
+            }
+            try
+            {
+                AtomicCopy(targetPath, backupPath);
+                AtomicCopy(_patchedYtDlpPath, targetPath);
+                _lastPatchTime = DateTime.UtcNow;
+                _consecutiveLockFailures = 0;
+                EmitTickStateChange(TickOutcome.Reapplied,
+                    "[patch] yt-dlp.exe was updated by VRChat -- refreshed yt-dlp-og.exe, wrapper re-applied.");
+            }
+            catch (IOException ex)
+            {
+                ReportLockFailure("re-apply", ex);
+                EmitTickStateChange(TickOutcome.ReapplyFailed,
+                    "[patch] tick: re-apply failed (sharing violation) -- retry next tick");
+            }
             return;
         }
 
-        try
-        {
-            AtomicCopy(_patchedYtDlpPath, targetPath);
-            _lastPatchTime = DateTime.UtcNow;
-            _consecutiveLockFailures = 0;
-            EmitTickStateChange(TickOutcome.Reapplied,
-                "[patch] yt-dlp.exe was overwritten — re-applied.");
-        }
-        catch (IOException ex)
-        {
-            ReportLockFailure("re-apply", ex);
-            EmitTickStateChange(TickOutcome.ReapplyFailed,
-                "[patch] tick: re-apply failed (sharing violation) — retry next tick");
-        }
+        // targetKind == Unknown. Don't overwrite something we can't
+        // identify -- wait until the next tick sees a classifiable state.
+        EmitTickStateChange(TickOutcome.UnknownTarget,
+            "[patch] tick: target is neither our wrapper nor VRChat-bundled -- not mutating");
     }
 
     // Probe yt-dlp.exe with FileShare.None. If we acquire exclusive read,
@@ -550,49 +617,6 @@ internal sealed class PatchManager : IDisposable
             ConsoleUx.Warn(LogComponent.Patch, "restore error: " + ex.Message);
             return false;
         }
-    }
-
-    // Compare target against the cached patched fingerprint. Length-precheck
-    // before SHA so a different-size yt-dlp.exe (the common case mid-update
-    // or after a VRChat-side download) returns instantly without touching
-    // the hashing path.
-    private bool TargetEqualsPatched(string targetPath)
-    {
-        var (patchedSize, patchedHash) = GetPatchedFingerprint();
-        if (patchedHash == null) return false;
-        long targetSize;
-        try { targetSize = new FileInfo(targetPath).Length; }
-        catch { return false; }
-        if (targetSize != patchedSize) return false;
-        string targetHash = HashUtils.GetFileHash(targetPath);
-        return !string.IsNullOrEmpty(targetHash) && targetHash == patchedHash;
-    }
-
-    private (long Size, string? Hash) GetPatchedFingerprint()
-    {
-        var hash = _patchedYtDlpHash;
-        if (hash != null) return (_patchedYtDlpSize, hash);
-        try
-        {
-            long size = new FileInfo(_patchedYtDlpPath).Length;
-            string h = HashUtils.GetFileHash(_patchedYtDlpPath);
-            if (string.IsNullOrEmpty(h)) return (size, null);
-            _patchedYtDlpSize = size;
-            _patchedYtDlpHash = h;
-            return (size, h);
-        }
-        catch { return (0, null); }
-    }
-
-    private string ReadBundledFallbackVersion()
-    {
-        try
-        {
-            if (File.Exists(_bundledFallbackVerPath))
-                return File.ReadAllText(_bundledFallbackVerPath).Trim();
-        }
-        catch { /* best-effort */ }
-        return "unknown";
     }
 
     public void Dispose()

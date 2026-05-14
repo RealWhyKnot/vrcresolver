@@ -11,8 +11,8 @@ namespace WKVRCProxy;
 // the full welcome — saving bytes on every reconnect.
 //
 // Stored at %LOCALAPPDATA%Low\WKVRCProxy\v3_welcome_cache.json (next to
-// codec-state.json, yt-dlp-update-check.json — same LocalLow state-root
-// convention; see project_locallow_state_layout.md).
+// codec-state.json -- same LocalLow state-root convention; see
+// project_locallow_state_layout.md).
 //
 // Per-node keying matters: apex-302 routes to either node1 or node2 and
 // their welcomes can differ (different yt_dlp_version, different node

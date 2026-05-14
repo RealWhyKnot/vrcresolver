@@ -49,9 +49,36 @@ public static partial class ToolsDirSweeper
                 }
                 if (!match) continue;
                 try { File.Delete(path); }
-                catch { /* best-effort — file may still be locked; next sweep retries */ }
+                catch { /* best-effort -- file may still be locked; next sweep retries */ }
             }
         }
-        catch { /* enumerate failed (permissions, dir vanished mid-sweep) — best-effort */ }
+        catch { /* enumerate failed (permissions, dir vanished mid-sweep) -- best-effort */ }
+    }
+
+    // Legacy files left behind in WKVRCProxy's own install/tools/ dir by
+    // earlier versions that shipped a bundled vanilla yt-dlp + 24h auto-
+    // updater. New installs and clean upgrades never see these; users who
+    // upgrade in place from a pre-de-bundle build do, and the Updater's
+    // AtomicCopyOver doesn't delete files-not-in-new-dist (intentional --
+    // log files and state would be lost). One-shot scrub at watchdog
+    // startup; idempotent.
+    private static readonly string[] LegacyInstallToolsFiles =
+    {
+        "yt-dlp-og-fallback.exe",
+        "yt-dlp-og-fallback.version.txt",
+    };
+
+    public static void SweepLegacyInstallTools(string? installDir)
+    {
+        if (string.IsNullOrEmpty(installDir)) return;
+        string toolsDir = Path.Combine(installDir, "tools");
+        if (!Directory.Exists(toolsDir)) return;
+        foreach (string name in LegacyInstallToolsFiles)
+        {
+            string path = Path.Combine(toolsDir, name);
+            if (!File.Exists(path)) continue;
+            try { File.Delete(path); }
+            catch { /* best-effort -- next startup retries */ }
+        }
     }
 }

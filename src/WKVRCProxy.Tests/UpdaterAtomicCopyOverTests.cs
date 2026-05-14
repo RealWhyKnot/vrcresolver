@@ -33,16 +33,16 @@ public class UpdaterAtomicCopyOverTests : IDisposable
     {
         File.WriteAllText(Path.Combine(_to, "WKVRCProxy.exe"), "OLD");
         Directory.CreateDirectory(Path.Combine(_to, "tools"));
-        File.WriteAllText(Path.Combine(_to, "tools/yt-dlp-og-fallback.exe"), "OLD-OG");
+        File.WriteAllText(Path.Combine(_to, "tools/ffmpeg.exe"), "OLD-FFMPEG");
 
         File.WriteAllText(Path.Combine(_from, "WKVRCProxy.exe"), "NEW");
         Directory.CreateDirectory(Path.Combine(_from, "tools"));
-        File.WriteAllText(Path.Combine(_from, "tools/yt-dlp-og-fallback.exe"), "NEW-OG");
+        File.WriteAllText(Path.Combine(_from, "tools/ffmpeg.exe"), "NEW-FFMPEG");
 
         UpdaterProgram.AtomicCopyOver(_from, _to);
 
         Assert.Equal("NEW", File.ReadAllText(Path.Combine(_to, "WKVRCProxy.exe")));
-        Assert.Equal("NEW-OG", File.ReadAllText(Path.Combine(_to, "tools/yt-dlp-og-fallback.exe")));
+        Assert.Equal("NEW-FFMPEG", File.ReadAllText(Path.Combine(_to, "tools/ffmpeg.exe")));
 
         // No .old-<short> or .new-<short> sidecars should remain in the install dir.
         var sidecars = Directory.GetFiles(_to, "*.old-*", SearchOption.AllDirectories)

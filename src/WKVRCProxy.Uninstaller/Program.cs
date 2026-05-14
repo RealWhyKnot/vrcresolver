@@ -39,7 +39,7 @@ internal static class Program
         Console.WriteLine("[uninstall] start installDir=" + installDir);
 
         errors += RunStep("close-watchdog", () => CloseRunningWatchdog(installDir));
-        errors += RunStep("restore-yt-dlp", () => RestoreYtDlp(installDir));
+        errors += RunStep("restore-yt-dlp", RestoreYtDlp);
         errors += RunStep("remove-hosts", () => RemoveHostsEntry(watchdogExe));
         errors += RunStep("remove-relay-tls", () => RemoveRelayTls(watchdogExe));
         errors += RunStep("wipe-state", WipeState);
@@ -109,7 +109,7 @@ internal static class Program
         if (closed > 0) Thread.Sleep(500);
     }
 
-    private static void RestoreYtDlp(string installDir)
+    private static void RestoreYtDlp()
     {
         string? toolsDir = TryFindVrcTools();
         if (string.IsNullOrEmpty(toolsDir))
@@ -124,15 +124,15 @@ internal static class Program
 
         string target = Path.Combine(toolsDir, "yt-dlp.exe");
         string backup = Path.Combine(toolsDir, "yt-dlp-og.exe");
-        string bundled = Path.Combine(installDir, "tools", "yt-dlp-og-fallback.exe");
 
         try
         {
             if (File.Exists(backup))
             {
-                // Atomic same-volume rename — no window where yt-dlp.exe is missing
-                // while the move is in flight. Falls back to the move-aside-then-
-                // move pattern if the target is locked (VRChat / AV holding it).
+                // Atomic same-volume rename -- no window where yt-dlp.exe is
+                // missing while the move is in flight. Falls back to the
+                // move-aside-then-move pattern if the target is locked
+                // (VRChat / AV holding it).
                 try
                 {
                     File.Move(backup, target, overwrite: true);
@@ -140,7 +140,7 @@ internal static class Program
                 }
                 catch (IOException)
                 {
-                    /* target locked — try move-aside path below */
+                    /* target locked -- try move-aside path below */
                 }
 
                 try
@@ -159,39 +159,27 @@ internal static class Program
                 }
                 return;
             }
-            // Belt-and-suspenders: og went missing — drop the bundled vanilla in so
-            // the user is left with a working yt-dlp.exe regardless. Atomic stage
-            // so we never replace a working binary with a half-written copy.
-            if (File.Exists(bundled))
-            {
-                string tmp = target + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
-                try
-                {
-                    File.Copy(bundled, tmp, overwrite: true);
-                    File.Move(tmp, target, overwrite: true);
-                }
-                catch
-                {
-                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
-                    throw;
-                }
-                return;
-            }
-            // Both backup AND bundled fallback missing. If yt-dlp.exe exists in
-            // VRChat's Tools dir it's almost certainly OUR patched wrapper —
-            // pointing at an install dir we're about to delete. VRChat will
-            // hard-fail every video play once the install is gone with no
-            // clear diagnostic. Surface a loud warning so the user knows what
-            // to do (let VRChat re-download yt-dlp on next launch).
+            // Backup missing. If yt-dlp.exe exists in VRChat's Tools dir
+            // it's almost certainly OUR wrapper -- pointing at an install
+            // dir we're about to delete. Delete the wrapper so VRChat
+            // re-downloads its yt-dlp on next session; safer than leaving
+            // a broken wrapper that exec's into nothing.
             if (File.Exists(target))
             {
-                Console.Error.WriteLine(
-                    "[uninstall] WARNING: VRChat Tools/yt-dlp.exe could not be restored to vanilla — "
-                    + "neither yt-dlp-og.exe nor the bundled fallback at " + bundled + " was available. "
-                    + "Delete VRChat Tools/yt-dlp.exe manually so VRChat re-downloads it on next launch, "
-                    + "or reinstall VRChat.");
-                throw new InvalidOperationException(
-                    "Tools/yt-dlp.exe could not be restored — backup and bundled fallback both missing");
+                try
+                {
+                    File.Delete(target);
+                    Console.WriteLine(
+                        "[uninstall] yt-dlp-og.exe was missing; deleted Tools/yt-dlp.exe so VRChat redownloads its yt-dlp on next session.");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        "[uninstall] WARNING: could not delete Tools/yt-dlp.exe: " + ex.Message + " -- "
+                        + "delete it manually so VRChat re-downloads on next launch.");
+                    throw new InvalidOperationException(
+                        "Tools/yt-dlp.exe could not be removed -- backup missing and delete failed");
+                }
             }
         }
         finally

@@ -353,10 +353,31 @@ internal static class Program
         // doesn't re-trigger on every boot.
         CodecInstaller.StartBackgroundCheck();
 
-        // Keep the bundled vanilla yt-dlp at <install>/tools/yt-dlp-og-fallback.exe
-        // current with upstream releases. Once per 24 h. Never touches
-        // VRChat's pinned yt-dlp-og.exe nor our patched yt-dlp.exe wrapper.
-        YtDlpUpdater.StartBackgroundCheck();
+        // One-shot scrub of legacy bundled-fallback artifacts from an
+        // earlier WKVRCProxy version. Idempotent; subsequent runs no-op
+        // once the files are gone.
+        ToolsDirSweeper.SweepLegacyInstallTools(AppContext.BaseDirectory);
+
+        // Make the known-wrapper-hashes list reachable from the wrapper.
+        // The wrapper runs from VRChat's Tools dir and can't easily locate
+        // our install dir, so we copy the list into LocalLow on every
+        // launch (overwrite-each-time so the freshest copy always wins).
+        // WrapperIdentity falls back to marker + PE signals when the file
+        // is missing, so a copy failure here doesn't break the wrapper.
+        try
+        {
+            string src = Path.Combine(AppContext.BaseDirectory, "data", "known_wrapper_hashes.txt");
+            if (File.Exists(src))
+            {
+                string stateRoot = WkvrcPaths.StateRoot();
+                Directory.CreateDirectory(stateRoot);
+                File.Copy(src, Path.Combine(stateRoot, "known_wrapper_hashes.txt"), overwrite: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.WriteFileOnly("[startup] could not stage known_wrapper_hashes for wrapper: " + ex.Message);
+        }
 
         // Interactive command surface. Kept after startup so the prompt does
         // not fight the banner and one-shot setup lines. Falls back silently

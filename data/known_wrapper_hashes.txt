@@ -1,0 +1,8 @@
+# WKVRCProxy wrapper SHA-256 hashes by release.
+# One released wrapper per line. Maintained by .github/workflows/release.yml
+# via the GraphQL createCommitOnBranch mutation. Do not edit by hand.
+#
+# Format: <sha256>  <version>  <iso-utc-date>
+# Used by WrapperIdentity (src/WKVRCProxy.Shared/WrapperIdentity.cs) as the
+# third of four "is this our binary?" signals. Released versions are matched
+# here; dev builds fall through to PE metadata + embedded marker signals.

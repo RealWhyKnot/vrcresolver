@@ -263,6 +263,110 @@ jobs:
           Write-Host "Compare $inputPath vs $diffPath in the runner artifacts."
           throw "Release body still differs after auto-correct + retries."
 
+      - name: Append wrapper SHA to known_wrapper_hashes.txt
+        # Only fires for release tags (no -XXXX dev suffix). Dev builds keep
+        # their SHA out of the public hash list -- WrapperIdentity identifies
+        # them via the embedded marker and PE-metadata signals instead.
+        #
+        # Runs after the release is published so a build/release failure
+        # doesn't leave a phantom hash entry on main for a release that never
+        # shipped. Uses the same createCommitOnBranch mutation pattern as
+        # changelog-append.yml so the commit lands verified on main and
+        # clears the protected-branch signature rule.
+        if: ${{ !contains(github.ref_name, '-') }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          wrapper="dist/tools/yt-dlp.exe"
+          if [[ ! -f "$wrapper" ]]; then
+            echo "::error::Wrapper binary not found at $wrapper -- cannot compute SHA"
+            exit 1
+          fi
+
+          sha=$(sha256sum "$wrapper" | awk '{print $1}')
+          version="${TAG_NAME#v}"
+          iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          list="data/known_wrapper_hashes.txt"
+          if [[ ! -f "$list" ]]; then
+            echo "::error::Hash list missing at $list -- create the seed file in repo root"
+            exit 1
+          fi
+
+          # Idempotency: skip if the SHA is already recorded. Allows safe
+          # re-runs of the workflow against the same tag without duplicating
+          # entries.
+          if grep -qi "^${sha}" "$list"; then
+            echo "SHA $sha already present in $list -- skipping append"
+            exit 0
+          fi
+
+          printf '%s  %s  %s\n' "$sha" "$version" "$iso" >> "$list"
+          echo "Appended: $sha  $version  $iso"
+
+          # Read main's current head via API rather than local rev-parse:
+          # the workflow's working tree is on the tag commit, which may sit
+          # behind main if a concurrent push slipped in. The concurrency
+          # group already serialises against changelog-append, but this
+          # belt-and-braces fetch makes the failure loud if main moves
+          # between read and mutate.
+          expected_oid=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/heads/main" --jq '.object.sha')
+          list_b64=$(base64 -w 0 "$list")
+
+          headline="chore(release): append wrapper hash for ${TAG_NAME} [skip changelog]"
+          body=$(printf '%s\n%s' \
+            "Appended SHA-256 of dist/tools/yt-dlp.exe for ${TAG_NAME}." \
+            'Maintained by .github/workflows/release.yml; consumed by WrapperIdentity.')
+
+          payload=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg headline "$headline" \
+            --arg body "$body" \
+            --arg oid "$expected_oid" \
+            --arg list "$list_b64" \
+            '{
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
+              variables: {
+                input: {
+                  branch: { repositoryNameWithOwner: $repo, branchName: "main" },
+                  message: { headline: $headline, body: $body },
+                  fileChanges: {
+                    additions: [
+                      { path: "data/known_wrapper_hashes.txt", contents: $list }
+                    ]
+                  },
+                  expectedHeadOid: $oid
+                }
+              }
+            }')
+
+          response=$(printf '%s' "$payload" | gh api graphql --input -)
+          echo "$response" | jq .
+
+          if echo "$response" | jq -e '.errors // empty' >/dev/null; then
+            echo "::error::createCommitOnBranch returned GraphQL errors"
+            exit 1
+          fi
+
+          new_oid=$(echo "$response" | jq -r '.data.createCommitOnBranch.commit.oid')
+          if [[ -z "$new_oid" || "$new_oid" == "null" ]]; then
+            echo "::error::createCommitOnBranch did not return a commit oid"
+            exit 1
+          fi
+
+          verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$new_oid" --jq '.commit.verification.verified')
+          if [[ "$verified" != "true" ]]; then
+            echo "::error::Commit $new_oid is not verified (got: $verified)"
+            gh api "repos/$GITHUB_REPOSITORY/commits/$new_oid" --jq '.commit.verification'
+            exit 1
+          fi
+          echo "Hash append commit: $new_oid (verified)"
+
       - name: Open promotion PR + enable auto-merge
         # We can't push directly to main: branch protection requires the
         # "dotnet build + test" status check, which a bot push bypasses (so

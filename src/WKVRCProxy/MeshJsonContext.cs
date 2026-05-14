@@ -43,10 +43,8 @@ namespace WKVRCProxy;
 [JsonSerializable(typeof(HelperTranscodeOutputSpecFrame))]
 [JsonSerializable(typeof(HelperTranscodeResultFrame))]
 // CodecInstaller persistence (state file at LocalLow root).
-// YtDlpUpdater persistence (24h dedupe state).
-// Both are watchdog-internal state files, JSON-on-disk.
+// Watchdog-internal state file, JSON-on-disk.
 [JsonSerializable(typeof(CodecInstaller.CodecState))]
-[JsonSerializable(typeof(YtDlpUpdater.UpdateState))]
 // User-editable watchdog settings at LocalLow\WKVRCProxy\settings.json.
 // Kept in this source-gen context so settings remain AOT-safe.
 [JsonSerializable(typeof(AppSettings))]

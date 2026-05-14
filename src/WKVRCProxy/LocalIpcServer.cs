@@ -126,21 +126,22 @@ internal sealed partial class LocalIpcServer : IDisposable
                 return;
             }
 
-            // v3.2: peek the action field FIRST. If it's the wrapper's
-            // og-fallback notification, dispatch separately -- the wire
-            // shape is a different DTO (WrapperEventNotify) and the
-            // wrapper closes the pipe immediately after writing without
-            // waiting for a response.
-            if (!string.IsNullOrWhiteSpace(line) && LooksLikeOgFallbackNotify(line))
+            // v3.2: peek the action field FIRST. If it's one of the
+            // wrapper's notification frames (og_fallback_notify or
+            // wrapper_og_failed), dispatch separately -- the wire shape
+            // is a different DTO (WrapperEventNotify) and the wrapper
+            // closes the pipe immediately after writing without waiting
+            // for a response.
+            if (!string.IsNullOrWhiteSpace(line) && LooksLikeWrapperEventNotify(line))
             {
                 try
                 {
                     var notify = JsonSerializer.Deserialize(line, MeshJsonContext.Default.WrapperEventNotify);
-                    if (notify != null) HandleOgFallbackNotify(notify);
+                    if (notify != null) HandleWrapperEvent(notify);
                 }
                 catch (Exception ex)
                 {
-                    Logger.WriteFileOnly("[wrapper][warn] og_fallback_notify parse failed: "
+                    Logger.WriteFileOnly("[wrapper][warn] wrapper event parse failed: "
                         + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
                 }
                 return;
@@ -266,6 +267,42 @@ internal sealed partial class LocalIpcServer : IDisposable
                     // re-encode on the hot path -- and use the extracted strings
                     // for the user-facing console summary.
                     MeshResolveResult result = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
+
+                    // Brief retry on transient reasons. The server may
+                    // have been mid-discovery (no strategies built yet
+                    // for this domain) or briefly unreachable; a second
+                    // attempt 2s later often succeeds with a real
+                    // strategy. Structural reasons (domain_blocked,
+                    // all_configs_failed, extractor_unsupported,
+                    // unity_unsupported_format) won't change on retry,
+                    // so we skip them and let the wrapper fall back to
+                    // og immediately.
+                    if (result.Action == WireConstants.ActionFallbackNative
+                        && IsRetryableFallback(result.Reason)
+                        && !perReqCts.Token.IsCancellationRequested)
+                    {
+                        Logger.WriteFileOnly("[ipc] retry id=" + id + CidSuffix(cid)
+                            + " reason=" + LogUtil.SanitizeForConsole(result.Reason ?? "?", 32)
+                            + " attempt=2");
+                        bool slept;
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(2), perReqCts.Token).ConfigureAwait(false);
+                            slept = true;
+                        }
+                        catch (OperationCanceledException) { slept = false; }
+
+                        if (slept && !perReqCts.Token.IsCancellationRequested)
+                        {
+                            // Fresh request id so the server doesn't
+                            // dedupe against an in-flight entry for the
+                            // same id. The DTO carries everything else
+                            // verbatim from the first attempt.
+                            req.Id = Guid.NewGuid().ToString("N");
+                            result = await _mesh.ResolveAsync(req, perReqCts.Token).ConfigureAwait(false);
+                        }
+                    }
+
                     await WriteFrameAsync(pipe, result.Frame, perReqCts.Token).ConfigureAwait(false);
                     outcome = result.Action;
                     serverReason = result.Reason;
@@ -395,17 +432,30 @@ internal sealed partial class LocalIpcServer : IDisposable
         }
     }
 
-    // Cheap pre-deserialize peek: does the request line start with the
-    // wrapper's og_fallback_notify action? Avoids parsing as
-    // ResolveRequest first (which would drop the unrecognized fields
+    private static bool IsRetryableFallback(string? reason) =>
+        reason == WireConstants.FallbackDiscoveryInProgress
+        || reason == WireConstants.FallbackServerUnreachable;
+
+    // Cheap pre-deserialize peek: is this one of the wrapper's notify
+    // frames (og_fallback_notify or wrapper_og_failed)? Avoids parsing
+    // as ResolveRequest first (which would drop the unrecognized fields
     // into [JsonExtensionData] instead of routing to the dispatch).
-    // Match "action":"og_fallback_notify" anywhere in the first 256
-    // bytes of the line.
-    private static bool LooksLikeOgFallbackNotify(string line)
+    private static bool LooksLikeWrapperEventNotify(string line)
     {
         int probeLen = Math.Min(line.Length, 256);
         var head = line.AsSpan(0, probeLen);
-        return head.IndexOf("og_fallback_notify".AsSpan(), StringComparison.Ordinal) >= 0;
+        return head.IndexOf("og_fallback_notify".AsSpan(), StringComparison.Ordinal) >= 0
+            || head.IndexOf("wrapper_og_failed".AsSpan(), StringComparison.Ordinal) >= 0;
+    }
+
+    private void HandleWrapperEvent(WrapperEventNotify notify)
+    {
+        if (string.Equals(notify.Action, WireConstants.ActionWrapperOgFailedNotify, StringComparison.Ordinal))
+        {
+            HandleOgFailedNotify(notify);
+            return;
+        }
+        HandleOgFallbackNotify(notify);
     }
 
     private static void HandleOgFallbackNotify(WrapperEventNotify notify)
@@ -420,6 +470,37 @@ internal sealed partial class LocalIpcServer : IDisposable
             " host=" + host +
             " reason=" + reason +
             " elapsed_ms=" + notify.ElapsedMs);
+    }
+
+    private void HandleOgFailedNotify(WrapperEventNotify notify)
+    {
+        string host = string.IsNullOrEmpty(notify.Url) ? "<no-url>" : ExtractHost(notify.Url);
+        string reason = LogUtil.SanitizeForConsole(notify.Reason ?? "?", 32);
+        string preview = LogUtil.SanitizeForConsole(notify.ErrorPreview ?? "", 80);
+
+        // Evict any cached resolve for this URL -- the cache may have held
+        // an entry from before the upstream blocker (CF challenge, sign-in
+        // gate) appeared. Next VRChat retry for the same URL will skip the
+        // cache and re-hit the mesh, which by then may have completed
+        // discovery_in_progress or chosen a different strategy.
+        int evicted = 0;
+        if (!string.IsNullOrEmpty(notify.Url))
+        {
+            try { evicted = _cache?.EvictByUrl(notify.Url) ?? 0; }
+            catch { /* best-effort */ }
+        }
+
+        ConsoleUx.Warn(
+            LogComponent.Wrapper,
+            "!! og also failed " + host + " reason=" + reason + " exit=" + notify.ExitCode);
+        Logger.WriteFileOnly(
+            "[wrapper] wrapper_og_failed rid=" + LogUtil.SanitizeForConsole(notify.Rid ?? "?", 16) +
+            " host=" + host +
+            " reason=" + reason +
+            " exit=" + notify.ExitCode +
+            " elapsed_ms=" + notify.ElapsedMs +
+            " evicted=" + evicted +
+            " preview=" + preview);
     }
 
     // " cid=<id>" suffix only when correlation_id is populated.

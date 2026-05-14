@@ -81,6 +81,17 @@ public static class WireConstants
     public const string OgFallbackReasonPipeResolveFailed = "pipe_resolve_failed";
     public const string OgFallbackReasonServerFallbackNative = "server_fallback_native";
     public const string OgFallbackReasonNoUrlDiagnostic = "no_url_diagnostic";
+    // Defense-in-depth: server's FormatSelectorBuilder should already
+    // filter AVPro-incompatible codecs, but a domain-config regression
+    // could yield e.g. .flv / rtmp where AVPro can't decode. The wrapper
+    // catches the obvious cases via URL shape (no network call) and
+    // execs og instead of handing VRChat an unplayable URL.
+    public const string OgFallbackReasonAvProIncompatible = "avpro_incompatible";
+    // og itself failed (CF 403 / 429 / sign-in-required). Wrapper sends
+    // this notify on the same pipe channel as ActionOgFallbackNotify so
+    // the watchdog can evict any stale cache entry for the URL and
+    // surface a single user-visible "og also failed" line.
+    public const string ActionWrapperOgFailedNotify = "wrapper_og_failed";
 
     // v2 field names (snake_case, mirror server constants verbatim)
     public const string FieldProtocolVersion = "protocol_version";
@@ -396,4 +407,10 @@ public sealed class WrapperEventNotify
     [JsonPropertyName("reason")] public string? Reason { get; set; }
     [JsonPropertyName("elapsed_ms")] public long ElapsedMs { get; set; }
     [JsonPropertyName("rid")] public string? Rid { get; set; }
+    // Populated only for ActionWrapperOgFailedNotify; mirrors og's exit
+    // code and a sanitized stderr preview so the watchdog can decide
+    // whether to evict a stale cache entry and surface a clear console
+    // line. Both fields are absent (default values) on og_fallback_notify.
+    [JsonPropertyName("exit_code")] public int ExitCode { get; set; }
+    [JsonPropertyName("error_preview")] public string? ErrorPreview { get; set; }
 }

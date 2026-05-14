@@ -111,14 +111,10 @@ internal sealed class MaintenanceAppSettings
     [JsonPropertyName("codec_auto_install")]
     public bool CodecAutoInstall { get; set; } = true;
 
-    [JsonPropertyName("ytdlp_fallback_auto_update")]
-    public bool YtDlpFallbackAutoUpdate { get; set; } = true;
-
     public MaintenanceAppSettings Clone() => new()
     {
         UpdateCheck = UpdateCheck,
         CodecAutoInstall = CodecAutoInstall,
-        YtDlpFallbackAutoUpdate = YtDlpFallbackAutoUpdate,
     };
 
     public void Normalize()

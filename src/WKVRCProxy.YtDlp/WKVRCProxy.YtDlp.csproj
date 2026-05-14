@@ -11,12 +11,21 @@
          in 'full' mode is safe here because every reachable JSON path is
          source-gen'd via WrapperJsonContext and there is no runtime
          reflection over user types in this project. InvariantGlobalization
-         drops ICU data (~1 MB) — the wrapper does no culture-sensitive
+         drops ICU data (~1 MB); the wrapper does no culture-sensitive
          formatting. -->
     <PublishAot>true</PublishAot>
     <PublishTrimmed>true</PublishTrimmed>
     <TrimMode>full</TrimMode>
     <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- PE FileVersionInfo fields. WrapperIdentity.Classify reads
+         CompanyName + ProductName off the PE resource block as one of its
+         four "is this our binary?" signals; a vanilla yt-dlp PE has
+         OriginalFilename="yt-dlp" with no CompanyName, so the pair below
+         is distinct enough to short-circuit positively. -->
+    <Company>RealWhyKnot</Company>
+    <Product>WKVRCProxy</Product>
+    <AssemblyTitle>WKVRCProxy yt-dlp wrapper</AssemblyTitle>
   </PropertyGroup>
 
   <ItemGroup>
