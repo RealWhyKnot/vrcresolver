@@ -1,4 +1,6 @@
 using System.Net.WebSockets;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using WKVRCProxy.Shared;
 
@@ -294,6 +296,57 @@ internal sealed partial class MeshClient
                 }
                 catch { /* heartbeat will catch dead socket */ }
                 return;
+            case WireConstants.ActionHelperChallenge:
+            {
+                HelperChallengeFrame? challenge = null;
+                try { challenge = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperChallengeFrame); }
+                catch (Exception ex)
+                {
+                    ConsoleUx.Warn(LogComponent.Mesh, "helper_challenge parse failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                    doc.Dispose();
+                    return;
+                }
+                doc.Dispose();
+                if (challenge == null) return;
+
+                AppSettings settings = AppSettingsStore.Shared.Snapshot();
+                string? trustKey = settings.Helper.TrustKey;
+                if (string.IsNullOrWhiteSpace(trustKey))
+                {
+                    Logger.WriteDiagnostic(
+                        LogComponent.Helper,
+                        "[mesh][helper] helper_challenge_received but no trust key configured",
+                        "helper_challenge_received but no trust key configured");
+                    return;
+                }
+
+                string signature = ComputeChallengeSignature(challenge.Nonce, _clientId, trustKey);
+                var response = new HelperChallengeResponseFrame { Signature = signature };
+                try
+                {
+                    byte[] respBytes = JsonSerializer.SerializeToUtf8Bytes(
+                        response, MeshJsonContext.Default.HelperChallengeResponseFrame);
+                    await SendTextFrameAsync(respBytes, ct).ConfigureAwait(false);
+                    Logger.WriteDiagnostic(
+                        LogComponent.Helper,
+                        "[mesh][helper] helper_challenge_responded",
+                        "helper_challenge_responded");
+                }
+                catch (Exception ex)
+                {
+                    Logger.WriteFileOnly("[mesh][helper] helper_challenge_response send failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                }
+                return;
+            }
+            case WireConstants.ActionHelperTrustGranted:
+            {
+                _isTrusted = true;
+                ConsoleUx.Write(LogComponent.Helper, "helper_trust_granted received from server");
+                doc.Dispose();
+                return;
+            }
             default:
                 // Server-supplied string — strip control chars + truncate so a
                 // hostile or buggy server can't inject ANSI escapes into the
@@ -361,6 +414,16 @@ internal sealed partial class MeshClient
                 LogUtil.SanitizeForConsole(ex.Message, 80) +
                 " — preview=" + LogUtil.PayloadPreview(payload, 120));
         }
+    }
+
+    // HMAC-SHA256(key=trustKeyBytes, data=nonce+"\n"+clientId). Returns lowercase hex.
+    // Wire contract: must match server-side verification exactly.
+    internal static string ComputeChallengeSignature(string nonce, string clientId, string trustKey)
+    {
+        byte[] keyBytes = Encoding.UTF8.GetBytes(trustKey);
+        byte[] data = Encoding.UTF8.GetBytes(nonce + "\n" + clientId);
+        byte[] hash = HMACSHA256.HashData(keyBytes, data);
+        return Convert.ToHexStringLower(hash);
     }
 
 }

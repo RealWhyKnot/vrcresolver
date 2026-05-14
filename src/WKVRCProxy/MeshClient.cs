@@ -133,6 +133,10 @@ internal sealed partial class MeshClient : IAsyncDisposable
     private bool _isV3Connection;
     private string _currentNodeHost = "";
     private readonly WelcomeCache _welcomeCache = new();
+    // Set to true on helper_trust_granted receipt; read back for console logging.
+#pragma warning disable CS0414
+    private bool _isTrusted;
+#pragma warning restore CS0414
 
     // v3.1: post-welcome wire format the server selected for THIS
     // connection. Set on welcome / welcome_cached receipt from the
@@ -280,6 +284,8 @@ internal sealed partial class MeshClient : IAsyncDisposable
                     GpuLimitPercent = settings.Helper.GpuLimitPercent,
                     UploadLimitMbps = settings.Helper.UploadLimitMbps,
                     AllowOnBattery = settings.Helper.AllowOnBattery,
+                    SmokeTestPassed = probe.SmokeTestPassed ? true : (bool?)false,
+                    SmokeTestEncoder = probe.SmokeTestEncoder,
                 };
 
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperStatusFrame);
@@ -289,11 +295,14 @@ internal sealed partial class MeshClient : IAsyncDisposable
                 _lastSentHelperStatus = frame.Status;
                 _lastSentHelperEncoder = frame.Encoder;
                 string advertisedSuffix = unchanged ? " (advertised)" : "";
+                string smokeInfo = " smoke=" + (frame.SmokeTestPassed == true ? "passed" : "failed")
+                    + (frame.SmokeTestEncoder != null ? " smoke_encoder=" + frame.SmokeTestEncoder : "");
                 string statusLine = "[mesh][helper] status sent status=" + frame.Status
                     + " encoder=" + (frame.Encoder ?? "<none>")
                     + " can_encode_h264=" + frame.CanEncodeH264
                     + " sharing=" + frame.Sharing
                     + " quality=" + HelperEncodingQualityNames.Format(quality)
+                    + smokeInfo
                     + advertisedSuffix;
                 Logger.WriteDiagnostic(
                     LogComponent.Helper,
@@ -303,6 +312,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
                         + " can_encode_h264=" + frame.CanEncodeH264
                         + " sharing=" + frame.Sharing
                         + " quality=" + HelperEncodingQualityNames.Format(quality)
+                        + smokeInfo
                         + advertisedSuffix);
             }
             catch (Exception ex)

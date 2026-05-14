@@ -61,6 +61,9 @@ public static class WireConstants
     public const string ActionHelperStatus = "helper_status";
     public const string ActionHelperTranscodeLease = "helper_transcode_lease";
     public const string ActionHelperTranscodeResult = "helper_transcode_result";
+    public const string ActionHelperChallenge = "helper_challenge";
+    public const string ActionHelperChallengeResponse = "helper_challenge_response";
+    public const string ActionHelperTrustGranted = "helper_trust_granted";
 
     public const string PlaybackFeedbackLoadFailure = "load_failure";
     public const string PlaybackFeedbackSilentStall = "silent_stall";
@@ -345,6 +348,23 @@ public sealed class HelperStatusFrame
     [JsonPropertyName("gpu_limit_percent")] public int GpuLimitPercent { get; set; }
     [JsonPropertyName("upload_limit_mbps")] public int UploadLimitMbps { get; set; }
     [JsonPropertyName("allow_on_battery")] public bool AllowOnBattery { get; set; }
+    [JsonPropertyName("smoke_test_passed"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SmokeTestPassed { get; set; }
+    [JsonPropertyName("smoke_test_encoder"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SmokeTestEncoder { get; set; }
+}
+
+public sealed class HelperChallengeFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperChallenge;
+    [JsonPropertyName("nonce")] public string Nonce { get; set; } = "";
+    [JsonPropertyName("issued_utc")] public string IssuedUtc { get; set; } = "";
+}
+
+public sealed class HelperChallengeResponseFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperChallengeResponse;
+    [JsonPropertyName("signature")] public string Signature { get; set; } = "";
 }
 
 public sealed class HelperTranscodeLeaseFrame

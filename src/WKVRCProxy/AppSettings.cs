@@ -139,6 +139,12 @@ internal sealed class HelperAppSettings
     [JsonPropertyName("encoding_quality")]
     public string EncodingQuality { get; set; } = HelperEncodingQualityNames.Auto;
 
+    // Pre-shared key for operator-trusted helpers. When set, the client
+    // responds to helper_challenge frames from the server with an HMAC-SHA256
+    // signature. Leave empty (the default) to operate as a standard helper.
+    [JsonPropertyName("trust_key")]
+    public string? TrustKey { get; set; }
+
     public HelperAppSettings Clone() => new()
     {
         GpuSharing = GpuSharing,
@@ -146,6 +152,7 @@ internal sealed class HelperAppSettings
         UploadLimitMbps = UploadLimitMbps,
         AllowOnBattery = AllowOnBattery,
         EncodingQuality = EncodingQuality,
+        TrustKey = TrustKey,
     };
 
     public void Normalize()

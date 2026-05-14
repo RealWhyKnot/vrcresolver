@@ -102,6 +102,7 @@ internal sealed partial class MeshClient
         _isV3Connection = false;
         _negotiatedFormat = WireConstants.FormatJson;
         _isMsgpackFormat = false;
+        _isTrusted = false;
         _currentNodeHost = node;
         _welcomeTcs = new TaskCompletionSource<WelcomeFrame?>(TaskCreationOptions.RunContinuationsAsynchronously);
     }

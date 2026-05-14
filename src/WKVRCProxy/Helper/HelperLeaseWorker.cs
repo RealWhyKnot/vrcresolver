@@ -152,6 +152,14 @@ internal static class HelperLeaseWorker
                 return Result(false, "empty_output", "ffmpeg completed without a segment");
             }
 
+            string? validationError = ValidateMpegTs(outputPath, info.Length);
+            if (validationError != null)
+            {
+                WarnLease(leaseFrame, "local_validation_failed", validationError
+                    + " bytes=" + info.Length);
+                return Result(false, "local_validation_failed", validationError);
+            }
+
             string uploadUrlHost = ExtractUrlHost(leaseFrame.UploadUrl);
             LogLease(leaseFrame, "upload start", "upload_url_host=" + uploadUrlHost
                 + " bytes=" + info.Length);
@@ -320,6 +328,37 @@ internal static class HelperLeaseWorker
 
     private static string Safe(string value, int max)
         => LogUtil.SanitizeForConsole(value ?? "", max);
+
+    // Check sync byte 0x47 at offsets 0, 188, 376 -- mirrors the server-side
+    // MpegTsValidator.LooksLikeMpegTs check. Reads at most 564 bytes.
+    // Returns null on success, or a short error string on failure.
+    internal static string? ValidateMpegTs(string path, long fileLength)
+    {
+        if (fileLength < 564)
+            return "file_too_small bytes=" + fileLength;
+
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 564);
+            Span<byte> buf = stackalloc byte[564];
+            int read = fs.Read(buf);
+            if (read < 564)
+                return "short_read read=" + read;
+
+            if (buf[0] != 0x47 || buf[188] != 0x47 || buf[376] != 0x47)
+            {
+                return "bad_sync_bytes b0=" + buf[0].ToString("x2")
+                    + " b188=" + buf[188].ToString("x2")
+                    + " b376=" + buf[376].ToString("x2");
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return "read_error " + ex.GetType().Name;
+        }
+    }
 
     private static string ExtractUrlHost(string url)
     {

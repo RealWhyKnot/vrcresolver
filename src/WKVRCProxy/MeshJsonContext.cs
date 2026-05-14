@@ -42,6 +42,8 @@ namespace WKVRCProxy;
 [JsonSerializable(typeof(HelperTranscodeLeaseFrame))]
 [JsonSerializable(typeof(HelperTranscodeOutputSpecFrame))]
 [JsonSerializable(typeof(HelperTranscodeResultFrame))]
+[JsonSerializable(typeof(HelperChallengeFrame))]
+[JsonSerializable(typeof(HelperChallengeResponseFrame))]
 // CodecInstaller persistence (state file at LocalLow root).
 // Watchdog-internal state file, JSON-on-disk.
 [JsonSerializable(typeof(CodecInstaller.CodecState))]
