@@ -207,8 +207,17 @@ public sealed class ResolveRequest
     [JsonPropertyName("max_audio_channels")] public int? MaxAudioChannels { get; set; }
     [JsonPropertyName("vrchat_format_arg")] public string? VrchatFormatArg { get; set; }
 
+    // v3.3: wrapper informs the server of how many ms remain before the
+    // wrapper itself must exec og fallback (18s budget minus connection +
+    // IPC setup). Server may extend its discovery wait up to ~60s when the
+    // wrapper still has budget to wait. Null = absent = server uses its
+    // own defaults. JsonIgnoreCondition.WhenWritingNull keeps old servers
+    // unaffected when this field is not set by an old client.
+    [JsonPropertyName("wrapper_deadline_ms"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? WrapperDeadlineMs { get; set; }
+
     // Forward-compat: any field name we don't statically know (e.g., a v3 field)
-    // round-trips through the watchdog from pipe → WS without loss. Both
+    // round-trips through the watchdog from pipe -> WS without loss. Both
     // serializer and deserializer respect this when reflecting over the type.
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }

@@ -209,6 +209,37 @@ public class ProtocolRoundTripTests
     }
 
     [Fact]
+    public void ResolveRequest_wrapper_deadline_ms_round_trips()
+    {
+        const string json = """
+        {
+          "action": "resolve",
+          "id": "abc",
+          "url": "https://x",
+          "player": "avpro",
+          "wrapper_deadline_ms": 14250
+        }
+        """;
+        var req = JsonSerializer.Deserialize<ResolveRequest>(json);
+        Assert.NotNull(req);
+        Assert.Equal(14250, req!.WrapperDeadlineMs);
+
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(req);
+        using var doc = JsonDocument.Parse(bytes);
+        Assert.True(doc.RootElement.TryGetProperty("wrapper_deadline_ms", out var prop));
+        Assert.Equal(14250, prop.GetInt32());
+    }
+
+    [Fact]
+    public void ResolveRequest_wrapper_deadline_ms_omitted_when_null()
+    {
+        var req = new ResolveRequest { Action = "resolve", Id = "x", Url = "https://x", Player = "avpro" };
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(req);
+        using var doc = JsonDocument.Parse(bytes);
+        Assert.False(doc.RootElement.TryGetProperty("wrapper_deadline_ms", out _));
+    }
+
+    [Fact]
     public void WireConstants_match_server_spec_strings()
     {
         // These are the constants the server-side audit explicitly listed

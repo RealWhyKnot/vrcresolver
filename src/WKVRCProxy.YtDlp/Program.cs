@@ -202,11 +202,12 @@ internal static partial class Program
 
         using var ctsResolve = new CancellationTokenSource(ResolveDeadline);
 
-        string requestId = Guid.NewGuid().ToString("N");
+        long totalDeadlineMs = (long)ResolveDeadline.TotalMilliseconds;
+
         var req = new ResolveRequest
         {
             Action = WireConstants.ActionResolve,
-            Id = requestId,
+            Id = Guid.NewGuid().ToString("N"),
             Url = url,
             Player = player,
             ProtocolVersion = WireConstants.ClientProtocolVersion,
@@ -222,69 +223,106 @@ internal static partial class Program
                 : WireConstants.AvProMaxAudioChannels,
         };
 
-        byte[] payload;
-        try { payload = SerializeWithTrailingNewline(req); }
-        catch (Exception ex) { Log("request serialize failed: " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-
-        var swSend = Stopwatch.StartNew();
-        try
+        // Retry loop: on discovery_in_progress (or server_unreachable) the
+        // wrapper retries up to ResolveRetryPolicy.MaxRetries additional times
+        // before falling back to og. Each retry reuses the same request id so
+        // the server can deduplicate / correlate logs across attempts. The
+        // wrapper deadline is recomputed before each send so the server always
+        // sees the most current budget.
+        var swRequest = Stopwatch.StartNew();
+        int retriesSent = 0;
+        while (true)
         {
-            // Single WriteAsync containing payload + '\n'. Earlier impl
-            // split this across two WriteAsync calls + an explicit
-            // FlushAsync — three kernel transitions per pipe send. Named
-            // pipes don't buffer like FileStream so the explicit Flush
-            // was already redundant; the byte-mode pipe with PIPE_WAIT
-            // dispatches the write atomically.
-            await pipe.WriteAsync(payload, ctsResolve.Token).ConfigureAwait(false);
-            // Subtract 1 from the logged byte count so the existing log
-            // ("request sent ... bytes=...") keeps reporting the JSON
-            // payload length and stays comparable across the change.
-            Log("request sent id=" + requestId[..8] + " bytes=" + (payload.Length - 1) + " player=" + player + " elapsed_ms=" + swSend.ElapsedMilliseconds);
-        }
-        catch (Exception ex) { Log("pipe write failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            req.WrapperDeadlineMs = (int)Math.Max(0, totalDeadlineMs - swPipe.ElapsedMilliseconds - 1000);
 
-        var swRead = Stopwatch.StartNew();
-        string? line;
-        try { line = await ReadLineAsync(pipe, ctsResolve.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) { Log("pipe read TIMED OUT after " + swRead.ElapsedMilliseconds + " ms (no terminal frame within " + (int)ResolveDeadline.TotalSeconds + " s)"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-        catch (Exception ex) { Log("pipe read failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-        if (string.IsNullOrEmpty(line)) { Log("pipe returned empty response after " + swRead.ElapsedMilliseconds + " ms"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            byte[] payload;
+            try { payload = SerializeWithTrailingNewline(req); }
+            catch (Exception ex) { Log("request serialize failed: " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
 
-        Log("response received bytes=" + line.Length + " elapsed_ms=" + swRead.ElapsedMilliseconds);
-
-        ResolveResponse? resp;
-        try { resp = JsonSerializer.Deserialize(line, WrapperJsonContext.Default.ResolveResponse); }
-        catch (Exception ex) { Log("response parse failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-        if (resp == null) { Log("response was null after deserialize"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-
-        if (resp.Action == WireConstants.ActionResolved && !string.IsNullOrEmpty(resp.Url))
-        {
-            // AVPro sanity check (defense-in-depth). The server's
-            // FormatSelectorBuilder filters codecs upstream; if a domain
-            // config regression slips through and hands us an .flv / rtmp /
-            // .f4v URL while the player is AVPro, AVPro will silently fail
-            // playback. Exec og instead -- yt-dlp can often pick a working
-            // format itself when the server's strategy was wrong.
-            if (player == WireConstants.PlayerAvPro && !IsAvProCompatibleUrl(resp.Url))
+            var swSend = Stopwatch.StartNew();
+            try
             {
-                Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] +
-                    " but URL fails AVPro shape check (host=" + ExtractHost(resp.Url) + ") -- falling back");
-                return (null, WireConstants.OgFallbackReasonAvProIncompatible);
+                // Single WriteAsync containing payload + '\n'. Earlier impl
+                // split this across two WriteAsync calls + an explicit
+                // FlushAsync -- three kernel transitions per pipe send. Named
+                // pipes don't buffer like FileStream so the explicit Flush
+                // was already redundant; the byte-mode pipe with PIPE_WAIT
+                // dispatches the write atomically.
+                await pipe.WriteAsync(payload, ctsResolve.Token).ConfigureAwait(false);
+                // Subtract 1 from the logged byte count so the existing log
+                // ("request sent ... bytes=...") keeps reporting the JSON
+                // payload length and stays comparable across the change.
+                Log("request sent id=" + req.Id[..8] + " bytes=" + (payload.Length - 1) + " player=" + player
+                    + " wrapper_deadline_ms=" + req.WrapperDeadlineMs
+                    + " elapsed_ms=" + swSend.ElapsedMilliseconds);
             }
-            Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] + " url-host=" + ExtractHost(resp.Url));
-            return (resp.Url, null);
-        }
+            catch (Exception ex) { Log("pipe write failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
 
-        if (resp.Action == WireConstants.ActionFallbackNative)
-        {
-            Log("response action=fallback_native id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)]
-                + " reason=" + (resp.Reason ?? "?")
-                + " elapsed_ms_since_request_sent=" + swSend.ElapsedMilliseconds);
-            return (null, WireConstants.OgFallbackReasonServerFallbackNative);
-        }
+            var swRead = Stopwatch.StartNew();
+            string? line;
+            try { line = await ReadLineAsync(pipe, ctsResolve.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { Log("pipe read TIMED OUT after " + swRead.ElapsedMilliseconds + " ms (no terminal frame within " + (int)ResolveDeadline.TotalSeconds + " s)"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            catch (Exception ex) { Log("pipe read failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            if (string.IsNullOrEmpty(line)) { Log("pipe returned empty response after " + swRead.ElapsedMilliseconds + " ms"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
 
-        Log("response action UNKNOWN: " + resp.Action);
-        return (null, WireConstants.OgFallbackReasonPipeResolveFailed);
+            Log("response received bytes=" + line.Length + " elapsed_ms=" + swRead.ElapsedMilliseconds);
+
+            ResolveResponse? resp;
+            try { resp = JsonSerializer.Deserialize(line, WrapperJsonContext.Default.ResolveResponse); }
+            catch (Exception ex) { Log("response parse failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            if (resp == null) { Log("response was null after deserialize"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+
+            if (resp.Action == WireConstants.ActionResolved && !string.IsNullOrEmpty(resp.Url))
+            {
+                // AVPro sanity check (defense-in-depth). The server's
+                // FormatSelectorBuilder filters codecs upstream; if a domain
+                // config regression slips through and hands us an .flv / rtmp /
+                // .f4v URL while the player is AVPro, AVPro will silently fail
+                // playback. Exec og instead -- yt-dlp can often pick a working
+                // format itself when the server's strategy was wrong.
+                if (player == WireConstants.PlayerAvPro && !IsAvProCompatibleUrl(resp.Url))
+                {
+                    Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] +
+                        " but URL fails AVPro shape check (host=" + ExtractHost(resp.Url) + ") -- falling back");
+                    return (null, WireConstants.OgFallbackReasonAvProIncompatible);
+                }
+                Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] + " url-host=" + ExtractHost(resp.Url));
+                return (resp.Url, null);
+            }
+
+            if (resp.Action == WireConstants.ActionFallbackNative)
+            {
+                long elapsedSinceRequestMs = swRequest.ElapsedMilliseconds;
+                long remainingBudgetMs = totalDeadlineMs - swPipe.ElapsedMilliseconds;
+                Log("response action=fallback_native id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)]
+                    + " reason=" + (resp.Reason ?? "?")
+                    + " elapsed_ms_since_request_sent=" + elapsedSinceRequestMs
+                    + " remaining_budget_ms=" + remainingBudgetMs);
+
+                if (ResolveRetryPolicy.ShouldRetry(resp.Reason, retriesSent, remainingBudgetMs))
+                {
+                    int delayMs = ResolveRetryPolicy.NextDelayMs(retriesSent);
+                    retriesSent++;
+                    Log("wrapper_retry_attempt attempt=" + retriesSent
+                        + " delay_ms=" + delayMs
+                        + " elapsed_ms_since_request_sent=" + elapsedSinceRequestMs
+                        + " remaining_budget_ms=" + remainingBudgetMs);
+                    try { await Task.Delay(delayMs, ctsResolve.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException)
+                    {
+                        Log("retry delay cancelled (deadline elapsed)");
+                        return (null, WireConstants.OgFallbackReasonPipeResolveFailed);
+                    }
+                    // Reuse same request id for server dedup/correlation.
+                    continue;
+                }
+
+                return (null, WireConstants.OgFallbackReasonServerFallbackNative);
+            }
+
+            Log("response action UNKNOWN: " + resp.Action);
+            return (null, WireConstants.OgFallbackReasonPipeResolveFailed);
+        }
     }
 
     // Serialize the request DTO with a trailing '\n' framing byte appended
