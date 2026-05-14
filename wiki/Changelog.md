@@ -21,6 +21,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ### Changed
 - Improve helper diagnostics and terminal input (3988dad)
+- **patcher:** Identify wrappers by marker; drop bundled yt-dlp (0286d54)
 
 ### Fixed
 - **relay:** Stream-localize manifests so playback_id tokens dont 502 (fa74463)
