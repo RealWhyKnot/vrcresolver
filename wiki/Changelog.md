@@ -11,6 +11,12 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
+_No notable changes since the last release._
+
+---
+
+## [v2026.5.14.0](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.5.14.0) - 2026-05-14
+
 ### Added
 - **watchdog:** Add interactive terminal and HTTPS relay bootstrap (b0475d0)
 - **watchdog:** Add advanced terminal renderer (11749d3)
