@@ -120,6 +120,8 @@ internal sealed partial class MeshClient : IAsyncDisposable
     private int _helperStatusRefreshRunning;
     private int _reconnectAttempt;
     private bool _wasConnected;
+    private string? _lastSentHelperStatus;
+    private string? _lastSentHelperEncoder;
 
     // v3 handshake state (per-connection). _isV3Connection is set on
     // ConnectAsync return based on the server's echoed subprotocol; if
@@ -282,15 +284,26 @@ internal sealed partial class MeshClient : IAsyncDisposable
 
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperStatusFrame);
                 await SendTextFrameAsync(bytes, CancellationToken.None).ConfigureAwait(false);
+                bool unchanged = frame.Status == _lastSentHelperStatus
+                    && frame.Encoder == _lastSentHelperEncoder;
+                _lastSentHelperStatus = frame.Status;
+                _lastSentHelperEncoder = frame.Encoder;
+                string advertisedSuffix = unchanged ? " (advertised)" : "";
                 string statusLine = "[mesh][helper] status sent status=" + frame.Status
                     + " encoder=" + (frame.Encoder ?? "<none>")
-                    + " quality=" + HelperEncodingQualityNames.Format(quality);
+                    + " can_encode_h264=" + frame.CanEncodeH264
+                    + " sharing=" + frame.Sharing
+                    + " quality=" + HelperEncodingQualityNames.Format(quality)
+                    + advertisedSuffix;
                 Logger.WriteDiagnostic(
                     LogComponent.Helper,
                     statusLine,
                     "status sent status=" + frame.Status
                         + " encoder=" + (frame.Encoder ?? "<none>")
-                        + " quality=" + HelperEncodingQualityNames.Format(quality));
+                        + " can_encode_h264=" + frame.CanEncodeH264
+                        + " sharing=" + frame.Sharing
+                        + " quality=" + HelperEncodingQualityNames.Format(quality)
+                        + advertisedSuffix);
             }
             catch (Exception ex)
             {

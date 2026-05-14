@@ -411,9 +411,10 @@ internal sealed partial class LocalIpcServer : IDisposable
             // the rolling watchdog log only -- kept off the user-facing
             // console window so the friendly summary above stays scannable.
             Logger.WriteFileOnly(
-                "[ipc] resolve id=" + id + CidSuffix(cid) +
+                "[ipc] resolve_dispatch_complete id=" + id + CidSuffix(cid) +
+                " action=" + LogUtil.SanitizeForConsole(outcome, 48) +
+                " reason=" + LogUtil.SanitizeForConsole(serverReason ?? failReason ?? "", 48) +
                 " player=" + LogUtil.SanitizeForConsole(req.Player ?? WireConstants.PlayerUnknown, 16) +
-                " outcome=" + LogUtil.SanitizeForConsole(outcome, 48) +
                 (viaCache ? " via=cache" : "") +
                 " elapsed_ms=" + (long)swReq.Elapsed.TotalMilliseconds);
         }

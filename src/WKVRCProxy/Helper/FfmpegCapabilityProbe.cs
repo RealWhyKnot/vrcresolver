@@ -1,3 +1,5 @@
+using WKVRCProxy.Shared;
+
 namespace WKVRCProxy;
 
 internal enum FfmpegCapabilityProbeStatus
@@ -103,6 +105,15 @@ internal static class FfmpegCapabilityProbe
         FfmpegVersionInfo? version = FfmpegVersionProbe.ParseVersion(versionOutput);
         IReadOnlyList<HardwareEncoderCapability> encoders = HardwareEncoderProbe.ParseEncoders(encoderOutput);
         HardwareEncoderCapability? preferred = HardwareEncoderProbe.ChoosePreferred(encoders);
+
+        var candidateNames = new string[encoders.Count];
+        for (int i = 0; i < encoders.Count; i++) candidateNames[i] = encoders[i].EncoderName;
+        string candidates = encoders.Count > 0 ? string.Join(",", candidateNames) : "<none>";
+        string chosen = preferred.HasValue ? preferred.Value.EncoderName : "<none>";
+        Logger.WriteDiagnostic(
+            LogComponent.Helper,
+            "[helper][probe] helper_encoder_preference candidates=" + candidates + " chosen=" + chosen,
+            "helper_encoder_preference candidates=" + candidates + " chosen=" + chosen);
 
         if (!preferred.HasValue)
         {

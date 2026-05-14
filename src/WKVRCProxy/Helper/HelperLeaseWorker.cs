@@ -98,8 +98,14 @@ internal static class HelperLeaseWorker
                 return Result(false, "deadline", "helper encode exceeded the server deadline");
             }
 
+            LogLease(leaseFrame, "ffmpeg exit", "exit_code=" + ffmpegResult.ExitCode
+                + " stderr=" + Snip(ffmpegResult.Stderr, 180));
+
             if (ffmpegResult.ExitCode != 0)
             {
+                ConsoleUx.Warn(LogComponent.Helper, "hwaccel failed lease=" + Safe(leaseFrame.LeaseId, 64)
+                    + " exit=" + ffmpegResult.ExitCode
+                    + " retry=software stderr=" + Snip(ffmpegResult.Stderr, 120));
                 WarnLease(leaseFrame, "ffmpeg hwaccel failed", "exit=" + ffmpegResult.ExitCode
                     + " retry=software stderr=" + Snip(ffmpegResult.Stderr, 180));
                 TryDeleteOutput(outputPath);
@@ -128,6 +134,8 @@ internal static class HelperLeaseWorker
                         + deadlineMs + "ms stderr=" + Snip(ffmpegResult.Stderr, 180));
                     return Result(false, "deadline", "helper encode exceeded the server deadline");
                 }
+                LogLease(leaseFrame, "ffmpeg exit", "exit_code=" + ffmpegResult.ExitCode
+                    + " stderr=" + Snip(ffmpegResult.Stderr, 180));
             }
 
             if (ffmpegResult.ExitCode != 0)
@@ -144,10 +152,13 @@ internal static class HelperLeaseWorker
                 return Result(false, "empty_output", "ffmpeg completed without a segment");
             }
 
-            LogLease(leaseFrame, "upload start", "bytes=" + info.Length);
-            await UploadAsync(httpClient, leaseFrame.UploadUrl, outputPath, deadlineCts.Token).ConfigureAwait(false);
-            LogLease(leaseFrame, "uploaded", "bytes=" + info.Length
-                + " elapsed_ms=" + sw.ElapsedMilliseconds);
+            string uploadUrlHost = ExtractUrlHost(leaseFrame.UploadUrl);
+            LogLease(leaseFrame, "upload start", "upload_url_host=" + uploadUrlHost
+                + " bytes=" + info.Length);
+            UploadResult uploadResult = await UploadAsync(httpClient, leaseFrame.UploadUrl, outputPath, deadlineCts.Token).ConfigureAwait(false);
+            LogLease(leaseFrame, "upload end", "http_status=" + uploadResult.HttpStatus
+                + " bytes=" + uploadResult.Bytes
+                + " elapsed_ms=" + uploadResult.ElapsedMs);
             return Result(true, "uploaded", null, info.Length);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -202,17 +213,25 @@ internal static class HelperLeaseWorker
                 Audio: frame.OutputSpec.Audio));
     }
 
-    private static async Task UploadAsync(HttpClient httpClient, string uploadUrl, string outputPath, CancellationToken ct)
+    private sealed record UploadResult(int HttpStatus, long Bytes, long ElapsedMs);
+
+    private static async Task<UploadResult> UploadAsync(HttpClient httpClient, string uploadUrl, string outputPath, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(uploadUrl))
             throw new InvalidOperationException("lease did not include an upload URL");
 
+        var info = new FileInfo(outputPath);
+        long bytes = info.Exists ? info.Length : 0;
+        var swUp = System.Diagnostics.Stopwatch.StartNew();
         await using var stream = File.OpenRead(outputPath);
         using var content = new StreamContent(stream);
         content.Headers.ContentType = new MediaTypeHeaderValue("video/mp2t");
         using HttpResponseMessage response = await httpClient.PutAsync(uploadUrl, content, ct).ConfigureAwait(false);
+        swUp.Stop();
+        int status = (int)response.StatusCode;
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException("upload failed with HTTP " + (int)response.StatusCode);
+            throw new InvalidOperationException("upload failed with HTTP " + status);
+        return new UploadResult(status, bytes, swUp.ElapsedMilliseconds);
     }
 
     private static HelperRuntimeSignals DefaultSignals()
@@ -301,4 +320,15 @@ internal static class HelperLeaseWorker
 
     private static string Safe(string value, int max)
         => LogUtil.SanitizeForConsole(value ?? "", max);
+
+    private static string ExtractUrlHost(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return "?";
+        try
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var u)) return u.Host;
+        }
+        catch { /* best-effort */ }
+        return "?";
+    }
 }

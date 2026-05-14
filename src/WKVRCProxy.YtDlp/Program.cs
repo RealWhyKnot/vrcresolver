@@ -277,7 +277,9 @@ internal static partial class Program
 
         if (resp.Action == WireConstants.ActionFallbackNative)
         {
-            Log("response action=fallback_native id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] + " reason=" + (resp.Reason ?? "?"));
+            Log("response action=fallback_native id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)]
+                + " reason=" + (resp.Reason ?? "?")
+                + " elapsed_ms_since_request_sent=" + swSend.ElapsedMilliseconds);
             return (null, WireConstants.OgFallbackReasonServerFallbackNative);
         }
 
