@@ -173,35 +173,6 @@ internal static partial class Program
     private static async Task<(string? Url, string? FallbackReason)> ResolveOverPipeAsync(string url, string player, string? formatArg)
     {
         var swPipe = Stopwatch.StartNew();
-        using var ctsConnect = new CancellationTokenSource(PipeConnectTimeout);
-        using var pipe = new NamedPipeClientStream(
-            ".",
-            WireConstants.PipeName,
-            PipeDirection.InOut,
-            PipeOptions.Asynchronous);
-        try
-        {
-            await pipe.ConnectAsync(ctsConnect.Token).ConfigureAwait(false);
-            Log("pipe connect OK elapsed_ms=" + swPipe.ElapsedMilliseconds);
-        }
-        catch (OperationCanceledException)
-        {
-            Log("pipe connect TIMED OUT after " + swPipe.ElapsedMilliseconds + " ms (watchdog not running?)");
-            return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
-        }
-        catch (System.IO.FileNotFoundException)
-        {
-            Log("pipe connect ENOENT (watchdog not running)");
-            return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
-        }
-        catch (Exception ex)
-        {
-            Log("pipe connect failed: " + ex.GetType().Name + ": " + ex.Message);
-            return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
-        }
-
-        using var ctsResolve = new CancellationTokenSource(ResolveDeadline);
-
         long totalDeadlineMs = (long)ResolveDeadline.TotalMilliseconds;
 
         var req = new ResolveRequest
@@ -223,16 +194,49 @@ internal static partial class Program
                 : WireConstants.AvProMaxAudioChannels,
         };
 
-        // Retry loop: on discovery_in_progress (or server_unreachable) the
+        // Retry loop: on discovery_in_progress or server_unreachable the
         // wrapper retries up to ResolveRetryPolicy.MaxRetries additional times
-        // before falling back to og. Each retry reuses the same request id so
-        // the server can deduplicate / correlate logs across attempts. The
-        // wrapper deadline is recomputed before each send so the server always
-        // sees the most current budget.
+        // before falling back to og. The named pipe is re-established per
+        // attempt because the watchdog closes its end after writing the
+        // terminal frame; the request id stays the same across retries so the
+        // server can deduplicate or correlate logs across attempts.
         var swRequest = Stopwatch.StartNew();
         int retriesSent = 0;
         while (true)
         {
+            using var ctsConnect = new CancellationTokenSource(PipeConnectTimeout);
+            using var pipe = new NamedPipeClientStream(
+                ".",
+                WireConstants.PipeName,
+                PipeDirection.InOut,
+                PipeOptions.Asynchronous);
+            try
+            {
+                await pipe.ConnectAsync(ctsConnect.Token).ConfigureAwait(false);
+                if (retriesSent == 0)
+                    Log("pipe connect OK elapsed_ms=" + swPipe.ElapsedMilliseconds);
+                else
+                    Log("pipe reconnect OK retry=" + retriesSent + " elapsed_ms=" + swPipe.ElapsedMilliseconds);
+            }
+            catch (OperationCanceledException)
+            {
+                Log("pipe connect TIMED OUT after " + swPipe.ElapsedMilliseconds + " ms (watchdog not running?)");
+                return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
+            }
+            catch (System.IO.FileNotFoundException)
+            {
+                Log("pipe connect ENOENT (watchdog not running)");
+                return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
+            }
+            catch (Exception ex)
+            {
+                Log("pipe connect failed: " + ex.GetType().Name + ": " + ex.Message);
+                return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
+            }
+
+            long remainingForAttempt = Math.Max(1000, totalDeadlineMs - swPipe.ElapsedMilliseconds);
+            using var ctsResolve = new CancellationTokenSource(TimeSpan.FromMilliseconds(remainingForAttempt));
+
             req.WrapperDeadlineMs = (int)Math.Max(0, totalDeadlineMs - swPipe.ElapsedMilliseconds - 1000);
 
             byte[] payload;
