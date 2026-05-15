@@ -15,6 +15,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **helper:** Expand helper lease + resolve diagnostics (29d82cf)
 - **helper:** Trust key challenge, encoder smoke test, pre-upload validation (9f913f4)
 - **wrapper:** Retry resolve on discovery_in_progress with deadline-aware hold (49fb3b7)
+- **wrapper:** Bump resolve deadline from 18s to 28s (c89e234)
 
 ### Fixed
 - **wrapper:** Re-establish pipe per retry so resolve retries can actually send (5070472)
