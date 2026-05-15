@@ -51,11 +51,13 @@ namespace WKVRCProxy.YtDlp;
 internal static partial class Program
 {
     private static readonly TimeSpan PipeConnectTimeout = TimeSpan.FromSeconds(1);
-    // Overall budget for a complete response. Sized to sit above the
-    // watchdog's PerRequestTimeout (15s) + room for one mesh retry on a
-    // transient reason -- the watchdog always synthesizes a fallback
-    // frame within its own ceiling, so this just needs a small margin.
-    private static readonly TimeSpan ResolveDeadline = TimeSpan.FromSeconds(18);
+    // Overall budget for a complete response. The watchdog now sizes its own
+    // per-request timeout off wrapper_deadline_ms (LocalIpcServer.cs), so this
+    // single value drives the end-to-end budget. Cold extractors on slow sites
+    // (Tubi has been observed at ~20-25 s) need the full window; setting this
+    // shorter than the cold-discovery worst case is what forced the historical
+    // "paste the URL twice" behaviour.
+    private static readonly TimeSpan ResolveDeadline = TimeSpan.FromSeconds(28);
 
     // Per-invocation correlation id. 8 hex chars — enough to tell two
     // overlapping invocations apart when VRChat fires retries quickly.
