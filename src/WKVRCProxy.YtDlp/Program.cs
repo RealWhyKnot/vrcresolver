@@ -420,9 +420,15 @@ internal static partial class Program
 
     // Map og's stderr to a coarse failure-reason tag. The patterns cover
     // the common upstream blockers we've seen in the field: Cloudflare
-    // anti-bot (403), rate limits (429), and YouTube/auth-gated sign-in
-    // prompts. Anything else is "unknown" -- still worth a notify so the
-    // user sees something failed.
+    // anti-bot (403), rate limits (429), YouTube/auth-gated sign-in prompts,
+    // and "this content does not exist" terminal errors (deleted videos,
+    // closed channels, private videos, 404/410). Anything else is "unknown"
+    // -- still worth a notify so the user sees something failed.
+    //
+    // content_not_found matches the server-side reason emitted by
+    // DomainDispatcher.IsContentNotFoundFailure; aligning the two lets a
+    // watchdog skip a redundant og spawn when the server already classified
+    // the URL as terminally absent.
     private static string ClassifyOgFailure(string stderr)
     {
         if (string.IsNullOrEmpty(stderr)) return "unknown";
@@ -430,6 +436,15 @@ internal static partial class Program
         if (stderr.Contains("HTTP Error 429", StringComparison.OrdinalIgnoreCase)) return "rate_limited";
         if (stderr.Contains("Sign in to confirm", StringComparison.OrdinalIgnoreCase)
             || stderr.Contains("Sign in to verify", StringComparison.OrdinalIgnoreCase)) return "sign_in_required";
+        if (stderr.Contains("Video unavailable", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("This video is no longer available", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("This video is not available", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("removed by the uploader", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("closed their YouTube account", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("account associated", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("Private video", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("HTTP Error 404", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("HTTP Error 410", StringComparison.OrdinalIgnoreCase)) return "content_not_found";
         return "unknown";
     }
 

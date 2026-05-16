@@ -517,9 +517,21 @@ internal sealed partial class LocalIpcServer : IDisposable
             catch { /* best-effort */ }
         }
 
+        // Short human hint after the machine-readable token. Keeps the token in
+        // the line for grep/log triage while making the cause obvious to a user
+        // glancing at the console. Unknown stays bare so the line doesn't lie
+        // about what we know.
+        string hint = reason switch
+        {
+            "content_not_found" => " (video unavailable upstream)",
+            "cf_403" => " (403 blocked)",
+            "rate_limited" => " (rate limited)",
+            "sign_in_required" => " (auth gate)",
+            _ => "",
+        };
         ConsoleUx.Warn(
             LogComponent.Wrapper,
-            "!! og also failed " + host + " reason=" + reason + " exit=" + notify.ExitCode);
+            "!! og also failed " + host + " reason=" + reason + " exit=" + notify.ExitCode + hint);
         Logger.WriteFileOnly(
             "[wrapper] wrapper_og_failed rid=" + LogUtil.SanitizeForConsole(notify.Rid ?? "?", 16) +
             " host=" + host +
