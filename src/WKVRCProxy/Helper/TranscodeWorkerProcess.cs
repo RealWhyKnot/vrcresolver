@@ -245,7 +245,12 @@ internal static class TranscodeWorkerProcess
     {
         return encoder.Backend switch
         {
-            HardwareEncoderBackend.Nvenc => new[] { "-hwaccel", "cuda", "-hwaccel_output_format", "cuda" },
+            // -extra_hw_frames widens NVDEC's reference-frame pool. Some HEVC sources
+            // (Tubi's catalog among them) use longer reference chains than the cuvid
+            // default 25 covers and surface as "Could not find ref with POC N" decoder
+            // warnings followed by a black/short segment. Bumping the pool stops the
+            // decoder from dropping reference frames it still needs.
+            HardwareEncoderBackend.Nvenc => new[] { "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-extra_hw_frames", "16" },
             HardwareEncoderBackend.Qsv => new[] { "-hwaccel", "qsv", "-hwaccel_output_format", "qsv" },
             HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation =>
                 new[] { "-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11" },
@@ -259,8 +264,15 @@ internal static class TranscodeWorkerProcess
         string height = safeHeight.ToString(CultureInfo.InvariantCulture);
         return encoder.Backend switch
         {
+            // `format=nv12` must be part of scale_cuda's option list (colon-
+            // separated), not a separate filter. The previous form used a comma,
+            // which made ffmpeg parse `format=nv12` as a standalone CPU-side
+            // filter; an auto_scale would then be inserted to bridge the CUDA
+            // surface from scale_cuda to the CPU format filter and fail with
+            // "Impossible to convert between the formats supported by the
+            // filter 'Parsed_scale_cuda_0' and the filter 'auto_scale_0'".
             HardwareEncoderBackend.Nvenc =>
-                "scale_cuda=" + width + ":" + height + ":force_original_aspect_ratio=decrease,format=nv12",
+                "scale_cuda=w=" + width + ":h=" + height + ":format=nv12:force_original_aspect_ratio=decrease",
             HardwareEncoderBackend.Qsv =>
                 "scale_qsv=w=" + width + ":h=" + height + ":format=nv12",
             HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation =>

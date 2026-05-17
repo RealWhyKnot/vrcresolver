@@ -153,7 +153,7 @@ public class FfmpegHelperTests
         Assert.Contains(command.Arguments, argument => argument.Contains("Mozilla/5.0 (Windows NT 10.0; Win64; x64)", StringComparison.Ordinal));
         Assert.Contains("h264_nvenc", command.Arguments);
         AssertHardwareDecodeBeforeInput(command.Arguments, "cuda", "cuda");
-        Assert.Contains(command.Arguments, argument => argument.StartsWith("scale_cuda=1280:720:", StringComparison.Ordinal));
+        Assert.Contains(command.Arguments, argument => argument.StartsWith("scale_cuda=w=1280:h=720:", StringComparison.Ordinal));
         Assert.Contains(command.Arguments, argument => argument.Contains("format=nv12", StringComparison.Ordinal));
         Assert.Contains("-force_key_frames", command.Arguments);
         Assert.Contains("-c:a", command.Arguments);
