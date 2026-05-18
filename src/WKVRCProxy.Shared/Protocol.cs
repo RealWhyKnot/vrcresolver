@@ -64,6 +64,7 @@ public static class WireConstants
     public const string ActionHelperChallenge = "helper_challenge";
     public const string ActionHelperChallengeResponse = "helper_challenge_response";
     public const string ActionHelperTrustGranted = "helper_trust_granted";
+    public const string ActionHelperEligibilitySkipped = "helper_eligibility_skipped";
 
     public const string PlaybackFeedbackLoadFailure = "load_failure";
     public const string PlaybackFeedbackSilentStall = "silent_stall";
@@ -415,6 +416,26 @@ public sealed class HelperTranscodeResultFrame
     [JsonPropertyName("elapsed_ms")] public long ElapsedMs { get; set; }
     [JsonPropertyName("encoder")] public string? Encoder { get; set; }
     [JsonPropertyName("ffmpeg_version")] public string? FfmpegVersion { get; set; }
+}
+
+// Server -> client. Pushed when the scheduler picked-skipped this helper for a
+// stream. Lets the watchdog surface one line on the console explaining why an
+// idle but trust-granted helper isn't being given work. Without this frame the
+// helper looks healthy from the user's side ("trust granted, idle, smoke
+// passed") and the operator has no way to tell that the server is bypassing
+// it -- the previous symptom that read as "the helper is confusing the
+// server."
+public sealed class HelperEligibilitySkippedFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperEligibilitySkipped;
+    [JsonPropertyName("stream_id")] public string StreamId { get; set; } = "";
+    [JsonPropertyName("reason")] public string Reason { get; set; } = "";
+    [JsonPropertyName("in_flight"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? InFlight { get; set; }
+    [JsonPropertyName("in_flight_limit"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? InFlightLimit { get; set; }
+    [JsonPropertyName("strikes"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Strikes { get; set; }
 }
 
 // Wrapper -> watchdog one-shot notification frame, sent on a fresh pipe

@@ -347,6 +347,31 @@ internal sealed partial class MeshClient
                 doc.Dispose();
                 return;
             }
+            case WireConstants.ActionHelperEligibilitySkipped:
+            {
+                HelperEligibilitySkippedFrame? skip = null;
+                try { skip = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperEligibilitySkippedFrame); }
+                catch (Exception ex)
+                {
+                    Logger.WriteFileOnly("[mesh][helper] helper_eligibility_skipped parse failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                    doc.Dispose();
+                    return;
+                }
+                doc.Dispose();
+                if (skip == null) return;
+
+                string stream = LogUtil.SanitizeForConsole(skip.StreamId, 32);
+                string reason = LogUtil.SanitizeForConsole(skip.Reason, 32);
+                string detail = "";
+                if (skip.InFlight.HasValue && skip.InFlightLimit.HasValue)
+                    detail = " (in_flight=" + skip.InFlight.Value + "/" + skip.InFlightLimit.Value + ")";
+                else if (skip.Strikes.HasValue)
+                    detail = " (strikes=" + skip.Strikes.Value + ")";
+                ConsoleUx.Write(LogComponent.Helper,
+                    "helper not picked for stream=" + stream + " reason=" + reason + detail);
+                return;
+            }
             default:
                 // Server-supplied string — strip control chars + truncate so a
                 // hostile or buggy server can't inject ANSI escapes into the
