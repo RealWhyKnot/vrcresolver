@@ -49,6 +49,13 @@ jobs:
           # branch (not main) and uses gh to open + auto-merge the PR.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Detect beta tag
+        id: beta
+        shell: pwsh
+        run: |
+          $isBeta = '${{ github.ref_name }}' -like '*-beta*'
+          "is_beta=$($isBeta.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
       - name: Fetch release tags
         shell: pwsh
         run: |
@@ -152,7 +159,9 @@ jobs:
           $notes | Out-File -LiteralPath $notesPath -Encoding utf8 -NoNewline
           "input_path=$notesPath" >> $env:GITHUB_OUTPUT
           # gh release create accepts the asset paths as positional arguments after the tag.
-          gh release create $tag $zip --title $tag --notes-file $notesPath
+          $extra = @()
+          if ('${{ steps.beta.outputs.is_beta }}' -eq 'true') { $extra = @('--prerelease','--latest=false') }
+          gh release create $tag $zip --title $tag --notes-file $notesPath @extra
 
       - name: Verify published release body matches input
         env:
@@ -368,6 +377,7 @@ jobs:
           echo "Hash append commit: $new_oid (verified)"
 
       - name: Open promotion PR + enable auto-merge
+        if: ${{ steps.beta.outputs.is_beta != 'true' }}
         # We can't push directly to main: branch protection requires the
         # "dotnet build + test" status check, which a bot push bypasses (so
         # the push is rejected). Instead we open a PR off the tag and let
