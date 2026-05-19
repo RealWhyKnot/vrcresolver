@@ -249,8 +249,12 @@ internal static class TranscodeWorkerProcess
             // (Tubi's catalog among them) use longer reference chains than the cuvid
             // default 25 covers and surface as "Could not find ref with POC N" decoder
             // warnings followed by a black/short segment. Bumping the pool stops the
-            // decoder from dropping reference frames it still needs.
-            HardwareEncoderBackend.Nvenc => new[] { "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-extra_hw_frames", "16" },
+            // decoder from dropping reference frames it still needs. 16 was the first
+            // bump; observed Tubi content at certain time offsets still overruns it
+            // and the encoder writes only ~0.7-1 s of video out of the 4 s window
+            // before NVDEC drops the chain. 32 covers the deepest reference chains
+            // seen in the wild without meaningfully growing GPU memory.
+            HardwareEncoderBackend.Nvenc => new[] { "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-extra_hw_frames", "32" },
             HardwareEncoderBackend.Qsv => new[] { "-hwaccel", "qsv", "-hwaccel_output_format", "qsv" },
             HardwareEncoderBackend.Amf or HardwareEncoderBackend.MediaFoundation =>
                 new[] { "-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11" },

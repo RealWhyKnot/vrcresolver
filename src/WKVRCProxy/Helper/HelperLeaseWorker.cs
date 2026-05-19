@@ -183,6 +183,68 @@ internal static class HelperLeaseWorker
                 return Result(false, "local_validation_failed", validationError);
             }
 
+            // Post-encode video-duration check. NVDEC reference-pool starvation
+            // on HEVC sources produces a TS that's structurally valid -- sync
+            // bytes plus PES packets plus full-length audio -- but where the
+            // encoder dropped most of the video frames mid-segment, leaving
+            // ~0.7-1.0 s of video out of the 4 s window. Players that try to
+            // decode it freeze when the video stream ends mid-segment. The
+            // local validator can't catch this without probing duration, and
+            // the server has no way to retry on the same helper. If we're on
+            // the hardware path AND the video came back short, fall back to
+            // software decode (same path seg 0 uses) before uploading.
+            if (!softwareDecodeFirst && leaseFrame.Duration > 0)
+            {
+                double? vidDuration = await ProbeVideoDurationAsync(ffmpegLocation.Path, outputPath, deadlineCts.Token).ConfigureAwait(false);
+                if (vidDuration.HasValue && vidDuration.Value < leaseFrame.Duration * 0.8)
+                {
+                    WarnLease(leaseFrame, "truncated_video", "video_dur="
+                        + vidDuration.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+                        + " expected=" + leaseFrame.Duration.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+                        + " bytes=" + info.Length + " retry=software");
+                    TryDeleteOutput(outputPath);
+
+                    TranscodeFfmpegCommand swCommand = TranscodeWorkerProcess.BuildSegmentCommandSoftwareFallback(
+                        ffmpegLocation.Path,
+                        lease,
+                        encoder,
+                        outputPath,
+                        leaseFrame.TargetWidth,
+                        leaseFrame.TargetHeight,
+                        leaseFrame.TargetBitrateKbps,
+                        hasAudio: leaseFrame.HasAudio,
+                        quality: quality);
+
+                    LogLease(leaseFrame, "ffmpeg sw-retry start", "reason=truncated_video deadline_ms=" + deadlineMs);
+                    ffmpegResult = await RunFfmpegAsync(swCommand, deadlineCts.Token, ct).ConfigureAwait(false);
+                    if (ffmpegResult.TimedOut)
+                    {
+                        WarnLease(leaseFrame, "deadline", "sw-retry ffmpeg exceeded "
+                            + deadlineMs + "ms stderr=" + Snip(ffmpegResult.Stderr, 180));
+                        return Result(false, "deadline", "helper sw-retry exceeded the server deadline");
+                    }
+                    if (ffmpegResult.ExitCode != 0)
+                    {
+                        WarnLease(leaseFrame, "ffmpeg sw-retry failed", "exit=" + ffmpegResult.ExitCode
+                            + " stderr=" + Snip(ffmpegResult.Stderr, 180));
+                        return Result(false, "ffmpeg_failed", Snip(ffmpegResult.Stderr, 240));
+                    }
+                    info = new FileInfo(outputPath);
+                    if (!info.Exists || info.Length <= 0)
+                    {
+                        WarnLease(leaseFrame, "empty sw-retry output", "ffmpeg sw-retry completed without a segment");
+                        return Result(false, "empty_output", "ffmpeg sw-retry completed without a segment");
+                    }
+                    validationError = ValidateMpegTs(outputPath, info.Length);
+                    if (validationError != null)
+                    {
+                        WarnLease(leaseFrame, "sw-retry local_validation_failed", validationError + " bytes=" + info.Length);
+                        return Result(false, "local_validation_failed", validationError);
+                    }
+                    LogLease(leaseFrame, "ffmpeg sw-retry ok", "bytes=" + info.Length);
+                }
+            }
+
             string uploadUrlHost = ExtractUrlHost(leaseFrame.UploadUrl);
             LogLease(leaseFrame, "upload start", "upload_url_host=" + uploadUrlHost
                 + " bytes=" + info.Length);
@@ -278,6 +340,77 @@ internal static class HelperLeaseWorker
     }
 
     private sealed record FfmpegProcessResult(bool TimedOut, int ExitCode, string Stderr);
+
+    // Probe the video stream's duration via ffprobe. Returns null when the
+    // probe can't be run, the binary is missing, or the file has no video
+    // stream. Best-effort: any failure short-circuits to null so the caller
+    // can decide what to do (the normal case is "skip the truncated-video
+    // retry and proceed to upload"; the validator on the server will catch
+    // the file if it's structurally bad).
+    private static async Task<double?> ProbeVideoDurationAsync(
+        string ffmpegPath,
+        string outputPath,
+        CancellationToken ct)
+    {
+        string? ffprobePath = TryResolveFfprobePath(ffmpegPath);
+        if (string.IsNullOrEmpty(ffprobePath)) return null;
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffprobePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-v");
+        psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-show_entries");
+        psi.ArgumentList.Add("stream=duration");
+        psi.ArgumentList.Add("-select_streams");
+        psi.ArgumentList.Add("v:0");
+        psi.ArgumentList.Add("-of");
+        psi.ArgumentList.Add("csv=p=0");
+        psi.ArgumentList.Add(outputPath);
+
+        try
+        {
+            using var p = new Process { StartInfo = psi };
+            p.Start();
+            var stdoutTask = p.StandardOutput.ReadToEndAsync(ct);
+            _ = p.StandardError.ReadToEndAsync(ct);
+            await p.WaitForExitAsync(ct).ConfigureAwait(false);
+            if (p.ExitCode != 0) return null;
+            string stdout = (await stdoutTask.ConfigureAwait(false)).Trim();
+            if (string.IsNullOrEmpty(stdout)) return null;
+            if (double.TryParse(stdout, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double secs)
+                && secs > 0)
+            {
+                return secs;
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryResolveFfprobePath(string ffmpegPath)
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(ffmpegPath);
+            if (string.IsNullOrEmpty(dir)) return null;
+            string probe = Path.Combine(dir, OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe");
+            return File.Exists(probe) ? probe : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static async Task<FfmpegProcessResult> RunFfmpegAsync(
         TranscodeFfmpegCommand command,
