@@ -187,21 +187,40 @@ internal static class HelperLeaseWorker
             // on HEVC sources produces a TS that's structurally valid -- sync
             // bytes plus PES packets plus full-length audio -- but where the
             // encoder dropped most of the video frames mid-segment, leaving
-            // ~0.7-1.0 s of video out of the 4 s window. Players that try to
-            // decode it freeze when the video stream ends mid-segment. The
-            // local validator can't catch this without probing duration, and
-            // the server has no way to retry on the same helper. If we're on
-            // the hardware path AND the video came back short, fall back to
-            // software decode (same path seg 0 uses) before uploading.
-            if (!softwareDecodeFirst && leaseFrame.Duration > 0)
+            // ~0.7-1.0 s of video out of the 4 s window. Players freeze when
+            // the video stream ends mid-segment. The local validator can't
+            // catch this without probing duration.
+            //
+            // Run the check for every segment regardless of decode path:
+            //   * hardware (decode != software_seg0): if truncated, retry
+            //     once with software_seg0 before uploading.
+            //   * software_seg0 (seg 0 special-cased): if STILL truncated,
+            //     the source itself is missing reference frames at t=0
+            //     (Tubi catalog: HEVC POC chain references frames not in
+            //     the chunk). Fail locally so the server uses peer/CPU for
+            //     this segment instead of paying the upload + 422 cost.
+            if (leaseFrame.Duration > 0)
             {
                 double? vidDuration = await ProbeVideoDurationAsync(ffmpegLocation.Path, outputPath, deadlineCts.Token).ConfigureAwait(false);
                 if (vidDuration.HasValue && vidDuration.Value < leaseFrame.Duration * 0.8)
                 {
-                    WarnLease(leaseFrame, "truncated_video", "video_dur="
-                        + vidDuration.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
-                        + " expected=" + leaseFrame.Duration.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
-                        + " bytes=" + info.Length + " retry=software");
+                    string vidStr = vidDuration.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+                    string expStr = leaseFrame.Duration.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+                    if (softwareDecodeFirst)
+                    {
+                        // Already on software; nothing left to try. Fail the
+                        // lease locally with a clean reason so the server
+                        // routes to peer / CPU for this segment.
+                        WarnLease(leaseFrame, "truncated_video", "video_dur=" + vidStr
+                            + " expected=" + expStr + " bytes=" + info.Length
+                            + " path=software_seg0 no_retry_available");
+                        TryDeleteOutput(outputPath);
+                        return Result(false, "truncated_video",
+                            "software decode produced video_dur=" + vidStr + " of expected " + expStr);
+                    }
+
+                    WarnLease(leaseFrame, "truncated_video", "video_dur=" + vidStr
+                        + " expected=" + expStr + " bytes=" + info.Length + " retry=software");
                     TryDeleteOutput(outputPath);
 
                     TranscodeFfmpegCommand swCommand = TranscodeWorkerProcess.BuildSegmentCommandSoftwareFallback(
@@ -241,7 +260,21 @@ internal static class HelperLeaseWorker
                         WarnLease(leaseFrame, "sw-retry local_validation_failed", validationError + " bytes=" + info.Length);
                         return Result(false, "local_validation_failed", validationError);
                     }
-                    LogLease(leaseFrame, "ffmpeg sw-retry ok", "bytes=" + info.Length);
+                    // Re-probe duration after the software retry. If software
+                    // ALSO produced truncated output (source-level structural
+                    // issue), fail locally rather than upload a known-bad seg.
+                    double? swVidDuration = await ProbeVideoDurationAsync(ffmpegLocation.Path, outputPath, deadlineCts.Token).ConfigureAwait(false);
+                    if (swVidDuration.HasValue && swVidDuration.Value < leaseFrame.Duration * 0.8)
+                    {
+                        string swVidStr = swVidDuration.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+                        WarnLease(leaseFrame, "truncated_video", "sw-retry video_dur=" + swVidStr
+                            + " expected=" + expStr + " bytes=" + info.Length + " no_retry_available");
+                        TryDeleteOutput(outputPath);
+                        return Result(false, "truncated_video",
+                            "sw retry still produced video_dur=" + swVidStr + " of expected " + expStr);
+                    }
+                    LogLease(leaseFrame, "ffmpeg sw-retry ok", "bytes=" + info.Length
+                        + " video_dur=" + (swVidDuration.HasValue ? swVidDuration.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "?"));
                 }
             }
 
