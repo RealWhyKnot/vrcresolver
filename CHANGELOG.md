@@ -13,6 +13,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ### Added
 - **helper:** Surface helper_eligibility_skipped frames on watchdog console (f402c53)
+- **helper:** Hold-and-announce flow for window-pull leases (100e71f)
 
 ### Fixed
 - **helper:** NVENC scale_cuda filter syntax and NVDEC reference-frame pool (0d339d3)
