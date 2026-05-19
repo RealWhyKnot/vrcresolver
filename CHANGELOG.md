@@ -16,6 +16,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ### Fixed
 - **helper:** NVENC scale_cuda filter syntax and NVDEC reference-frame pool (0d339d3)
+- **helper:** Route seg 0 through software decode + reject empty output (0aca4ac)
 
 ---
 
