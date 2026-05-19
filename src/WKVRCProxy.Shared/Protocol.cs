@@ -66,6 +66,29 @@ public static class WireConstants
     public const string ActionHelperTrustGranted = "helper_trust_granted";
     public const string ActionHelperEligibilitySkipped = "helper_eligibility_skipped";
 
+    // Window-pull handshake. Gated by both the server advertising
+    // FeatureHelperWindowPull in welcome.features AND this client advertising
+    // supports_window_pull=true on helper_status. When the feature is off the
+    // client falls through to the original immediate-upload lease flow.
+    public const string ActionHelperWindowReady = "helper_window_ready";
+    public const string ActionHelperPullWindow = "helper_pull_window";
+    public const string ActionHelperDropWindow = "helper_drop_window";
+
+    // Reason vocabulary on helper_drop_window. Echoed back in the final
+    // helper_transcode_result's status field so the server's JSONL stays
+    // greppable for "why was helper work discarded".
+    public const string HelperDropReasonCpuWon = "cpu_won";
+    public const string HelperDropReasonPeerWon = "peer_won";
+    public const string HelperDropReasonSuperseded = "superseded";
+    public const string HelperDropReasonViewerLeft = "viewer_left";
+    public const string HelperDropReasonStreamQuiesced = "stream_quiesced";
+    public const string HelperDropReasonClientDisconnected = "client_disconnected";
+    public const string HelperDropReasonInvalidMetrics = "invalid_metrics";
+    public const string HelperDropReasonClientTtlExpired = "client_ttl_expired";
+
+    public const string HelperPhaseUploaded = "uploaded";
+    public const string HelperPhaseDropped = "dropped";
+
     public const string PlaybackFeedbackLoadFailure = "load_failure";
     public const string PlaybackFeedbackSilentStall = "silent_stall";
     public const string PlaybackFeedbackPlaying = "playing";
@@ -132,6 +155,7 @@ public static class WireConstants
     // our accept_formats list); the feature string is informational.
     public const string FeatureMsgpackFormat = "msgpack_format";
     public const string FeatureHelperTranscode = "helper_transcode";
+    public const string FeatureHelperWindowPull = "helper_window_pull";
 
     // v3.1 client preference order for post-welcome wire format. Sent
     // verbatim as the client_hello.accept_formats field. The first
@@ -362,6 +386,17 @@ public sealed class HelperStatusFrame
     public bool? SmokeTestPassed { get; set; }
     [JsonPropertyName("smoke_test_encoder"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? SmokeTestEncoder { get; set; }
+    // Window-pull opt-in. Sent as true when this client speaks the
+    // helper_window_ready / helper_pull_window / helper_drop_window
+    // handshake. Server gates the matching lease flow on this.
+    [JsonPropertyName("supports_window_pull"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SupportsWindowPull { get; set; }
+    // Soft pressure signal: leases currently in any non-terminal state
+    // (Transcoding | ReadyAnnounced | AwaitingPull | Uploading). Lets the
+    // server skip picking us when we're saturated, without waiting for its
+    // own InFlight counter to catch up.
+    [JsonPropertyName("lease_queue_depth"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LeaseQueueDepth { get; set; }
 }
 
 public sealed class HelperChallengeFrame
@@ -383,8 +418,14 @@ public sealed class HelperTranscodeLeaseFrame
     [JsonPropertyName("lease_id")] public string LeaseId { get; set; } = "";
     [JsonPropertyName("playback_id")] public string PlaybackId { get; set; } = "";
     [JsonPropertyName("rendition")] public string Rendition { get; set; } = "";
+    // First segment of the window. Legacy single-segment leases set
+    // segment_count null/1 and use this index as the only segment to
+    // encode. Window leases cover [segment_index .. segment_index +
+    // segment_count).
     [JsonPropertyName("segment_index")] public int SegmentIndex { get; set; }
     [JsonPropertyName("start_pts")] public double StartPts { get; set; }
+    // For single-segment leases this is one segment's duration; for
+    // window leases it's segment_duration * segment_count.
     [JsonPropertyName("duration")] public double Duration { get; set; }
     [JsonPropertyName("deadline_ms")] public int DeadlineMs { get; set; }
     [JsonPropertyName("input_url")] public string InputUrl { get; set; } = "";
@@ -394,6 +435,16 @@ public sealed class HelperTranscodeLeaseFrame
     [JsonPropertyName("target_height")] public int TargetHeight { get; set; }
     [JsonPropertyName("target_bitrate_kbps")] public int TargetBitrateKbps { get; set; }
     [JsonPropertyName("output_spec")] public HelperTranscodeOutputSpecFrame OutputSpec { get; set; } = new();
+    // Window-pull flow only. Null/0/1 means "single segment, legacy
+    // immediate-upload flow". >=2 means the lease spans a window and the
+    // client must send helper_window_ready before any bytes upload.
+    [JsonPropertyName("segment_count"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? SegmentCount { get; set; }
+    // Window-pull flow only. Max ms the client should hold bytes after
+    // sending helper_window_ready before auto-dropping. Null = use the
+    // client's own default (8s).
+    [JsonPropertyName("held_ttl_ms"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? HeldTtlMs { get; set; }
 }
 
 public sealed class HelperTranscodeOutputSpecFrame
@@ -416,6 +467,58 @@ public sealed class HelperTranscodeResultFrame
     [JsonPropertyName("elapsed_ms")] public long ElapsedMs { get; set; }
     [JsonPropertyName("encoder")] public string? Encoder { get; set; }
     [JsonPropertyName("ffmpeg_version")] public string? FfmpegVersion { get; set; }
+    // Window-pull flow only. "uploaded" when bytes reached the server,
+    // "dropped" when the client discarded them per helper_drop_window or
+    // a TTL expiry. Null on legacy results.
+    [JsonPropertyName("phase"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Phase { get; set; }
+    // Window-pull flow only. ms between helper_window_ready dispatch and
+    // the terminating pull/drop. Telemetry for helper lead-time learning.
+    [JsonPropertyName("held_ms"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? HeldMs { get; set; }
+}
+
+// Client -> server. Announcement that bytes are transcoded and held locally.
+// Sent only when the lease frame carried segment_count >= 2 (window-pull
+// flow). Server validates the metrics here -- bytes against the lease's
+// max, video/audio durations against the expected window duration -- and
+// decides to pull (-> helper_pull_window) or drop (-> helper_drop_window).
+// The bytes themselves stay on the client until pull arrives.
+public sealed class HelperWindowReadyFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperWindowReady;
+    [JsonPropertyName("lease_id")] public string LeaseId { get; set; } = "";
+    [JsonPropertyName("playback_id")] public string PlaybackId { get; set; } = "";
+    [JsonPropertyName("window_start")] public int WindowStart { get; set; }
+    [JsonPropertyName("segment_count")] public int SegmentCount { get; set; }
+    [JsonPropertyName("bytes")] public long Bytes { get; set; }
+    [JsonPropertyName("video_duration")] public double VideoDuration { get; set; }
+    [JsonPropertyName("audio_duration")] public double AudioDuration { get; set; }
+    [JsonPropertyName("encoder")] public string Encoder { get; set; } = "";
+    [JsonPropertyName("ffmpeg_version")] public string FfmpegVersion { get; set; } = "";
+    [JsonPropertyName("elapsed_ms")] public long ElapsedMs { get; set; }
+}
+
+// Server -> client. Pull the held bytes. The optional upload_url overrides
+// the URL from the original lease frame (signed-token rotation case);
+// null = use the original URL.
+public sealed class HelperPullWindowFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperPullWindow;
+    [JsonPropertyName("lease_id")] public string LeaseId { get; set; } = "";
+    [JsonPropertyName("upload_url"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? UploadUrl { get; set; }
+}
+
+// Server -> client. Discard the held bytes. Reason vocabulary in
+// WireConstants.HelperDropReason*. Client deletes the temp file and emits
+// a final helper_transcode_result with phase="dropped", status=<reason>
+// so the server's terminal accounting stays accurate.
+public sealed class HelperDropWindowFrame
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = WireConstants.ActionHelperDropWindow;
+    [JsonPropertyName("lease_id")] public string LeaseId { get; set; } = "";
+    [JsonPropertyName("reason")] public string Reason { get; set; } = "";
 }
 
 // Server -> client. Pushed when the scheduler picked-skipped this helper for a

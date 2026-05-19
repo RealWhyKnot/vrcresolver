@@ -347,6 +347,67 @@ internal sealed partial class MeshClient
                 doc.Dispose();
                 return;
             }
+            case WireConstants.ActionHelperPullWindow:
+            {
+                HelperPullWindowFrame? pull = null;
+                try { pull = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperPullWindowFrame); }
+                catch (Exception ex)
+                {
+                    Logger.WriteFileOnly("[mesh][helper] helper_pull_window parse failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                    doc.Dispose();
+                    return;
+                }
+                doc.Dispose();
+                if (pull == null || string.IsNullOrEmpty(pull.LeaseId)) return;
+                if (_windowHolds.TryGetValue(pull.LeaseId, out var pullTcs))
+                {
+                    pullTcs.TrySetResult(new HelperWindowResolution(
+                        HelperWindowOutcome.Pull,
+                        UploadUrlOverride: string.IsNullOrEmpty(pull.UploadUrl) ? null : pull.UploadUrl,
+                        DropReason: null));
+                }
+                else
+                {
+                    // Stale pull for a lease we already dropped / never
+                    // held. Log only -- server may be slightly behind
+                    // our state and that's fine.
+                    Logger.WriteFileOnly("[mesh][helper] helper_pull_window for unknown lease="
+                        + LogUtil.SanitizeForConsole(pull.LeaseId, 64));
+                }
+                return;
+            }
+            case WireConstants.ActionHelperDropWindow:
+            {
+                HelperDropWindowFrame? drop = null;
+                try { drop = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperDropWindowFrame); }
+                catch (Exception ex)
+                {
+                    Logger.WriteFileOnly("[mesh][helper] helper_drop_window parse failed: "
+                        + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
+                    doc.Dispose();
+                    return;
+                }
+                doc.Dispose();
+                if (drop == null || string.IsNullOrEmpty(drop.LeaseId)) return;
+                string reason = string.IsNullOrEmpty(drop.Reason)
+                    ? WireConstants.HelperDropReasonSuperseded
+                    : drop.Reason;
+                if (_windowHolds.TryGetValue(drop.LeaseId, out var dropTcs))
+                {
+                    dropTcs.TrySetResult(new HelperWindowResolution(
+                        HelperWindowOutcome.Drop,
+                        UploadUrlOverride: null,
+                        DropReason: reason));
+                }
+                else
+                {
+                    Logger.WriteFileOnly("[mesh][helper] helper_drop_window for unknown lease="
+                        + LogUtil.SanitizeForConsole(drop.LeaseId, 64)
+                        + " reason=" + LogUtil.SanitizeForConsole(reason, 32));
+                }
+                return;
+            }
             case WireConstants.ActionHelperEligibilitySkipped:
             {
                 HelperEligibilitySkippedFrame? skip = null;

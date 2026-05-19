@@ -110,6 +110,25 @@ internal sealed partial class MeshClient : IAsyncDisposable
     // the request's `id` so the server can still cache-key on something stable.
     private readonly ConcurrentDictionary<string, string> _inflightCids = new();
 
+    // Window-pull handshake state. _windowHolds is keyed by lease_id; the
+    // worker registers a TCS before sending helper_window_ready and parks on
+    // it. JsonDispatch's helper_pull_window / helper_drop_window handlers
+    // complete the TCS. Worker removes its own entry on resolution or TTL.
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<HelperWindowResolution>> _windowHolds = new();
+
+    // Per-process lease concurrency cap. Sized to match the server's default
+    // HelperOptions.InFlightLimit so the client doesn't accept more leases
+    // than the server would issue. Static so it survives reconnects; the
+    // server keys leases by lease_id, not connection, and an in-flight
+    // lease on the old socket may complete after reconnect.
+    private static readonly SemaphoreSlim s_leaseSlots = new(3, 3);
+
+    // Visible lease-queue depth (Transcoding | ReadyAnnounced | AwaitingPull
+    // | Uploading) for the lease_queue_depth field on helper_status. Lets
+    // the server treat us as inflight_busy without waiting for its own
+    // per-helper InFlight counter to update across the connection.
+    private int _leaseQueueDepth;
+
     private ClientWebSocket? _ws;
     private string? _cachedNodeHost;
     private CancellationTokenSource? _runCts;
@@ -286,6 +305,17 @@ internal sealed partial class MeshClient : IAsyncDisposable
                     AllowOnBattery = settings.Helper.AllowOnBattery,
                     SmokeTestPassed = probe.SmokeTestPassed ? true : (bool?)false,
                     SmokeTestEncoder = probe.SmokeTestEncoder,
+                    // Window-pull opt-in. Always true on this build -- the
+                    // worker auto-detects whether the server actually
+                    // exercises the path via the welcome feature flag.
+                    // Sending it unconditionally keeps the helper_status
+                    // shape stable across reconnects.
+                    SupportsWindowPull = true,
+                    // Visible at advertisement time. Server doesn't need
+                    // a real-time stream of this; the 45s refresh cadence
+                    // is plenty since the field's only purpose is the
+                    // soft-pressure inflight_busy signal.
+                    LeaseQueueDepth = Volatile.Read(ref _leaseQueueDepth),
                 };
 
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(frame, MeshJsonContext.Default.HelperStatusFrame);
@@ -331,6 +361,66 @@ internal sealed partial class MeshClient : IAsyncDisposable
     {
         var features = _serverFeatures;
         return features != null && Array.IndexOf(features, feature) >= 0;
+    }
+
+    // IHelperLeaseChannel surface, implemented inline so the worker doesn't
+    // need to know about MeshClient's internals. The channel exposes the
+    // narrow contract: send the helper_window_ready frame, await resolution.
+    private bool WindowPullEnabled
+        => ServerSupportsFeature(WireConstants.FeatureHelperWindowPull);
+
+    private async Task SendWindowReadyAsync(HelperWindowReadyFrame frame, CancellationToken ct)
+    {
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(
+            frame, MeshJsonContext.Default.HelperWindowReadyFrame);
+        await SendTextFrameAsync(bytes, ct).ConfigureAwait(false);
+    }
+
+    private async Task<HelperWindowResolution> WaitForWindowResolutionAsync(
+        string leaseId, TimeSpan ttl, CancellationToken ct)
+    {
+        // Register before send is the caller's responsibility (worker
+        // registers, sends, awaits). Registration is idempotent --
+        // duplicate lease_id from a buggy server replaces the prior TCS
+        // (the prior await is left dangling and times out on its TTL).
+        var tcs = new TaskCompletionSource<HelperWindowResolution>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _windowHolds[leaseId] = tcs;
+        try
+        {
+            using var ttlCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            ttlCts.CancelAfter(ttl);
+            try
+            {
+                return await tcs.Task.WaitAsync(ttlCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return new HelperWindowResolution(
+                    HelperWindowOutcome.TtlExpired,
+                    UploadUrlOverride: null,
+                    DropReason: WireConstants.HelperDropReasonClientTtlExpired);
+            }
+        }
+        finally
+        {
+            _windowHolds.TryRemove(leaseId, out _);
+        }
+    }
+
+    // Adapter so worker code can pass `this` as IHelperLeaseChannel without
+    // MeshClient itself implementing the interface publicly (keeps the
+    // partial class's public surface unchanged).
+    private sealed class HelperLeaseChannelAdapter : IHelperLeaseChannel
+    {
+        private readonly MeshClient _owner;
+        public HelperLeaseChannelAdapter(MeshClient owner) { _owner = owner; }
+        public bool WindowPullEnabled => _owner.WindowPullEnabled;
+        public Task SendWindowReadyAsync(HelperWindowReadyFrame frame, CancellationToken ct)
+            => _owner.SendWindowReadyAsync(frame, ct);
+        public Task<HelperWindowResolution> WaitForWindowResolutionAsync(
+            string leaseId, TimeSpan ttl, CancellationToken ct)
+            => _owner.WaitForWindowResolutionAsync(leaseId, ttl, ct);
     }
 
     private static string HelperStatusWord(AppSettings settings, FfmpegCapabilityProbeResult probe)
@@ -596,25 +686,55 @@ internal sealed partial class MeshClient : IAsyncDisposable
         _ = Task.Run(async () =>
         {
             HelperLeaseRunResult result;
+            bool slotAcquired = false;
             try
             {
-                result = await HelperLeaseWorker.RunAsync(
-                    lease,
-                    AppSettingsStore.Shared.Snapshot(),
-                    AppContext.BaseDirectory,
-                    _httpClient,
-                    CancellationToken.None).ConfigureAwait(false);
+                // Bound concurrent leases at the client. Server's
+                // InFlightLimit governs how many leases will be issued
+                // simultaneously to one helper; this mirror keeps us
+                // honest if a server bug ever issues over the cap.
+                // QueueAsync would be cleaner but we want a hard reject
+                // (not a queue-back-pressure) since the server has
+                // already moved on by the time we'd dequeue.
+                if (!s_leaseSlots.Wait(0))
+                {
+                    result = new HelperLeaseRunResult(
+                        false,
+                        "client_inflight_busy",
+                        "client lease slots exhausted",
+                        0, 0, null, null);
+                }
+                else
+                {
+                    slotAcquired = true;
+                    Interlocked.Increment(ref _leaseQueueDepth);
+                    try
+                    {
+                        result = await HelperLeaseWorker.RunAsync(
+                            lease,
+                            AppSettingsStore.Shared.Snapshot(),
+                            AppContext.BaseDirectory,
+                            _httpClient,
+                            new HelperLeaseChannelAdapter(this),
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        result = new HelperLeaseRunResult(
+                            false,
+                            "error",
+                            ex.GetType().Name + ": " + ex.Message,
+                            0, 0, null, null);
+                    }
+                }
             }
-            catch (Exception ex)
+            finally
             {
-                result = new HelperLeaseRunResult(
-                    false,
-                    "error",
-                    ex.GetType().Name + ": " + ex.Message,
-                    0,
-                    0,
-                    null,
-                    null);
+                if (slotAcquired)
+                {
+                    Interlocked.Decrement(ref _leaseQueueDepth);
+                    s_leaseSlots.Release();
+                }
             }
 
             var frame = new HelperTranscodeResultFrame
@@ -627,6 +747,8 @@ internal sealed partial class MeshClient : IAsyncDisposable
                 ElapsedMs = result.ElapsedMilliseconds,
                 Encoder = result.Encoder,
                 FfmpegVersion = result.FfmpegVersion,
+                Phase = result.Phase,
+                HeldMs = result.HeldMs,
             };
 
             string resultLine = "[mesh][helper] result sent lease=" + LogUtil.SanitizeForConsole(lease.LeaseId, 64)
