@@ -233,6 +233,106 @@ public class FfmpegHelperTests
         Assert.Equal("p5", command.Arguments[presetIndex + 1]);
     }
 
+    // Audio mapping is the load-bearing flag for the 2026-05-22 Tubi
+    // no-sound incident: when has_audio=false reaches the helper, the
+    // command must inject a silent lavfi input AND map from that input
+    // (1:a:0). When has_audio=true the command must map the input's own
+    // audio (0:a:0?) with the optional-suffix so a video-only source
+    // doesn't kill the encode. These tests pin both shapes so a future
+    // refactor of the synthetic-silence branch cannot silently swap them.
+
+    [Fact]
+    public void BuildSegmentCommand_WithHasAudioTrue_MapsInputAudio()
+    {
+        var lease = NewLease();
+        var encoder = new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC");
+
+        TranscodeFfmpegCommand command = TranscodeWorkerProcess.BuildSegmentCommand(
+            "ffmpeg.exe", lease, encoder, "seg.ts",
+            targetWidth: 1280, targetHeight: 720, targetBitrateKbps: 2800,
+            hasAudio: true);
+
+        AssertOrderedTokens(command.Arguments, "-map", "0:a:0?");
+        Assert.DoesNotContain(command.Arguments, a => a.StartsWith("anullsrc", StringComparison.Ordinal));
+        Assert.DoesNotContain("-shortest", command.Arguments);
+        // Exactly one input URL on the command line.
+        Assert.Equal(1, CountTokenOccurrences(command.Arguments, "-i"));
+    }
+
+    [Fact]
+    public void BuildSegmentCommand_WithHasAudioFalse_AddsSyntheticSilenceAndMapsIt()
+    {
+        var lease = NewLease();
+        var encoder = new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC");
+
+        TranscodeFfmpegCommand command = TranscodeWorkerProcess.BuildSegmentCommand(
+            "ffmpeg.exe", lease, encoder, "seg.ts",
+            targetWidth: 1280, targetHeight: 720, targetBitrateKbps: 2800,
+            hasAudio: false);
+
+        Assert.Contains(command.Arguments, a => a.StartsWith(
+            "anullsrc=channel_layout=stereo:sample_rate=48000",
+            StringComparison.Ordinal));
+        AssertOrderedTokens(command.Arguments, "-map", "1:a:0");
+        Assert.Contains("-shortest", command.Arguments);
+        // Two inputs: the source video, then the synthetic silence track.
+        Assert.Equal(2, CountTokenOccurrences(command.Arguments, "-i"));
+    }
+
+    [Fact]
+    public void BuildSegmentCommand_AlwaysPinsAacAudioParameters()
+    {
+        TranscodeFfmpegCommand command = BuildSegmentCommand(HardwareEncoderBackend.Nvenc, "h264_nvenc");
+
+        AssertOrderedTokens(command.Arguments, "-c:a", "aac");
+        AssertOrderedTokens(command.Arguments, "-b:a", "128k");
+        AssertOrderedTokens(command.Arguments, "-ac", "2");
+        AssertOrderedTokens(command.Arguments, "-ar", "48000");
+    }
+
+    [Fact]
+    public void BuildSegmentCommand_SoftwareFallbackHonorsHasAudioFlag()
+    {
+        var lease = NewLease();
+        var encoder = new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC");
+
+        TranscodeFfmpegCommand withAudio = TranscodeWorkerProcess.BuildSegmentCommandSoftwareFallback(
+            "ffmpeg.exe", lease, encoder, "seg.ts",
+            targetWidth: 640, targetHeight: 360, targetBitrateKbps: 900,
+            hasAudio: true);
+        AssertOrderedTokens(withAudio.Arguments, "-map", "0:a:0?");
+        Assert.DoesNotContain(withAudio.Arguments, a => a.StartsWith("anullsrc", StringComparison.Ordinal));
+
+        TranscodeFfmpegCommand withoutAudio = TranscodeWorkerProcess.BuildSegmentCommandSoftwareFallback(
+            "ffmpeg.exe", lease, encoder, "seg.ts",
+            targetWidth: 640, targetHeight: 360, targetBitrateKbps: 900,
+            hasAudio: false);
+        Assert.Contains(withoutAudio.Arguments, a => a.StartsWith("anullsrc", StringComparison.Ordinal));
+        AssertOrderedTokens(withoutAudio.Arguments, "-map", "1:a:0");
+    }
+
+    private static int CountTokenOccurrences(IReadOnlyList<string> args, string token)
+    {
+        int n = 0;
+        foreach (string a in args)
+            if (a == token) n++;
+        return n;
+    }
+
+    // Asserts that `second` appears immediately after `first` somewhere
+    // in the argument list. ffmpeg argv pairs are positional (e.g. -map
+    // value), so adjacency is the right invariant -- not just "both
+    // present somewhere".
+    private static void AssertOrderedTokens(IReadOnlyList<string> args, string first, string second)
+    {
+        for (int i = 0; i < args.Count - 1; i++)
+        {
+            if (args[i] == first && args[i + 1] == second) return;
+        }
+        Assert.Fail($"Expected '{first} {second}' adjacent in ffmpeg argv; got: "
+            + string.Join(" ", args));
+    }
+
     [Fact]
     public void HelperBenchmark_SelectsHighestPassingQuality()
     {
