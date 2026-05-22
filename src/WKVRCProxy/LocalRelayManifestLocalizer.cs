@@ -201,9 +201,18 @@ internal static partial class LocalRelayManifestLocalizer
     private static bool LooksLikeManifestPath(string path)
     {
         string fileName = Path.GetFileName(path);
-        return fileName.StartsWith("manifest.", StringComparison.OrdinalIgnoreCase)
-            || fileName.Equals("manifest", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("/manifest.", StringComparison.OrdinalIgnoreCase);
+        if (fileName.Equals("manifest", StringComparison.OrdinalIgnoreCase))
+            return true;
+        // A "manifest.<ext>" filename is only a manifest when <ext> is one of
+        // the known manifest extensions. The relay also constructs
+        // /play/<id>/manifest.mp4 for progressive MP4 responses, and the
+        // previous unconditional StartsWith branch swept those into the
+        // streaming text rewriter -- the response then went out as
+        // Transfer-Encoding: chunked with no Content-Length and AVPro/WMF
+        // disconnected on the first byte without playing anything.
+        if (fileName.StartsWith("manifest.", StringComparison.OrdinalIgnoreCase))
+            return HasManifestExtension(fileName);
+        return false;
     }
 
     private static bool TryGetUriPath(string url, out string path)

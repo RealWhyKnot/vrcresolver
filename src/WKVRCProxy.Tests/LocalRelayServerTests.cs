@@ -360,9 +360,28 @@ public class LocalRelayServerTests
     }
 
     [Theory]
+    // Plain m3u8 / mpd extensions always classify as manifests.
     [InlineData("/play/a/manifest.m3u8", "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc", "text/plain", true)]
+    [InlineData("/play/a/index.m3u8", "https://node1.whyknot.dev/api/proxy/index.m3u8", "application/vnd.apple.mpegurl", true)]
+    [InlineData("/play/a/manifest.mpd", "https://node1.whyknot.dev/api/proxy/manifest.mpd", "application/dash+xml", true)]
+    // Query strings don't break the extension probe.
+    [InlineData("/play/a/manifest.m3u8?token=abc", "https://node1.whyknot.dev/api/proxy/manifest.m3u8?token=abc", "application/vnd.apple.mpegurl", true)]
+    // Local path has a non-manifest extension; targetUrl carries .m3u8 -- second branch catches it.
     [InlineData("/play/a/manifest.bin", "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc", "application/octet-stream", true)]
+    // Bare "manifest" (no extension) is treated as a manifest -- some providers ship that.
+    [InlineData("/play/a/manifest", "https://node1.whyknot.dev/api/proxy/manifest", "application/vnd.apple.mpegurl", true)]
+    // /manifest.mp4 was the 2026-05-22 YouTube load_failure bug: the
+    // relay's own progressive-MP4 URL pattern was treated as an HLS
+    // manifest, run through the line-by-line text rewriter, and shipped
+    // as Transfer-Encoding: chunked with no Content-Length, so WMF/NSPlayer
+    // disconnected on the first byte.
+    [InlineData("/play/a/manifest.mp4", "https://node1.whyknot.dev/api/proxy/manifest.mp4?q=abc", "video/mp4", false)]
+    [InlineData("/play/a/MANIFEST.MP4", "https://node1.whyknot.dev/api/proxy/manifest.mp4?q=abc", "video/mp4", false)]
+    // Segment URLs never qualify as manifests, regardless of "manifest" appearing in path.
     [InlineData("/play/a/seg.ts", "https://node1.whyknot.dev/api/proxy/seg.ts?url=abc", "video/mp2t", false)]
+    [InlineData("/play/a/manifest_archive/seg.ts", "https://node1.whyknot.dev/api/proxy/seg.ts", "video/mp2t", false)]
+    // Content-type fallback: a .ts URL that's actually an m3u8 (Tubi pattern) still classifies.
+    [InlineData("/play/a/foo.ts", "https://example.test/playlist.ts", "application/vnd.apple.mpegurl", true)]
     public void ManifestLocalizer_DetectsOnlyManifestShapes(
         string localPath,
         string targetUrl,
