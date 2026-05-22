@@ -20,6 +20,8 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **helper:** Route seg 0 through software decode + reject empty output (0aca4ac)
 - **helper:** Widen NVDEC pool to 32 + retry truncated video via software (ab18327)
 - **helper:** Run video-duration check on every decode path (f66790f)
+- **helper:** Fall back to container duration when stream tag missing (b39602a)
+- **relay:** Scope manifest classification to .m3u8/.mpd extensions (d23943d)
 
 ---
 
