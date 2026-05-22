@@ -14,6 +14,8 @@ Release entries are listed newest first. This changelog starts with the first pu
 ### Added
 - **helper:** Surface helper_eligibility_skipped frames on watchdog console (f402c53)
 - **helper:** Hold-and-announce flow for window-pull leases (100e71f)
+- **updater:** Opt-in to prereleases for both startup nudge and updater (44d6b81)
+- **wrapper:** Reactive og fallback on observed AVPro load_failure (59dc5d7)
 
 ### Changed
 - **helper:** Hardcode GPU throttle; refuse integrated GPUs (79439bd)
