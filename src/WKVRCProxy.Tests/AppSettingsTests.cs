@@ -21,6 +21,24 @@ public class AppSettingsTests
     }
 
     [Fact]
+    public void IncludePrereleases_DefaultsOff()
+    {
+        var settings = new AppSettings().Normalize();
+        Assert.False(settings.Maintenance.IncludePrereleases);
+    }
+
+    [Fact]
+    public void IncludePrereleases_IsExposedAsToggle()
+    {
+        Assert.True(AppSettingsRegistry.TryFind("include-prereleases", out var setting));
+        var settings = new AppSettings().Normalize();
+        Assert.True(setting!.TrySet(settings, "on", out string err), err);
+        Assert.True(settings.Maintenance.IncludePrereleases);
+        Assert.True(setting.TrySet(settings, "off", out err), err);
+        Assert.False(settings.Maintenance.IncludePrereleases);
+    }
+
+    [Fact]
     public void GpuLimitSetting_NoLongerExposed()
     {
         // Removed 2026-05-22: GpuLimitPercent was confusingly named (read as

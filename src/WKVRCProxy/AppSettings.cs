@@ -111,10 +111,19 @@ internal sealed class MaintenanceAppSettings
     [JsonPropertyName("codec_auto_install")]
     public bool CodecAutoInstall { get; set; } = true;
 
+    // Opt-in to picking up GitHub prereleases on both the startup
+    // "version X is available" nudge AND the WKVRCProxy.Updater
+    // exchange. Default false so the stable channel keeps its
+    // hands-off behaviour; flipping on widens the scope of
+    // "newer release" to anything tagged prerelease.
+    [JsonPropertyName("include_prereleases")]
+    public bool IncludePrereleases { get; set; }
+
     public MaintenanceAppSettings Clone() => new()
     {
         UpdateCheck = UpdateCheck,
         CodecAutoInstall = CodecAutoInstall,
+        IncludePrereleases = IncludePrereleases,
     };
 
     public void Normalize()

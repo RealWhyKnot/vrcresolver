@@ -136,6 +136,22 @@ internal static class AppSettingsRegistry
             aliases: ["updates", "maintenance.update-check"]),
 
         new AppSettingDefinition(
+            "include-prereleases",
+            "Offer prereleases when checking for new versions.",
+            ["on", "off"],
+            static s => FormatBool(s.Maintenance.IncludePrereleases),
+            static (AppSettings s, string value, out string error) =>
+            {
+                if (!TryParseBool(value, out bool parsed, out error)) return false;
+                s.Maintenance.IncludePrereleases = parsed;
+                return true;
+            },
+            static s => s.Maintenance.IncludePrereleases = s_defaults.Maintenance.IncludePrereleases,
+            restartRequired: true,
+            completionValues: ["on", "off"],
+            aliases: ["prereleases", "prerelease", "beta", "maintenance.include-prereleases"]),
+
+        new AppSettingDefinition(
             "video-support-updates",
             "Keep playback compatibility helpers current.",
             ["on", "off"],

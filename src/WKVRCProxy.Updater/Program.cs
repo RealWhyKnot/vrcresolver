@@ -23,7 +23,13 @@ namespace WKVRCProxy.Updater;
 internal static partial class Program
 {
     private const string Repo = "RealWhyKnot/WKVRCProxy";
-    private const string ApiUrl = "https://api.github.com/repos/" + Repo + "/releases/latest";
+    // /releases/latest skips prereleases by GitHub convention. The list
+    // endpoint includes them; we filter ourselves when the user has not
+    // opted in via Maintenance.IncludePrereleases. The opt-in is read
+    // directly from settings.json on disk (the Updater is a separate
+    // process and can't share AppSettingsStore with the watchdog).
+    private const string StableLatestUrl = "https://api.github.com/repos/" + Repo + "/releases/latest";
+    private const string AnyReleasesUrl = "https://api.github.com/repos/" + Repo + "/releases?per_page=10";
     private const string WatchdogExeName = "WKVRCProxy.exe";
     private const int PromptTimeoutSec = 15;
 
@@ -173,6 +179,8 @@ internal static partial class Program
 
     private static async Task<(Version Latest, string ZipUrl, string TagName, string? Sha256)> FetchLatestAsync()
     {
+        bool includePrereleases = ReadIncludePrereleasesFromSettings();
+
         // Explicit handler so corp-proxy / NTLM environments inherit Windows
         // credentials (default HttpClient leaves UseDefaultCredentials=false
         // and gets 407 Proxy Auth Required). Auto-redirect capped at 5 to
@@ -186,8 +194,9 @@ internal static partial class Program
         using var http = new HttpClient(handler) { Timeout = FetchTimeout };
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("WKVRCProxy-Updater", "1.0"));
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        Logger.WriteFileOnly("[updater] GET " + ApiUrl);
-        using var resp = await http.GetAsync(ApiUrl);
+        string apiUrl = includePrereleases ? AnyReleasesUrl : StableLatestUrl;
+        Logger.WriteFileOnly("[updater] GET " + apiUrl + (includePrereleases ? " (include-prereleases=on)" : ""));
+        using var resp = await http.GetAsync(apiUrl);
         Logger.WriteFileOnly("[updater] response status=" + (int)resp.StatusCode + " content-type="
             + (resp.Content.Headers.ContentType?.ToString() ?? "<none>"));
         resp.EnsureSuccessStatusCode();
@@ -205,11 +214,16 @@ internal static partial class Program
         }
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        string tag = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
+        JsonElement releaseElement = includePrereleases
+            ? PickHighestRelease(doc.RootElement)
+              ?? throw new InvalidOperationException("No releases returned by GitHub.")
+            : doc.RootElement;
+
+        string tag = releaseElement.GetProperty("tag_name").GetString() ?? "";
         Version v = ParseTagVersion(tag);
 
         string zipUrl = "";
-        foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
+        foreach (var asset in releaseElement.GetProperty("assets").EnumerateArray())
         {
             string name = asset.GetProperty("name").GetString() ?? "";
             if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
@@ -224,13 +238,76 @@ internal static partial class Program
 
         // Pull the SHA256: <hex> line out of the release body. release.yml
         // always emits one; releases published by other paths won't.
-        string body = doc.RootElement.TryGetProperty("body", out var b) ? (b.GetString() ?? "") : "";
+        string body = releaseElement.TryGetProperty("body", out var b) ? (b.GetString() ?? "") : "";
         var match = Sha256Line.Match(body);
         string? sha = match.Success ? match.Groups[1].Value : null;
         Logger.WriteFileOnly("[updater] sha256-line "
             + (sha != null ? "matched (" + sha.Length + " chars)" : "absent"));
 
         return (v, zipUrl, tag, sha);
+    }
+
+    // Read just the maintenance.include_prereleases flag straight from
+    // settings.json on disk. The Updater is a standalone process so it
+    // can't share AppSettingsStore with the watchdog; a one-shot
+    // JsonDocument lookup keeps the AOT build clean (no source-gen
+    // needed for one bool). Defaults to false on any read/parse error.
+    private static bool ReadIncludePrereleasesFromSettings()
+    {
+        try
+        {
+            string path = Path.Combine(WkvrcPaths.StateRoot(), "settings.json");
+            if (!File.Exists(path)) return false;
+            using var stream = File.OpenRead(path);
+            using var doc = JsonDocument.Parse(stream);
+            if (!doc.RootElement.TryGetProperty("maintenance", out var maint)) return false;
+            if (!maint.TryGetProperty("include_prereleases", out var flag)) return false;
+            return flag.ValueKind == JsonValueKind.True;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // List endpoint returns releases newest-published first, which isn't
+    // necessarily highest-version. Pick the entry with the largest
+    // parseable version so a late stable patch on an old major still
+    // wins over a more-recently-published prerelease of the new major.
+    // Ties (same numeric version with different prerelease flag) resolve
+    // to the stable entry -- matches UpdateCheck.PickHighestFromList in
+    // the watchdog so both surfaces agree on which release to install.
+    internal static JsonElement? PickHighestRelease(JsonElement list)
+    {
+        if (list.ValueKind != JsonValueKind.Array) return null;
+        Version? bestVersion = null;
+        bool bestIsPrerelease = false;
+        JsonElement? best = null;
+        foreach (JsonElement entry in list.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            if (!entry.TryGetProperty("tag_name", out var tagEl)) continue;
+            string tag = tagEl.GetString() ?? "";
+            string numeric = tag.TrimStart('v', 'V');
+            int dash = numeric.IndexOf('-');
+            if (dash >= 0) numeric = numeric[..dash];
+            if (!Version.TryParse(numeric, out Version? parsed)) continue;
+
+            bool pre = entry.TryGetProperty("prerelease", out var preEl)
+                && preEl.ValueKind == JsonValueKind.True;
+
+            if (bestVersion != null)
+            {
+                int cmp = parsed.CompareTo(bestVersion);
+                if (cmp < 0) continue;
+                if (cmp == 0 && (pre || !bestIsPrerelease)) continue;
+            }
+
+            bestVersion = parsed;
+            bestIsPrerelease = pre;
+            best = entry;
+        }
+        return best;
     }
 
     private static bool PromptUpdate()
