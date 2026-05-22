@@ -33,11 +33,13 @@ if ($Version) {
     # Accepted shapes:
     #   YYYY.M.D.N            release
     #   YYYY.M.D.N-XXXX       local dev rebuild (4 hex)
-    #   YYYY.M.D.N-betaN      prerelease (matches release.yml's '*-beta*'
+    #   YYYY.M.D.N-beta       prerelease (matches release.yml's '*-beta*'
     #                         detector which adds --prerelease on the
     #                         GitHub release)
-    if ($Version -notmatch '^\d{4}\.\d+\.\d+\.\d+(-([A-Fa-f0-9]{4}|beta\d*))?$') {
-        throw "Invalid -Version '$Version'. Expected YYYY.M.D.N (release), YYYY.M.D.N-XXXX (dev), or YYYY.M.D.N-betaN (prerelease)."
+    # For a second prerelease against the same numeric base, bump the
+    # patch instead of numbering the suffix (e.g. 2026.5.22.1-beta).
+    if ($Version -notmatch '^\d{4}\.\d+\.\d+\.\d+(-([A-Fa-f0-9]{4}|beta))?$') {
+        throw "Invalid -Version '$Version'. Expected YYYY.M.D.N (release), YYYY.M.D.N-XXXX (dev), or YYYY.M.D.N-beta (prerelease)."
     }
     $FullVersion = $Version
 } else {
