@@ -16,6 +16,16 @@ internal readonly record struct HelperThrottleDecision(
 
 internal static class HelperSelfThrottle
 {
+    // Hardcoded back-off threshold. Helper yields when the overall GPU is
+    // this percent busy or higher. The previous user-tunable GpuLimitPercent
+    // (5..75) was confusingly named and almost universally misread as "max %
+    // the helper itself uses." It isn't: helper encode runs on the dedicated
+    // NVENC / VCN block independent of the render pipeline, so the cost to
+    // the game is near zero in practice. A high threshold (95%) gives the
+    // helper near-free reign and still yields when the system is genuinely
+    // saturated.
+    private const int GpuPauseThresholdPercent = 95;
+
     public static HelperThrottleDecision Evaluate(AppSettings settings, HelperRuntimeSignals signals)
     {
         if (settings == null)
@@ -31,8 +41,7 @@ internal static class HelperSelfThrottle
         if (signals.ConsecutiveFailures >= 3)
             return Pause("cooldown", "worker errors");
 
-        int gpuLimit = settings.Helper.GpuLimitPercent;
-        if (signals.GpuBusyPercent >= Math.Min(95, 100 - Math.Max(5, gpuLimit / 2)))
+        if (signals.GpuBusyPercent >= GpuPauseThresholdPercent)
             return Pause("paused", "GPU busy");
 
         if (signals.CpuBusyPercent >= 90)

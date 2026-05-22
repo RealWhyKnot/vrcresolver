@@ -278,9 +278,9 @@ public class ProtocolRoundTripTests
             CanEncodeH264 = true,
             Status = "idle",
             FfmpegVersion = "7.1.1",
-            Encoder = "h264_qsv",
-            EncoderBackend = "qsv",
-            GpuLimitPercent = 25,
+            Encoder = "h264_nvenc",
+            EncoderBackend = "nvenc",
+            GpuLimitPercent = 0,
             UploadLimitMbps = 0,
             AllowOnBattery = false,
         };
@@ -291,8 +291,10 @@ public class ProtocolRoundTripTests
         Assert.Equal("helper_status", doc.RootElement.GetProperty("action").GetString());
         Assert.True(doc.RootElement.GetProperty("sharing").GetBoolean());
         Assert.True(doc.RootElement.GetProperty("can_encode_h264").GetBoolean());
-        Assert.Equal("h264_qsv", doc.RootElement.GetProperty("encoder").GetString());
-        Assert.Equal(25, doc.RootElement.GetProperty("gpu_limit_percent").GetInt32());
+        Assert.Equal("h264_nvenc", doc.RootElement.GetProperty("encoder").GetString());
+        // Wire field retained (older servers still read it). Always 0 now;
+        // the client no longer exposes a user-tunable GPU limit.
+        Assert.Equal(0, doc.RootElement.GetProperty("gpu_limit_percent").GetInt32());
     }
 
     [Fact]

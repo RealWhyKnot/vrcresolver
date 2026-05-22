@@ -127,9 +127,6 @@ internal sealed class HelperAppSettings
     [JsonPropertyName("gpu_sharing")]
     public bool GpuSharing { get; set; } = true;
 
-    [JsonPropertyName("gpu_limit_percent")]
-    public int GpuLimitPercent { get; set; } = 25;
-
     [JsonPropertyName("upload_limit_mbps")]
     public int UploadLimitMbps { get; set; }
 
@@ -148,7 +145,6 @@ internal sealed class HelperAppSettings
     public HelperAppSettings Clone() => new()
     {
         GpuSharing = GpuSharing,
-        GpuLimitPercent = GpuLimitPercent,
         UploadLimitMbps = UploadLimitMbps,
         AllowOnBattery = AllowOnBattery,
         EncodingQuality = EncodingQuality,
@@ -157,7 +153,6 @@ internal sealed class HelperAppSettings
 
     public void Normalize()
     {
-        GpuLimitPercent = Math.Clamp(GpuLimitPercent, 5, 75);
         UploadLimitMbps = Math.Clamp(UploadLimitMbps, 0, 500);
         EncodingQuality = HelperEncodingQualityNames.Format(
             HelperEncodingQualityNames.ParseOrAuto(EncodingQuality));

@@ -24,21 +24,6 @@ internal static class AppSettingsRegistry
             aliases: ["gpu-sharing", "helper.gpu-sharing"]),
 
         new AppSettingDefinition(
-            "gpu-limit",
-            "Maximum GPU share used for video repair.",
-            ["number from 5 to 75; shown as %"],
-            static s => s.Helper.GpuLimitPercent.ToString(CultureInfo.InvariantCulture) + "%",
-            static (AppSettings s, string value, out string error) =>
-            {
-                if (!TryParsePercent(value, 5, 75, out int parsed, out error)) return false;
-                s.Helper.GpuLimitPercent = parsed;
-                return true;
-            },
-            static s => s.Helper.GpuLimitPercent = s_defaults.Helper.GpuLimitPercent,
-            completionValues: ["5", "10", "25", "50", "75"],
-            aliases: ["gpu", "gpu-percent", "helper.gpu-limit"]),
-
-        new AppSettingDefinition(
             "upload-limit",
             "Maximum upload speed used for sharing.",
             ["number from 0 to 500; 0 means automatic; shown as MB/s"],

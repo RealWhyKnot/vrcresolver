@@ -33,18 +33,83 @@ public class FfmpegHelperTests
     }
 
     [Fact]
-    public void HardwareEncoderProbe_PrefersQsvWhenAvailableToReduceDiscreteGpuContention()
+    public void ChoosePreferred_PicksNvencOverEverything()
     {
         var encoders = new[]
         {
+            new HardwareEncoderCapability("h264_amf", HardwareEncoderBackend.Amf, "AMD AMF"),
             new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC"),
             new HardwareEncoderCapability("h264_qsv", HardwareEncoderBackend.Qsv, "Intel QSV"),
+            new HardwareEncoderCapability("h264_mf", HardwareEncoderBackend.MediaFoundation, "Windows MF"),
         };
 
         HardwareEncoderCapability? selected = HardwareEncoderProbe.ChoosePreferred(encoders);
 
         Assert.NotNull(selected);
         Assert.Equal(HardwareEncoderBackend.Nvenc, selected!.Value.Backend);
+    }
+
+    [Fact]
+    public void ChoosePreferred_PicksAmfWhenNvencAbsent()
+    {
+        var encoders = new[]
+        {
+            new HardwareEncoderCapability("h264_amf", HardwareEncoderBackend.Amf, "AMD AMF"),
+            new HardwareEncoderCapability("h264_qsv", HardwareEncoderBackend.Qsv, "Intel QSV"),
+        };
+
+        HardwareEncoderCapability? selected = HardwareEncoderProbe.ChoosePreferred(encoders);
+
+        Assert.NotNull(selected);
+        Assert.Equal(HardwareEncoderBackend.Amf, selected!.Value.Backend);
+    }
+
+    // Integrated-GPU-only systems (Intel iGPU via QSV, or generic MediaFoundation
+    // fallback) refuse to participate as helpers: the encoder block shares
+    // silicon with the user's game render pipeline and accepting work would
+    // cost real frames in-headset. The helper opts out of co-watching entirely
+    // on these systems rather than offering a degraded share.
+    [Fact]
+    public void ChoosePreferred_ReturnsNull_WhenOnlyIntelQsvAvailable()
+    {
+        var encoders = new[]
+        {
+            new HardwareEncoderCapability("h264_qsv", HardwareEncoderBackend.Qsv, "Intel QSV"),
+        };
+
+        Assert.Null(HardwareEncoderProbe.ChoosePreferred(encoders));
+    }
+
+    [Fact]
+    public void ChoosePreferred_ReturnsNull_WhenOnlyMediaFoundationAvailable()
+    {
+        var encoders = new[]
+        {
+            new HardwareEncoderCapability("h264_mf", HardwareEncoderBackend.MediaFoundation, "Windows MF"),
+        };
+
+        Assert.Null(HardwareEncoderProbe.ChoosePreferred(encoders));
+    }
+
+    [Fact]
+    public void ChoosePreferred_ReturnsNull_WhenOnlyQsvAndMfAvailable()
+    {
+        var encoders = new[]
+        {
+            new HardwareEncoderCapability("h264_qsv", HardwareEncoderBackend.Qsv, "Intel QSV"),
+            new HardwareEncoderCapability("h264_mf", HardwareEncoderBackend.MediaFoundation, "Windows MF"),
+        };
+
+        Assert.Null(HardwareEncoderProbe.ChoosePreferred(encoders));
+    }
+
+    [Fact]
+    public void IsDedicatedGpuBackend_AcceptsDiscreteEncodersOnly()
+    {
+        Assert.True(HardwareEncoderProbe.IsDedicatedGpuBackend(HardwareEncoderBackend.Nvenc));
+        Assert.True(HardwareEncoderProbe.IsDedicatedGpuBackend(HardwareEncoderBackend.Amf));
+        Assert.False(HardwareEncoderProbe.IsDedicatedGpuBackend(HardwareEncoderBackend.Qsv));
+        Assert.False(HardwareEncoderProbe.IsDedicatedGpuBackend(HardwareEncoderBackend.MediaFoundation));
     }
 
     [Fact]
@@ -87,6 +152,29 @@ public class FfmpegHelperTests
         Assert.NotNull(result.PreferredEncoder);
         Assert.Equal(HardwareEncoderBackend.Nvenc, result.PreferredEncoder!.Value.Backend);
         Assert.Equal("7.1.1-full_build-www.gyan.dev", result.Version!.Value.Version);
+    }
+
+    [Fact]
+    public void FfmpegCapabilityProbe_FromOutputsRefusesIntegratedOnlySystem()
+    {
+        var location = new FfmpegLocation("ffmpeg.exe", FfmpegLocationKind.Path);
+        FfmpegCapabilityProbeResult result = FfmpegCapabilityProbe.FromOutputs(
+            location,
+            "ffmpeg version 7.1.1",
+            """
+            Encoders:
+             V..... h264_qsv             Intel Quick Sync Video H.264 encoder
+             V..... h264_mf              Windows MediaFoundation H.264 encoder
+            """);
+
+        Assert.True(result.HasFfmpeg);
+        Assert.False(result.CanUseHardwareH264);
+        Assert.Equal(FfmpegCapabilityProbeStatus.NoHardwareEncoder, result.Status);
+        Assert.Null(result.PreferredEncoder);
+        Assert.Contains("integrated-GPU", result.Message);
+        // The encoders list is still populated so logs / telemetry see what
+        // was found before it was refused.
+        Assert.Equal(2, result.Encoders.Count);
     }
 
     [Fact]
@@ -443,6 +531,50 @@ public class FfmpegHelperTests
 
         Assert.True(decision.CanAcceptWork);
         Assert.Equal("idle", decision.State);
+    }
+
+    // The previous configurable GpuLimitPercent (5..75) is gone -- helper now
+    // uses a hardcoded back-off threshold. Pin both the runs-at-typical-load
+    // case (was previously rejected at default 25 / 88% threshold) and the
+    // pauses-at-near-saturation case so future tweaks to the constant remain
+    // visible in CI.
+    [Fact]
+    public void HelperSelfThrottle_RunsAtModerateGpuLoad()
+    {
+        var settings = new AppSettings().Normalize();
+
+        HelperThrottleDecision decision = HelperSelfThrottle.Evaluate(
+            settings,
+            new HelperRuntimeSignals(
+                OnBattery: false,
+                VrChatRunning: true,
+                GpuBusyPercent: 80, // game using most of the GPU; helper still allowed
+                CpuBusyPercent: 30,
+                ThermalHeadroomPercent: 50,
+                UploadQueueBytes: 0,
+                ConsecutiveFailures: 0));
+
+        Assert.True(decision.CanAcceptWork);
+    }
+
+    [Fact]
+    public void HelperSelfThrottle_PausesWhenGpuNearSaturation()
+    {
+        var settings = new AppSettings().Normalize();
+
+        HelperThrottleDecision decision = HelperSelfThrottle.Evaluate(
+            settings,
+            new HelperRuntimeSignals(
+                OnBattery: false,
+                VrChatRunning: true,
+                GpuBusyPercent: 96, // system genuinely saturated -- helper yields
+                CpuBusyPercent: 30,
+                ThermalHeadroomPercent: 50,
+                UploadQueueBytes: 0,
+                ConsecutiveFailures: 0));
+
+        Assert.False(decision.CanAcceptWork);
+        Assert.Equal("GPU busy", decision.Reason);
     }
 
     private static TranscodeLease NewLease()

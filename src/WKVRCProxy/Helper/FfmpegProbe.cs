@@ -123,12 +123,15 @@ internal static class HardwareEncoderProbe
         if (encoders == null || encoders.Count == 0)
             return null;
 
+        // Integrated-only encoders (Intel QSV, Windows MediaFoundation) are
+        // refused: their throughput shares silicon with the game's
+        // render/compute pipeline, so accepting a helper lease costs frames
+        // in the very world the user is in. Discrete NVENC / AMD VCN have a
+        // dedicated encoder block independent from the render path.
         HardwareEncoderBackend[] order =
         [
             HardwareEncoderBackend.Nvenc,
             HardwareEncoderBackend.Amf,
-            HardwareEncoderBackend.Qsv,
-            HardwareEncoderBackend.MediaFoundation,
         ];
 
         foreach (HardwareEncoderBackend backend in order)
@@ -138,8 +141,14 @@ internal static class HardwareEncoderProbe
                     return encoders[i];
         }
 
-        return encoders[0];
+        return null;
     }
+
+    // Whether a given encoder backend lives on a dedicated GPU silicon block
+    // suitable for the helper. Caller-facing predicate used by FfmpegCapabilityProbe
+    // to emit refused-encoder log lines when an integrated-only system is detected.
+    public static bool IsDedicatedGpuBackend(HardwareEncoderBackend backend) =>
+        backend is HardwareEncoderBackend.Nvenc or HardwareEncoderBackend.Amf;
 
     private static bool ContainsEncoder(string output, string encoderName)
     {

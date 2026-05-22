@@ -6,9 +6,55 @@ namespace WKVRCProxy.Tests;
 public class FfmpegCapabilityProbeTests
 {
     // Simulate a smoke runner where the first encoder (nvenc) always fails,
-    // second (qsv) always passes. Verifies the demotion + retry logic.
+    // second (amf) always passes. Verifies the demotion + retry logic
+    // across the two discrete-GPU backends. Integrated backends (qsv, mf)
+    // are no longer eligible at all, so they don't participate in the
+    // demote-and-retry chain.
     [Fact]
     public async Task SmokeTest_DemotesFailingEncoderAndTriesNext()
+    {
+        var nvenc = new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC");
+        var amf = new HardwareEncoderCapability("h264_amf", HardwareEncoderBackend.Amf, "AMD AMF");
+        var location = new FfmpegLocation("ffmpeg.exe", FfmpegLocationKind.Bundled);
+
+        var base_ = new FfmpegCapabilityProbeResult(
+            location,
+            new FfmpegVersionInfo("ffmpeg version 7.1", "7.1"),
+            new[] { nvenc, amf },
+            nvenc,
+            FfmpegCapabilityProbeStatus.Ready,
+            "ok");
+
+        var attemptLog = new List<string>();
+        FfmpegSmokeRunner runner = (_, args, _, _) =>
+        {
+            // The encoder name is the argument after "-c:v"
+            var argList = args.ToList();
+            int cvIdx = argList.IndexOf("-c:v");
+            string enc = cvIdx >= 0 ? argList[cvIdx + 1] : "?";
+            attemptLog.Add(enc);
+            bool pass = enc == "h264_amf";
+            return Task.FromResult(new SmokeTestRunResult(pass ? 0 : 1, false, pass ? "" : "driver error"));
+        };
+
+        FfmpegCapabilityProbeResult result = await FfmpegCapabilityProbe.RunSmokeTestAsync(
+            base_, runner, CancellationToken.None);
+
+        Assert.True(result.SmokeTestPassed);
+        Assert.Equal("h264_amf", result.SmokeTestEncoder);
+        Assert.NotNull(result.PreferredEncoder);
+        Assert.Equal("h264_amf", result.PreferredEncoder!.Value.EncoderName);
+
+        Assert.Equal(2, attemptLog.Count);
+        Assert.Equal("h264_nvenc", attemptLog[0]);
+        Assert.Equal("h264_amf", attemptLog[1]);
+    }
+
+    // When the only fallback candidate after a smoke failure is an integrated
+    // backend, the smoke loop must stop -- not retry on Qsv/MediaFoundation
+    // (which we refuse) and not silently report success.
+    [Fact]
+    public async Task SmokeTest_RefusesIntegratedFallbackWhenDiscreteFails()
     {
         var nvenc = new HardwareEncoderCapability("h264_nvenc", HardwareEncoderBackend.Nvenc, "NVIDIA NVENC");
         var qsv = new HardwareEncoderCapability("h264_qsv", HardwareEncoderBackend.Qsv, "Intel QSV");
@@ -25,26 +71,22 @@ public class FfmpegCapabilityProbeTests
         var attemptLog = new List<string>();
         FfmpegSmokeRunner runner = (_, args, _, _) =>
         {
-            // The encoder name is the argument after "-c:v"
             var argList = args.ToList();
             int cvIdx = argList.IndexOf("-c:v");
             string enc = cvIdx >= 0 ? argList[cvIdx + 1] : "?";
             attemptLog.Add(enc);
-            bool pass = enc == "h264_qsv";
-            return Task.FromResult(new SmokeTestRunResult(pass ? 0 : 1, false, pass ? "" : "driver error"));
+            return Task.FromResult(new SmokeTestRunResult(1, false, "driver error"));
         };
 
         FfmpegCapabilityProbeResult result = await FfmpegCapabilityProbe.RunSmokeTestAsync(
             base_, runner, CancellationToken.None);
 
-        Assert.True(result.SmokeTestPassed);
-        Assert.Equal("h264_qsv", result.SmokeTestEncoder);
-        Assert.NotNull(result.PreferredEncoder);
-        Assert.Equal("h264_qsv", result.PreferredEncoder!.Value.EncoderName);
-
-        Assert.Equal(2, attemptLog.Count);
+        Assert.False(result.SmokeTestPassed);
+        Assert.Null(result.SmokeTestEncoder);
+        // Only nvenc was tried -- qsv was filtered out of the candidate pool
+        // before the retry loop reached it.
+        Assert.Single(attemptLog);
         Assert.Equal("h264_nvenc", attemptLog[0]);
-        Assert.Equal("h264_qsv", attemptLog[1]);
     }
 
     [Fact]

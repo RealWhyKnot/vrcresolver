@@ -286,15 +286,39 @@ internal static class FfmpegCapabilityProbe
             "[helper][probe] helper_encoder_preference candidates=" + candidates + " chosen=" + chosen,
             "helper_encoder_preference candidates=" + candidates + " chosen=" + chosen);
 
+        var refusedNames = new List<string>(encoders.Count);
+        for (int i = 0; i < encoders.Count; i++)
+        {
+            if (!HardwareEncoderProbe.IsDedicatedGpuBackend(encoders[i].Backend))
+                refusedNames.Add(encoders[i].EncoderName);
+        }
+        if (refusedNames.Count > 0)
+        {
+            string refused = string.Join(",", refusedNames);
+            Logger.WriteDiagnostic(
+                LogComponent.Helper,
+                "[helper][probe] helper_encoder_refused encoders=" + refused
+                    + " reason=integrated_gpu_unsupported",
+                "helper_encoder_refused encoders=" + refused
+                    + " reason=integrated_gpu_unsupported");
+        }
+
         if (!preferred.HasValue)
         {
+            // Distinguish "no encoders found at all" from "only integrated
+            // encoders were found and refused" so the operator gets a
+            // useful error rather than a generic 'not listed' line.
+            string message = encoders.Count == 0
+                ? "FFmpeg is installed, but no supported H.264 hardware encoder was listed."
+                : "FFmpeg is installed, but only integrated-GPU encoders were available ("
+                    + candidates + "); the helper requires a discrete NVIDIA or AMD GPU.";
             return new FfmpegCapabilityProbeResult(
                 location,
                 version,
                 encoders,
                 null,
                 FfmpegCapabilityProbeStatus.NoHardwareEncoder,
-                "FFmpeg is installed, but no supported H.264 hardware encoder was listed.");
+                message);
         }
 
         return new FfmpegCapabilityProbeResult(

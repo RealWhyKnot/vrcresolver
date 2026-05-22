@@ -300,7 +300,11 @@ internal sealed partial class MeshClient : IAsyncDisposable
                     FfmpegVersion = probe.Version?.Version,
                     Encoder = probe.PreferredEncoder?.EncoderName,
                     EncoderBackend = probe.PreferredEncoder?.Backend.ToString().ToLowerInvariant(),
-                    GpuLimitPercent = settings.Helper.GpuLimitPercent,
+                    // Field retained on the wire for backward compat with
+                    // older server builds that still log it. 0 means "no
+                    // user override" -- helper now uses a hardcoded
+                    // back-off threshold instead of a configurable knob.
+                    GpuLimitPercent = 0,
                     UploadLimitMbps = settings.Helper.UploadLimitMbps,
                     AllowOnBattery = settings.Helper.AllowOnBattery,
                     SmokeTestPassed = probe.SmokeTestPassed ? true : (bool?)false,

@@ -13,12 +13,22 @@ public class AppSettingsTests
         var settings = new AppSettings().Normalize();
 
         Assert.True(settings.Helper.GpuSharing);
-        Assert.Equal(25, settings.Helper.GpuLimitPercent);
         Assert.Equal(0, settings.Helper.UploadLimitMbps);
         Assert.False(settings.Helper.AllowOnBattery);
         Assert.Equal("auto", settings.Helper.EncodingQuality);
         Assert.True(settings.Terminal.StatusLine);
         Assert.True(settings.Terminal.Animations);
+    }
+
+    [Fact]
+    public void GpuLimitSetting_NoLongerExposed()
+    {
+        // Removed 2026-05-22: GpuLimitPercent was confusingly named (read as
+        // "max % the helper uses" but actually a back-off sensitivity knob).
+        // Helper now uses a hardcoded internal threshold; no user-facing knob.
+        Assert.False(AppSettingsRegistry.TryFind("gpu-limit", out _));
+        Assert.False(AppSettingsRegistry.TryFind("gpu", out _));
+        Assert.False(AppSettingsRegistry.TryFind("gpu-percent", out _));
     }
 
     [Fact]
@@ -42,8 +52,6 @@ public class AppSettingsTests
     }
 
     [Theory]
-    [InlineData("gpu-limit", "5", "5%")]
-    [InlineData("gpu-limit", "37", "37%")]
     [InlineData("upload-limit", "0", "automatic")]
     [InlineData("upload-limit", "5", "5 MB/s")]
     [InlineData("upload-limit", "12", "12 MB/s")]
@@ -58,10 +66,6 @@ public class AppSettingsTests
     }
 
     [Theory]
-    [InlineData("gpu-limit", "4")]
-    [InlineData("gpu-limit", "76")]
-    [InlineData("gpu-limit", "37%")]
-    [InlineData("gpu-limit", "a lot")]
     [InlineData("upload-limit", "-1")]
     [InlineData("upload-limit", "501")]
     [InlineData("upload-limit", "12 MB/s")]

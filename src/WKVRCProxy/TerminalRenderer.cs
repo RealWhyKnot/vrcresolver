@@ -419,8 +419,7 @@ internal sealed class TerminalRenderer
         string quality = settings.Helper.EncodingQuality == HelperEncodingQualityNames.Auto
             ? "quality auto"
             : "quality " + settings.Helper.EncodingQuality;
-        return "GPU " + settings.Helper.GpuLimitPercent.ToString(CultureInfo.InvariantCulture)
-            + "%, " + quality + ", " + upload + ", " + battery;
+        return quality + ", " + upload + ", " + battery;
     }
 
     private static string DescribeTerminal(AppSettings settings)
