@@ -30,8 +30,14 @@ $CreatePackage = $Package -and -not $SkipZip
 
 # --- Versioning ---
 if ($Version) {
-    if ($Version -notmatch '^\d{4}\.\d+\.\d+\.\d+(-[A-Fa-f0-9]{4})?$') {
-        throw "Invalid -Version '$Version'. Expected YYYY.M.D.N (release) or YYYY.M.D.N-XXXX (dev)."
+    # Accepted shapes:
+    #   YYYY.M.D.N            release
+    #   YYYY.M.D.N-XXXX       local dev rebuild (4 hex)
+    #   YYYY.M.D.N-betaN      prerelease (matches release.yml's '*-beta*'
+    #                         detector which adds --prerelease on the
+    #                         GitHub release)
+    if ($Version -notmatch '^\d{4}\.\d+\.\d+\.\d+(-([A-Fa-f0-9]{4}|beta\d*))?$') {
+        throw "Invalid -Version '$Version'. Expected YYYY.M.D.N (release), YYYY.M.D.N-XXXX (dev), or YYYY.M.D.N-betaN (prerelease)."
     }
     $FullVersion = $Version
 } else {
