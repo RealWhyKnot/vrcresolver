@@ -57,13 +57,15 @@ internal sealed partial class LocalIpcServer : IDisposable
 
     private readonly MeshClient _mesh;
     private readonly ResolveCache? _cache;
+    private readonly OgFallbackHint? _ogFallbackHint;
     private readonly CancellationTokenSource _cts = new();
     private Task? _accepter;
 
-    public LocalIpcServer(MeshClient mesh, ResolveCache? cache = null)
+    public LocalIpcServer(MeshClient mesh, ResolveCache? cache = null, OgFallbackHint? ogFallbackHint = null)
     {
         _mesh = mesh;
         _cache = cache;
+        _ogFallbackHint = ogFallbackHint;
     }
 
     public void Start()
@@ -257,6 +259,27 @@ internal sealed partial class LocalIpcServer : IDisposable
             string? serverReason = null;
             bool viaCache = false;
             string nodeHost = _mesh.CurrentNodeHost;
+
+            // Reactive og-fallback: an AVPro load_failure for this source
+            // within the last ~60 s short-circuits the entire mesh path so
+            // the wrapper execs yt-dlp-og.exe immediately. Set by
+            // VrcLogMonitor on the failing playback's resolved URL and
+            // unwound by TTL. Cache-hit path is intentionally bypassed too:
+            // the cache entry is likely the one that produced the failure,
+            // and even if VrcLogMonitor already evicted it the goal is to
+            // give VRChat a known-good native URL on the next retry.
+            if (_ogFallbackHint != null && _ogFallbackHint.ShouldPreferOg(req.Url))
+            {
+                await WriteFallbackAsync(pipe, id,
+                    WireConstants.OgFallbackReasonPriorLoadFailure,
+                    perReqCts.Token).ConfigureAwait(false);
+                ConsoleUx.Write(LogComponent.Ipc,
+                    "og-fallback (prior load_failure) id=" + id
+                        + CidSuffix(cid)
+                        + " host=" + ExtractHost(req.Url));
+                return;
+            }
+
             try
             {
                 // v3.2: resolve disk-cache lookup. If we have a cached

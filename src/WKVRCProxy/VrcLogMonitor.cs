@@ -45,6 +45,7 @@ internal sealed partial class VrcLogMonitor : IDisposable
 
     private readonly MeshClient _mesh;
     private readonly ResolveCache? _cache;
+    private readonly OgFallbackHint? _ogFallbackHint;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
 
@@ -65,9 +66,10 @@ internal sealed partial class VrcLogMonitor : IDisposable
     private CancellationTokenSource? _playingFeedbackCts;
     private string? _playingFeedbackUrl;
 
-    public VrcLogMonitor(MeshClient mesh, ResolveCache? cache = null)
+    public VrcLogMonitor(MeshClient mesh, ResolveCache? cache = null, OgFallbackHint? ogFallbackHint = null)
     {
         _mesh = mesh;
+        _ogFallbackHint = ogFallbackHint;
         _cache = cache;
     }
 
@@ -217,8 +219,28 @@ internal sealed partial class VrcLogMonitor : IDisposable
                     // evict so the next resolve goes back to mesh and
                     // gets a fresh URL.
                     int evicted = _cache?.EvictByUrl(failed) ?? 0;
+
+                    // Reactive og-fallback: mark the source URL (the one
+                    // the wrapper was originally invoked with) so the
+                    // wrapper's next call short-circuits to yt-dlp-og.exe
+                    // for a brief window. Without this, the user has to
+                    // mash Play and watch the same broken URL come back
+                    // from mesh until the strategy stops being selected
+                    // server-side. The hint is transient (60 s default),
+                    // populated only by observed failures, and never
+                    // grows past in-memory bounds.
+                    bool ogHintArmed = false;
+                    if (_ogFallbackHint != null
+                        && _cache != null
+                        && _cache.TryGetSourceUrlForResolved(failed, out string sourceUrl))
+                    {
+                        _ogFallbackHint.RecordLoadFailure(sourceUrl);
+                        ogHintArmed = true;
+                    }
+
                     ConsoleUx.Warn(LogComponent.VrcLog, "load_failure ms=" + ms + " url=" + LogUtil.RedactUrl(failed)
-                        + (evicted > 0 ? " evicted=" + evicted : ""));
+                        + (evicted > 0 ? " evicted=" + evicted : "")
+                        + (ogHintArmed ? " og_hint=armed" : ""));
                 }
                 CancelStallWatchdog();
                 CancelPlayingFeedbackLoop();

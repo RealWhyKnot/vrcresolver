@@ -206,6 +206,37 @@ public class ResolveCacheTests : IDisposable
     }
 
     [Fact]
+    public void TryGetSourceUrlForResolved_RoundTripsAfterStore()
+    {
+        var cache = new ResolveCache(_path);
+        const string sourceUrl = "https://www.youtube.com/watch?v=abc";
+        const string playbackUrl = "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=xyz";
+        var resp = new ResolveResponse
+        {
+            Action = WireConstants.ActionResolved,
+            Id = "ignored-on-store",
+            Url = playbackUrl,
+            Engine = "yt-dlp:no-cookies-default",
+            Protocol = "hls",
+            ExpiresAt = DateTime.UtcNow.AddHours(1).ToString("o"),
+        };
+        cache.Store("node1.whyknot.dev", sourceUrl, "avpro", null, resp);
+
+        Assert.True(cache.TryGetSourceUrlForResolved(playbackUrl, out string recovered));
+        Assert.Equal(sourceUrl, recovered);
+    }
+
+    [Fact]
+    public void TryGetSourceUrlForResolved_FalseWhenResolvedUrlUnknown()
+    {
+        var cache = new ResolveCache(_path);
+        Assert.False(cache.TryGetSourceUrlForResolved(
+            "https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=missing",
+            out string source));
+        Assert.Equal("", source);
+    }
+
+    [Fact]
     [SupportedOSPlatform("windows")]
     public void VrcLogMonitor_CanonicalizesLocalTrustGatewayUrlToResolvedTarget()
     {

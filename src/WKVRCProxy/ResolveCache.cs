@@ -200,6 +200,33 @@ internal sealed class ResolveCache
         return removed;
     }
 
+    // Reverse lookup: given a resolved playback URL that VRChat reported
+    // failing, return the original source URL the user / world handed to
+    // the wrapper. VrcLogMonitor uses this to mark the source for the
+    // reactive og-fallback hint so the next wrapper call short-circuits.
+    // Returns the first match; if multiple cache entries point at the
+    // same resolved URL they share the source (the cache key includes
+    // node/player/format but the source URL is constant per content).
+    public bool TryGetSourceUrlForResolved(string resolvedUrl, out string sourceUrl)
+    {
+        sourceUrl = "";
+        if (string.IsNullOrEmpty(resolvedUrl)) return false;
+        EnsureLoaded();
+        lock (_lock)
+        {
+            if (_state.Entries == null) return false;
+            foreach (var kv in _state.Entries)
+            {
+                if (string.Equals(kv.Value.Response?.Url, resolvedUrl, StringComparison.Ordinal))
+                {
+                    sourceUrl = kv.Value.Url ?? "";
+                    return !string.IsNullOrEmpty(sourceUrl);
+                }
+            }
+        }
+        return false;
+    }
+
     // Synchronous flush for graceful shutdown.
     public void FlushNow()
     {

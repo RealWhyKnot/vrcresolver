@@ -22,6 +22,7 @@ internal static class Program
     private static HostsTicker? s_hostsTicker;
     private static Heartbeat? s_heartbeat;
     private static ResolveCache? s_resolveCache;
+    private static OgFallbackHint? s_ogFallbackHint;
     private static RelayPortManager? s_relayPort;
     private static LocalRelayServer? s_relay;
     private static InteractiveTerminal? s_terminal;
@@ -228,7 +229,13 @@ internal static class Program
         // (writer + reader) and VrcLogMonitor (evict-on-stall) keeps the
         // in-memory dict authoritative.
         s_resolveCache = new ResolveCache();
-        s_ipc = new LocalIpcServer(s_mesh, s_resolveCache);
+        // Transient one-shot hint store for the reactive og-fallback path.
+        // VrcLogMonitor records each AVPro load_failure here keyed by the
+        // source URL; LocalIpcServer reads on every wrapper call and
+        // synthesizes fallback_native within the TTL window so the next
+        // retry exec's yt-dlp-og.exe.
+        s_ogFallbackHint = new OgFallbackHint();
+        s_ipc = new LocalIpcServer(s_mesh, s_resolveCache, s_ogFallbackHint);
         s_ipc.Start();
         _ = s_mesh.StartAsync();
 
@@ -309,7 +316,7 @@ internal static class Program
         // AVPro couldn't actually load. Also wired to ResolveCache so a
         // load_failure / silent_stall on a cached URL evicts the cached
         // entry, closing the staleness-detection loop without server help.
-        s_logmon = new VrcLogMonitor(s_mesh, s_resolveCache);
+        s_logmon = new VrcLogMonitor(s_mesh, s_resolveCache, s_ogFallbackHint);
         s_logmon.Start();
 
         if (!s_patcher.Start())

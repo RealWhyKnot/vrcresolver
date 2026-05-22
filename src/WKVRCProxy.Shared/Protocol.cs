@@ -108,6 +108,12 @@ public static class WireConstants
     public const string OgFallbackReasonPipeResolveFailed = "pipe_resolve_failed";
     public const string OgFallbackReasonServerFallbackNative = "server_fallback_native";
     public const string OgFallbackReasonNoUrlDiagnostic = "no_url_diagnostic";
+    // VrcLogMonitor saw an AVPro load_failure on a URL we just resolved.
+    // Within a short TTL after that observation, subsequent wrapper calls
+    // for the same source URL short-circuit straight to native og so the
+    // user doesn't have to repeatedly hit Play while the mesh re-tries
+    // the same broken strategy.
+    public const string OgFallbackReasonPriorLoadFailure = "prior_load_failure";
     // Defense-in-depth: server's FormatSelectorBuilder should already
     // filter AVPro-incompatible codecs, but a domain-config regression
     // could yield e.g. .flv / rtmp where AVPro can't decode. The wrapper
