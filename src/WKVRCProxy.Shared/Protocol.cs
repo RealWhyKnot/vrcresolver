@@ -274,6 +274,12 @@ public sealed class ResolveResponse
     [JsonPropertyName("bytes_estimate")] public long? BytesEstimate { get; set; }
     [JsonPropertyName("expires_at")] public string? ExpiresAt { get; set; }
 
+    // Operator-facing one-liner surfaced via og_fallback_notify when the server says
+    // fallback_native. Null when the server didn't attach a public_message. Old clients
+    // ignored unknown fields via [JsonExtensionData]; this typed slot just lets the
+    // wrapper read it without dipping into Extra.
+    [JsonPropertyName("public_message")] public string? PublicMessage { get; set; }
+
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
@@ -572,4 +578,9 @@ public sealed class WrapperEventNotify
     // line. Both fields are absent (default values) on og_fallback_notify.
     [JsonPropertyName("exit_code")] public int ExitCode { get; set; }
     [JsonPropertyName("error_preview")] public string? ErrorPreview { get; set; }
+    // Carried from the server's fallback_native frame when present -- the human-friendly
+    // one-liner explaining WHY the server punted (DRM-protected, geo-blocked, sign-in
+    // required, etc.). Watchdog prints this as a separate yellow line above the standard
+    // [wrapper] og fallback log so the user sees the rationale without grepping JSONL.
+    [JsonPropertyName("public_message")] public string? PublicMessage { get; set; }
 }

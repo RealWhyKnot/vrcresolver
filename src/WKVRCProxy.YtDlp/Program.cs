@@ -114,7 +114,7 @@ internal static partial class Program
                 }
                 else
                 {
-                    (string? resolved, string? fallbackReason) result;
+                    (string? resolved, string? fallbackReason, string? publicMessage) result;
                     try
                     {
                         result = await ResolveOverPipeAsync(url, player, formatArg).ConfigureAwait(false);
@@ -122,7 +122,7 @@ internal static partial class Program
                     catch (Exception ex)
                     {
                         Log("UNHANDLED in pipe path: " + ex.GetType().Name + ": " + ex.Message);
-                        result = (null, WireConstants.OgFallbackReasonPipeResolveFailed);
+                        result = (null, WireConstants.OgFallbackReasonPipeResolveFailed, null);
                     }
 
                     if (!string.IsNullOrEmpty(result.resolved))
@@ -151,7 +151,7 @@ internal static partial class Program
                         // notify uses a fresh pipe connection that closes
                         // immediately, then we exec og normally.
                         string reason = result.fallbackReason ?? WireConstants.OgFallbackReasonPipeResolveFailed;
-                        await TrySendOgFallbackNotifyAsync(url, reason, swTotal.ElapsedMilliseconds).ConfigureAwait(false);
+                        await TrySendOgFallbackNotifyAsync(url, reason, swTotal.ElapsedMilliseconds, result.publicMessage).ConfigureAwait(false);
 
                         exitCode = await ExecFallbackAsync(args, url).ConfigureAwait(false);
                         outcome = "pipe-failed-og-fallback";
@@ -172,7 +172,7 @@ internal static partial class Program
     // Returns (resolvedUrl, null) on success, (null, reason) on any
     // failure (caller falls back to yt-dlp-og.exe and uses `reason` to
     // notify the watchdog). Every exit branch logs.
-    private static async Task<(string? Url, string? FallbackReason)> ResolveOverPipeAsync(string url, string player, string? formatArg)
+    private static async Task<(string? Url, string? FallbackReason, string? PublicMessage)> ResolveOverPipeAsync(string url, string player, string? formatArg)
     {
         var swPipe = Stopwatch.StartNew();
         long totalDeadlineMs = (long)ResolveDeadline.TotalMilliseconds;
@@ -223,17 +223,17 @@ internal static partial class Program
             catch (OperationCanceledException)
             {
                 Log("pipe connect TIMED OUT after " + swPipe.ElapsedMilliseconds + " ms (watchdog not running?)");
-                return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
+                return (null, WireConstants.OgFallbackReasonPipeConnectFailed, null);
             }
             catch (System.IO.FileNotFoundException)
             {
                 Log("pipe connect ENOENT (watchdog not running)");
-                return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
+                return (null, WireConstants.OgFallbackReasonPipeConnectFailed, null);
             }
             catch (Exception ex)
             {
                 Log("pipe connect failed: " + ex.GetType().Name + ": " + ex.Message);
-                return (null, WireConstants.OgFallbackReasonPipeConnectFailed);
+                return (null, WireConstants.OgFallbackReasonPipeConnectFailed, null);
             }
 
             long remainingForAttempt = Math.Max(1000, totalDeadlineMs - swPipe.ElapsedMilliseconds);
@@ -243,7 +243,7 @@ internal static partial class Program
 
             byte[] payload;
             try { payload = SerializeWithTrailingNewline(req); }
-            catch (Exception ex) { Log("request serialize failed: " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            catch (Exception ex) { Log("request serialize failed: " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null); }
 
             var swSend = Stopwatch.StartNew();
             try
@@ -262,21 +262,21 @@ internal static partial class Program
                     + " wrapper_deadline_ms=" + req.WrapperDeadlineMs
                     + " elapsed_ms=" + swSend.ElapsedMilliseconds);
             }
-            catch (Exception ex) { Log("pipe write failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            catch (Exception ex) { Log("pipe write failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null); }
 
             var swRead = Stopwatch.StartNew();
             string? line;
             try { line = await ReadLineAsync(pipe, ctsResolve.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) { Log("pipe read TIMED OUT after " + swRead.ElapsedMilliseconds + " ms (no terminal frame within " + (int)ResolveDeadline.TotalSeconds + " s)"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-            catch (Exception ex) { Log("pipe read failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-            if (string.IsNullOrEmpty(line)) { Log("pipe returned empty response after " + swRead.ElapsedMilliseconds + " ms"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            catch (OperationCanceledException) { Log("pipe read TIMED OUT after " + swRead.ElapsedMilliseconds + " ms (no terminal frame within " + (int)ResolveDeadline.TotalSeconds + " s)"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null); }
+            catch (Exception ex) { Log("pipe read failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null); }
+            if (string.IsNullOrEmpty(line)) { Log("pipe returned empty response after " + swRead.ElapsedMilliseconds + " ms"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null); }
 
             Log("response received bytes=" + line.Length + " elapsed_ms=" + swRead.ElapsedMilliseconds);
 
             ResolveResponse? resp;
             try { resp = JsonSerializer.Deserialize(line, WrapperJsonContext.Default.ResolveResponse); }
-            catch (Exception ex) { Log("response parse failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
-            if (resp == null) { Log("response was null after deserialize"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed); }
+            catch (Exception ex) { Log("response parse failed: " + ex.GetType().Name + ": " + ex.Message); return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null); }
+            if (resp == null) { Log("response was null after deserialize"); return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null); }
 
             if (resp.Action == WireConstants.ActionResolved && !string.IsNullOrEmpty(resp.Url))
             {
@@ -290,10 +290,10 @@ internal static partial class Program
                 {
                     Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] +
                         " but URL fails AVPro shape check (host=" + ExtractHost(resp.Url) + ") -- falling back");
-                    return (null, WireConstants.OgFallbackReasonAvProIncompatible);
+                    return (null, WireConstants.OgFallbackReasonAvProIncompatible, null);
                 }
                 Log("response action=resolved id=" + (resp.Id ?? "?")[..Math.Min(8, (resp.Id ?? "?").Length)] + " url-host=" + ExtractHost(resp.Url));
-                return (resp.Url, null);
+                return (resp.Url, null, null);
             }
 
             if (resp.Action == WireConstants.ActionFallbackNative)
@@ -317,17 +317,20 @@ internal static partial class Program
                     catch (OperationCanceledException)
                     {
                         Log("retry delay cancelled (deadline elapsed)");
-                        return (null, WireConstants.OgFallbackReasonPipeResolveFailed);
+                        return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null);
                     }
                     // Reuse same request id for server dedup/correlation.
                     continue;
                 }
 
-                return (null, WireConstants.OgFallbackReasonServerFallbackNative);
+                // Capture the server's public_message (when present) so the watchdog can
+                // surface a yellow line explaining why we punted -- DRM-detected,
+                // sign-in required, etc.
+                return (null, WireConstants.OgFallbackReasonServerFallbackNative, resp.PublicMessage);
             }
 
             Log("response action UNKNOWN: " + resp.Action);
-            return (null, WireConstants.OgFallbackReasonPipeResolveFailed);
+            return (null, WireConstants.OgFallbackReasonPipeResolveFailed, null);
         }
     }
 
@@ -350,7 +353,7 @@ internal static partial class Program
     // (watchdog not running, pipe busy, etc.) is silently swallowed: og
     // fallback must never fail because diagnostic IPC failed. Tight
     // timeout (1.5 s) so a hung watchdog can't delay the og exec.
-    private static async Task TrySendOgFallbackNotifyAsync(string? url, string reason, long elapsedMs)
+    private static async Task TrySendOgFallbackNotifyAsync(string? url, string reason, long elapsedMs, string? publicMessage = null)
     {
         try
         {
@@ -370,6 +373,7 @@ internal static partial class Program
                 Reason = reason,
                 ElapsedMs = elapsedMs,
                 Rid = s_rid,
+                PublicMessage = publicMessage,
             };
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(notify, WrapperJsonContext.Default.WrapperEventNotify);
             byte[] framed = new byte[body.Length + 1];
