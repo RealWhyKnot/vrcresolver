@@ -126,8 +126,13 @@ internal static class TranscodeWorkerProcess
             HttpUserAgent,
             "-headers",
             "Referer: https://www.youtube.com/\r\n",
+            // +discardcorrupt silently drops HEVC decoder warmup frames -- on
+            // Tubi seg_0 the encoder output ran ~0.75s short of the lease window,
+            // which fell outside the server's video_duration tolerance and the
+            // entire window was rejected. Server-side encoder dropped this flag
+            // for the same reason in FfmpegSegmentEncoder / LazyHls.
             "-fflags",
-            "+genpts+discardcorrupt",
+            "+genpts",
         };
 
         if (useHardwareDecode)
@@ -199,6 +204,11 @@ internal static class TranscodeWorkerProcess
             "expr:gte(t,n_forced*" + gopSeconds.ToString(CultureInfo.InvariantCulture) + ")",
             "-bf",
             "0",
+            // SPS/PPS at every IDR so each TS segment is independently decodable.
+            // Without this, segments after the first land in the muxer without
+            // parameter sets and strict decoders refuse to initialize.
+            "-bsf:v",
+            "dump_extra=freq=keyframe",
             "-c:a",
             "aac",
             "-b:a",

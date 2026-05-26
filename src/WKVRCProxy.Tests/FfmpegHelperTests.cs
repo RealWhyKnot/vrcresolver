@@ -251,6 +251,49 @@ public class FfmpegHelperTests
         Assert.Equal("seg_000042.ts", command.Arguments[^1]);
     }
 
+    // Window-duration contract with the server: the helper's encoded TS
+    // window must measure within +-0.5s of the lease's duration_seconds. The
+    // server's HelperTranscodeCoordinator.ValidateAnnouncedMetrics rejects
+    // "video_duration_off" when the announced duration drifts outside that
+    // gate, which on a 2-segment 8.008s window happens when the decoder
+    // silently drops the first ~0.75s of HEVC warmup frames -- the exact
+    // pattern +discardcorrupt produces. Server-side encoders dropped that
+    // flag in FfmpegSegmentEncoder / LazyHls; this test pins the same
+    // shape on the helper.
+    [Theory]
+    [InlineData("Nvenc", "h264_nvenc")]
+    [InlineData("Qsv", "h264_qsv")]
+    [InlineData("Amf", "h264_amf")]
+    [InlineData("MediaFoundation", "h264_mf")]
+    public void TranscodeWorkerProcess_OmitsDiscardCorruptAndEmitsDumpExtra(
+        string backendName,
+        string encoderName)
+    {
+        TranscodeFfmpegCommand hardware = BuildSegmentCommand(
+            Enum.Parse<HardwareEncoderBackend>(backendName), encoderName);
+        AssertDurationFixFlags(hardware.Arguments);
+
+        var lease = NewLease();
+        var encoder = new HardwareEncoderCapability(encoderName,
+            Enum.Parse<HardwareEncoderBackend>(backendName), encoderName);
+        TranscodeFfmpegCommand software = TranscodeWorkerProcess.BuildSegmentCommandSoftwareFallback(
+            "ffmpeg.exe", lease, encoder, "seg.ts",
+            targetWidth: 1280, targetHeight: 720, targetBitrateKbps: 2800);
+        AssertDurationFixFlags(software.Arguments);
+    }
+
+    private static void AssertDurationFixFlags(IReadOnlyList<string> arguments)
+    {
+        int fflagsIndex = arguments.ToList().IndexOf("-fflags");
+        Assert.True(fflagsIndex >= 0, "-fflags missing");
+        Assert.Equal("+genpts", arguments[fflagsIndex + 1]);
+        Assert.DoesNotContain(arguments, a => a.Contains("discardcorrupt", StringComparison.Ordinal));
+
+        int bsfIndex = arguments.ToList().IndexOf("-bsf:v");
+        Assert.True(bsfIndex >= 0, "-bsf:v missing");
+        Assert.Equal("dump_extra=freq=keyframe", arguments[bsfIndex + 1]);
+    }
+
     [Fact]
     public void TranscodeWorkerProcess_BuildsQsvGpuDecodeAndScaleCommand()
     {
