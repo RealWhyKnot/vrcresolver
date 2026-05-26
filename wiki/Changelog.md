@@ -19,6 +19,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ### Changed
 - **helper:** Hardcode GPU throttle; refuse integrated GPUs (79439bd)
+- Bump the minor-and-patch group with 2 updates (#61) (b4528b1)
 
 ### Fixed
 - **helper:** NVENC scale_cuda filter syntax and NVDEC reference-frame pool (0d339d3)
