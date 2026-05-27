@@ -262,47 +262,9 @@ internal static class Program
             if (!relayHttpsAllowed)
                 ConsoleUx.Write(LogComponent.Relay, "secure local video disabled in settings; using local HTTP fallback.");
 
-            string relayScheme = relayHttpsAllowed && LocalRelayTlsManager.TryEnsureReadyForPort(s_relayPort.CurrentPort)
-                ? "https"
-                : "http";
-            s_relayPort.WriteSchemeFile(relayScheme);
-            try
+            if (!TryStartLocalRelay(s_relayPort, relayHttpsAllowed))
             {
-                s_relay = new LocalRelayServer(s_relayPort.CurrentPort, relayScheme);
-                s_relay.Start();
-                ConsoleUx.Success(LogComponent.Relay, "local video relay ready: "
-                    + relayScheme + "://localhost.youtube.com:" + s_relayPort.CurrentPort);
-            }
-            catch (Exception ex)
-            {
-                if (string.Equals(relayScheme, "https", StringComparison.OrdinalIgnoreCase))
-                {
-                    ConsoleUx.Warn(LogComponent.Relay, "secure local video failed: " + ex.Message
-                        + " -- retrying local HTTP fallback.");
-                    try
-                    {
-                        relayScheme = "http";
-                        s_relayPort.WriteSchemeFile(relayScheme);
-                        s_relay = new LocalRelayServer(s_relayPort.CurrentPort, relayScheme);
-                        s_relay.Start();
-                        ConsoleUx.Success(LogComponent.Relay, "local video relay ready: http://localhost.youtube.com:"
-                            + s_relayPort.CurrentPort);
-                    }
-                    catch (Exception httpEx)
-                    {
-                        ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start: " + httpEx.Message
-                            + " -- public-instance helper disabled.");
-                        s_relay = null;
-                        s_relayPort.DeletePortFile();
-                    }
-                }
-                else
-                {
-                    ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start: " + ex.Message
-                        + " -- public-instance helper disabled.");
-                    s_relay = null;
-                    s_relayPort.DeletePortFile();
-                }
+                ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start -- public-instance helper disabled.");
             }
         }
         else
@@ -427,6 +389,82 @@ internal static class Program
                 return true; // we handled it
         }
         return false;
+    }
+
+    private static bool TryStartLocalRelay(RelayPortManager relayPort, bool relayHttpsAllowed)
+    {
+        if (TryStartLocalRelayOnCurrentPort(relayPort, relayHttpsAllowed, out string failure))
+            return true;
+
+        if (relayPort.TryReserveFreshPort(failure)
+            && TryStartLocalRelayOnCurrentPort(relayPort, relayHttpsAllowed, out _))
+            return true;
+
+        s_relay = null;
+        relayPort.DeletePortFile();
+        return false;
+    }
+
+    private static bool TryStartLocalRelayOnCurrentPort(
+        RelayPortManager relayPort,
+        bool relayHttpsAllowed,
+        out string failure)
+    {
+        failure = "";
+        string relayScheme = relayHttpsAllowed && LocalRelayTlsManager.TryEnsureReadyForPort(relayPort.CurrentPort)
+            ? "https"
+            : "http";
+        relayPort.WriteSchemeFile(relayScheme);
+
+        try
+        {
+            StartLocalRelayInstance(relayPort.CurrentPort, relayScheme);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failure = ex.Message;
+            if (!string.Equals(relayScheme, "https", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start on port "
+                    + relayPort.CurrentPort + ": " + ex.Message);
+                return false;
+            }
+
+            ConsoleUx.Warn(LogComponent.Relay, "secure local video failed: " + ex.Message
+                + " -- retrying local HTTP fallback.");
+            relayScheme = "http";
+            relayPort.WriteSchemeFile(relayScheme);
+            try
+            {
+                StartLocalRelayInstance(relayPort.CurrentPort, relayScheme);
+                return true;
+            }
+            catch (Exception httpEx)
+            {
+                failure = httpEx.Message;
+                ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start on port "
+                    + relayPort.CurrentPort + ": " + httpEx.Message);
+                return false;
+            }
+        }
+    }
+
+    private static void StartLocalRelayInstance(int port, string relayScheme)
+    {
+        var relay = new LocalRelayServer(port, relayScheme);
+        try
+        {
+            relay.Start();
+            s_relay = relay;
+            ConsoleUx.Success(LogComponent.Relay, "local video relay ready: "
+                + relayScheme + "://localhost.youtube.com:" + port);
+        }
+        catch
+        {
+            relay.Dispose();
+            throw;
+        }
     }
 
     // Shutdown order per the brief: stop pipe accepting → fail pending TCS to

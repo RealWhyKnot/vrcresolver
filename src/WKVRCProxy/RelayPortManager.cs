@@ -23,20 +23,27 @@ internal sealed class RelayPortManager
 {
     public int CurrentPort { get; private set; }
 
+    private readonly string _stateRoot;
     private readonly string _portFile;
     private readonly string _lastPortFile;
     private readonly string _schemeFile;
 
     public RelayPortManager()
+        : this(WkvrcPaths.StateRoot())
     {
-        _portFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_port.txt");
-        _lastPortFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_last_port.txt");
-        _schemeFile = Path.Combine(WkvrcPaths.StateRoot(), "relay_scheme.txt");
+    }
+
+    internal RelayPortManager(string stateRoot)
+    {
+        _stateRoot = stateRoot;
+        _portFile = Path.Combine(_stateRoot, "relay_port.txt");
+        _lastPortFile = Path.Combine(_stateRoot, "relay_last_port.txt");
+        _schemeFile = Path.Combine(_stateRoot, "relay_scheme.txt");
     }
 
     public bool Initialize()
     {
-        Directory.CreateDirectory(WkvrcPaths.StateRoot());
+        Directory.CreateDirectory(_stateRoot);
 
         int? prev = TryReadPreviousPort();
         if (prev.HasValue && TryClaimSpecificPort(prev.Value))
@@ -59,6 +66,29 @@ internal sealed class RelayPortManager
         WriteLastPortFile(CurrentPort);
         ConsoleUx.Write(LogComponent.Relay, "reserved local video port " + CurrentPort
             + (prev.HasValue ? " (previous port was busy)" : ""));
+        return true;
+    }
+
+    public bool TryReserveFreshPort(string reason)
+    {
+        if (!TryClaimEphemeralPort(out int fresh))
+        {
+            ConsoleUx.Error(LogComponent.Relay, "could not reserve a replacement local video port");
+            return false;
+        }
+
+        int previous = CurrentPort;
+        CurrentPort = fresh;
+        WritePortFile(CurrentPort);
+        WriteLastPortFile(CurrentPort);
+
+        string detail = previous > 0
+            ? " (previous port " + previous.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " failed"
+                + (string.IsNullOrWhiteSpace(reason) ? "" : ": " + reason)
+                + ")"
+            : "";
+        ConsoleUx.Write(LogComponent.Relay, "reserved local video port " + CurrentPort + detail);
         return true;
     }
 
