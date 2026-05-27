@@ -98,6 +98,12 @@
   where there is no prior tag and the tag-range trick yields nothing
   meaningful. Default: $false.
 
+.PARAMETER PrereleaseTags
+  Additional tag names to treat as prereleases when resolving the stable
+  release base. The script also reads GitHub release metadata when -Repo is
+  available; this parameter covers older tags or tests where metadata is not
+  available.
+
 .PARAMETER SkipScrub
   Skip the voice + ASCII scrub. Escape hatch for unblocking edge cases;
   the workflow should never set this. Default: $false.
@@ -114,6 +120,7 @@ param(
     [long]   $ZipSize     = 0,
     [string] $ZipSha256   = $null,
     [switch] $AllowEmpty,
+    [string[]] $PrereleaseTags = @(),
     [switch] $SkipScrub
 )
 
@@ -158,21 +165,54 @@ if (-not $TemplateDir) {
 #      history.
 # Surfaces a ::warning:: when layer 2 or 4 fires so the operator sees in
 # workflow logs that a fallback was used.
-function Test-IsPrereleaseTag([string]$Tag) {
+function Get-KnownPrereleaseTags([string]$Repo, [string[]]$AdditionalTags) {
+    $set = @{}
+    foreach ($tagName in $AdditionalTags) {
+        if ($tagName) { $set[$tagName] = $true }
+    }
+
+    if ($Repo) {
+        $listJson = & gh release list --repo $Repo --limit 100 --json tagName,isPrerelease 2>$null
+        if ($LASTEXITCODE -eq 0 -and $listJson) {
+            try {
+                $releases = $listJson | ConvertFrom-Json
+                foreach ($release in $releases) {
+                    if ($release.isPrerelease -and $release.tagName) {
+                        $set[$release.tagName] = $true
+                    }
+                }
+            } catch {
+                Write-Host "::warning::Failed to parse 'gh release list' output while reading prerelease tags: $_."
+            }
+        }
+    }
+
+    return $set
+}
+
+function Test-IsPrereleaseTag([string]$Tag, [hashtable]$KnownPrereleaseTags) {
+    if ($KnownPrereleaseTags -and $KnownPrereleaseTags.ContainsKey($Tag)) { return $true }
     return $Tag -match '^v?\d{4}\.\d+\.\d+\.\d+-.+'
 }
 
-function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
+function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo, [string[]]$AdditionalPrereleaseTags) {
     # Function-local relaxation of EAP. The script's outer Stop is intact
     # for non-git logic, but the prev-tag probes legitimately fail in
     # several cases (no tags yet, orphaned tags after rewrite, gh not
     # authed) and need to be soft-failures here.
     $ErrorActionPreference = 'Continue'
 
+    $knownPrereleaseTags = Get-KnownPrereleaseTags -Repo $Repo -AdditionalTags $AdditionalPrereleaseTags
+
     # Layer 1: describe + sanity gate.
     $describeArgs = @('describe', '--tags', '--abbrev=0')
-    if (-not (Test-IsPrereleaseTag -Tag $Tag)) {
+    if (-not (Test-IsPrereleaseTag -Tag $Tag -KnownPrereleaseTags $knownPrereleaseTags)) {
         $describeArgs += @('--exclude', '*-*')
+        foreach ($preTag in $knownPrereleaseTags.Keys) {
+            if ($preTag -and $preTag -ne $Tag) {
+                $describeArgs += @('--exclude', $preTag)
+            }
+        }
     }
     $describeArgs += "$Tag^"
     $prevRef = & git @describeArgs 2>$null
@@ -207,9 +247,20 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
             }
 
             if ($candidatePrevTag) {
-                $orphanSha = & git rev-parse $candidatePrevTag 2>$null
+                $orphanSha = & git rev-list -n 1 $candidatePrevTag 2>$null
                 if ($LASTEXITCODE -eq 0 -and $orphanSha) {
                     $orphanSha = $orphanSha.Trim()
+                    & git merge-base --is-ancestor $orphanSha $Tag 2>$null
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host "::warning::Using published stable release $candidatePrevTag as slice base after describe exceeded the sanity cap."
+                        return @{
+                            Tag     = $candidatePrevTag
+                            LogArgs = @("$candidatePrevTag..$Tag")
+                            Display = "$candidatePrevTag..$Tag"
+                            Source  = 'published-release'
+                        }
+                    }
+
                     $orphanSubject = & git show -s --format=%s $orphanSha 2>$null
                     if ($LASTEXITCODE -eq 0 -and $orphanSubject) {
                         $rebasedSha = $null
@@ -256,7 +307,7 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
     }
 }
 
-$prevInfo = Resolve-PrevTagForSlice -Tag $Tag -Repo $Repo
+$prevInfo = Resolve-PrevTagForSlice -Tag $Tag -Repo $Repo -AdditionalPrereleaseTags $PrereleaseTags
 $prevTag  = $prevInfo.Tag
 $logArgs  = $prevInfo.LogArgs
 $range    = $prevInfo.Display
