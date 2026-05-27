@@ -16,6 +16,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **helper:** Hold-and-announce flow for window-pull leases (100e71f)
 - **updater:** Opt-in to prereleases for both startup nudge and updater (44d6b81)
 - **wrapper:** Reactive og fallback on observed AVPro load_failure (59dc5d7)
+- **wrapper:** Surface server public_message via og_fallback_notify (58e2c35)
 
 ### Changed
 - **helper:** Hardcode GPU throttle; refuse integrated GPUs (79439bd)
@@ -28,6 +29,9 @@ Release entries are listed newest first. This changelog starts with the first pu
 - **helper:** Run video-duration check on every decode path (f66790f)
 - **helper:** Fall back to container duration when stream tag missing (b39602a)
 - **relay:** Scope manifest classification to .m3u8/.mpd extensions (d23943d)
+- **vrclog:** Avoid replaying old failures on startup (f2bc3d0)
+- **relay:** Retry fresh port after bind failure (07c9ba7)
+- **helper:** Drop +discardcorrupt and emit SPS at every IDR (3c0eb3e)
 
 ---
 
