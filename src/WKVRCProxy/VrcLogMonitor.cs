@@ -125,8 +125,9 @@ internal sealed partial class VrcLogMonitor : IDisposable
                 {
                     if (latest.FullName != currentFile)
                     {
+                        bool firstFile = currentFile.Length == 0;
                         currentFile = latest.FullName;
-                        lastSize = 0;
+                        lastSize = InitialReadOffsetForNewFile(latest.Length, firstFile);
                     }
                     if (latest.Length > lastSize)
                     {
@@ -159,6 +160,11 @@ internal sealed partial class VrcLogMonitor : IDisposable
                 try { await Task.Delay(5000, ct).ConfigureAwait(false); } catch { return; }
             }
         }
+    }
+
+    internal static long InitialReadOffsetForNewFile(long fileLength, bool firstFile)
+    {
+        return firstFile ? Math.Max(0, fileLength) : 0;
     }
 
     internal void ProcessNewContent(string content)

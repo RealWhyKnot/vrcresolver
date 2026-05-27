@@ -8,6 +8,14 @@ namespace WKVRCProxy.Tests;
 public sealed class VrcLogMonitorTests
 {
     [Theory]
+    [InlineData(true, 1234, 1234)]
+    [InlineData(false, 1234, 0)]
+    public void InitialReadOffsetForNewFile_TailsOnlyFirstFile(bool firstFile, long fileLength, long expected)
+    {
+        Assert.Equal(expected, VrcLogMonitor.InitialReadOffsetForNewFile(fileLength, firstFile));
+    }
+
+    [Theory]
     [InlineData("[Always] [Video Playback] Switched to 1920x1080", 1920, 1080)]
     [InlineData("[AVProVideo] PostStateChanged: OpeningToPlaying fwidth=1280 fheight=720", 1280, 720)]
     public void TryParseObservedResolution_extracts_width_and_height(string line, int expectedWidth, int expectedHeight)
