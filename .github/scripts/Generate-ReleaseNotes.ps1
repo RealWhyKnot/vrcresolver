@@ -20,11 +20,14 @@
     8. Optional extras (from .github/release-extras/<tag>.md if present;
        appended below with `---` separator and `## Additional notes` heading)
 
-  Slice composition: walks commits between prev tag and current tag. Skips
-  merge commits and commits containing "[skip changelog]". Strips trailing
-  version-stamp noise of the form " (YYYY.M.D.N-XXXX)" that some repos append
-  to subjects. Groups by conventional-commit prefix when at least one entry
-  has one, otherwise emits a flat bullet list.
+  Slice composition: walks commits between prev tag and current tag. Stable
+  release tags use the previous stable tag as their base, so any beta notes
+  since the last stable release are included in the stable release body. Beta
+  and dev tags keep using the nearest previous tag. Skips merge commits and
+  commits containing "[skip changelog]". Strips trailing version-stamp noise
+  of the form " (YYYY.M.D.N-XXXX)" that some repos append to subjects. Groups
+  by conventional-commit prefix when at least one entry has one, otherwise
+  emits a flat bullet list.
 
   Prev-tag resolution is layered for resilience against history rewrites that
   orphan the prior tag (rebase + force-push of main): describe + sanity gate,
@@ -136,8 +139,10 @@ if (-not $TemplateDir) {
 # Resolve previous tag. Layered fallback so a history rewrite that orphans the
 # prior tag does not produce a giant slice from pre-release history:
 #   1. `git describe --tags --abbrev=0 <tag>^` finds the most recent tag
-#      reachable from $Tag^ along the current line of history. Sanity gate:
-#      if the slice is more than 50 commits, treat the describe result as
+#      reachable from $Tag^ along the current line of history. Stable tags
+#      exclude prerelease/dev tags from this probe so a stable release after a
+#      beta includes the beta's changes in the public release body. Sanity
+#      gate: if the slice is more than 50 commits, treat the describe result as
 #      stale (likely orphaned by a rewrite) and fall through.
 #   2. Ask GitHub for the most recent published non-prerelease release. Look
 #      up its tag in the local repo (the SHA may be orphaned in current
@@ -153,6 +158,10 @@ if (-not $TemplateDir) {
 #      history.
 # Surfaces a ::warning:: when layer 2 or 4 fires so the operator sees in
 # workflow logs that a fallback was used.
+function Test-IsPrereleaseTag([string]$Tag) {
+    return $Tag -match '^v?\d{4}\.\d+\.\d+\.\d+-.+'
+}
+
 function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
     # Function-local relaxation of EAP. The script's outer Stop is intact
     # for non-git logic, but the prev-tag probes legitimately fail in
@@ -161,7 +170,12 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo) {
     $ErrorActionPreference = 'Continue'
 
     # Layer 1: describe + sanity gate.
-    $prevRef = & git describe --tags --abbrev=0 "$Tag^" 2>$null
+    $describeArgs = @('describe', '--tags', '--abbrev=0')
+    if (-not (Test-IsPrereleaseTag -Tag $Tag)) {
+        $describeArgs += @('--exclude', '*-*')
+    }
+    $describeArgs += "$Tag^"
+    $prevRef = & git @describeArgs 2>$null
     if ($LASTEXITCODE -eq 0 -and $prevRef) {
         $prevTag = $prevRef.Trim()
         $count = & git rev-list --count "$prevTag..$Tag" 2>$null
@@ -450,7 +464,9 @@ function Read-TemplateSection([string] $name, [string] $dir, [hashtable] $tokenM
         Write-Host "::warning::Release-body template missing: $path. Section '$name' will not render."
         return $null
     }
-    $content = (Get-Content -LiteralPath $path -Raw -Encoding UTF8).Trim()
+    $rawContent = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ($null -eq $rawContent) { return $null }
+    $content = $rawContent.Trim()
     if (-not $content) { return $null }
     return (Expand-Tokens -text $content -map $tokenMap)
 }

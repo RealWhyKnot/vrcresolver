@@ -3,10 +3,13 @@
 Releases are tag-driven and fully automated. Pushing a `v*` tag triggers
 [release.yml](workflows/release.yml), which builds the dist, publishes a
 GitHub release, and verifies the published body matches the input. The
-release body is generated from `git log` between the previous tag and the
-current tag -- there is no hand-written narrative path. If a release needs
-content that the auto-generator can't produce, the only supported path is
-the [extras file](#extras-file).
+release body is generated from `git log` between the previous release base
+and the current tag -- there is no hand-written narrative path. Stable
+release tags use the previous stable tag as the base, so beta release notes
+since the last stable are included when the stable release is published.
+Beta and dev tags use the nearest previous tag. If a release needs content
+that the auto-generator can't produce, the only supported path is the
+[extras file](#extras-file).
 
 The workflow calls `build.ps1 -Package`; local builds do not create a
 repo-root `release/` directory. The zip and manifest are emitted under
@@ -17,10 +20,11 @@ repo-root `release/` directory. The zip and manifest are emitted under
 | Form | When | Example |
 |---|---|---|
 | `vYYYY.M.D.N` | Release. `.N` is the release iteration for that calendar day, starting at 0. | `v2026.5.5.0` |
+| `vYYYY.M.D.N-beta` | Prerelease. Used for beta builds that should not become the latest stable release. | `v2026.5.5.0-beta` |
 | `vYYYY.M.D.N-XXXX` | Dev. `.N` is local build count; `XXXX` is a 4-hex UID. Rare on the release stream. | `v2026.5.5.0-A1B2` |
 
 [build.ps1](../build.ps1) validates the shape via the regex
-`^\d{4}\.\d+\.\d+\.\d+(-[A-Fa-f0-9]{4})?$` and fails fast on malformed tags.
+`^\d{4}\.\d+\.\d+\.\d+(-([A-Fa-f0-9]{4}|beta))?$` and fails fast on malformed tags.
 
 ## Body composition
 
@@ -50,12 +54,11 @@ SHA256: <hash>
 [--- Additional notes (extras file, if present) ---]
 ```
 
-There is NO curated `## Unreleased` excerpt above the auto section. That was
-removed in commit `c1f6bd2` because the auto-promote PR step that's supposed
-to drain `## Unreleased` after each release fails on default repo settings
-(GitHub Actions can't open PRs without an explicit toggle). CHANGELOG.md
-keeps accumulating in-repo for browsing; only the public release body
-shrinks to just-this-version content.
+Stable release bodies deliberately skip beta tags when picking the compare
+base. For example, if `v2026.5.5.0-beta` ships after `v2026.5.1.0`, then
+`v2026.5.7.0` compares from `v2026.5.1.0` so the beta changes appear in the
+stable release notes too. There is no curated `## Unreleased` excerpt above
+the auto section; CHANGELOG.md remains the browsable in-repo history.
 
 ## Conventional-commit policy
 
