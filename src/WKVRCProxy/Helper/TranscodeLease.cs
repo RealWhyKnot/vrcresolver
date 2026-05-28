@@ -1,16 +1,5 @@
 namespace WKVRCProxy;
 
-internal enum TranscodeLeaseState
-{
-    Missing,
-    Leased,
-    Returned,
-    Verified,
-    Published,
-    Expired,
-    Invalid,
-}
-
 internal sealed record TranscodeLease(
     string JobId,
     string PlaybackId,
