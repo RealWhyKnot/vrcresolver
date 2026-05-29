@@ -14,6 +14,9 @@ Release entries are listed newest first. This changelog starts with the first pu
 ### Changed
 - Refactor proxy client hotspots (27aa711)
 
+### Fixed
+- **mesh:** Use proxy public endpoint (648c66b)
+
 ---
 
 ## [v2026.5.27.0](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.5.27.0) - 2026-05-27
