@@ -1,6 +1,6 @@
 # Mesh Protocol
 
-The watchdog talks to whyknot.dev over a single persistent WebSocket. The wire shape has versioned forward/backward like an HTTP API does -- the watchdog can talk to any server back to v1 (legacy) and any server up to its own client version.
+The watchdog talks to proxy.whyknot.dev over a single persistent WebSocket. The wire shape has versioned forward/backward like an HTTP API does -- the watchdog can talk to any server back to v1 (legacy) and any server up to its own client version.
 
 ## What v3 added (current -- 2026-05-04)
 
@@ -31,7 +31,7 @@ After the welcome, the resolve hot path is **byte-exact identical to v2** -- `re
 
 `%LOCALAPPDATA%Low\WKVRCProxy\v3_welcome_cache.json` -- same LocalLow state-root as `clean_exit.flag`, `codec-state.json`, etc. (see [[Logs and Diagnostics]]).
 
-Per-node keying: apex-302 routes between node1 and node2, and their welcome contents differ (different yt-dlp versions, different node labels, different warp_active state). Cache is keyed on the hostname so node-rotation doesn't thrash.
+Per-host keying: current clients key the welcome cache on `proxy.whyknot.dev`; legacy clients and fallback discovery may still use `node1.whyknot.dev` or `node2.whyknot.dev`. Cache entries remain keyed on the hostname so mixed deployments do not cross-serve welcome state.
 
 Atomic write via `<file>.new` -> `File.Move(overwrite:true)`. A crash mid-write leaves either the old or new file intact, never half-written.
 

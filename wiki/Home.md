@@ -7,10 +7,10 @@ The [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) is t
 VRChat's video players invoke `Tools/yt-dlp.exe` per playback request. Vanilla yt-dlp works but it's slow on cold starts, breaks against YouTube's anti-bot every few weeks, and hands AVPro stream URLs that VRChat's trusted-host allowlist rejects in default-public worlds. WKVRCProxy intercepts that invocation and routes resolution through a remote backend behind Cloudflare WARP, then wraps the resulting URL through a local listener so AVPro accepts it everywhere.
 
 ```
-+-----------------+        +------------------+        +-----------------+
-| VRChat (AVPro)  |  pipe  | WKVRCProxy.exe   |   WS   | whyknot.dev     |
-| Tools/yt-dlp.exe| -----> | (the watchdog)   | -----> | /mesh resolver  |
-+-----------------+        +--------+---------+        +-----------------+
++-----------------+        +------------------+        +-------------------+
+| VRChat (AVPro)  |  pipe  | WKVRCProxy.exe   |   WS   | proxy.whyknot.dev |
+| Tools/yt-dlp.exe| -----> | (the watchdog)   | -----> | /mesh resolver    |
++-----------------+        +--------+---------+        +-------------------+
                                     |
                                     |  resolved URL wrapped through
                                     v  http://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=...

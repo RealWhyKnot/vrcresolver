@@ -9,7 +9,7 @@ using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
-// Anonymous failure reporting to whyknot.dev/api/report. Restored from
+// Anonymous failure reporting to proxy.whyknot.dev/api/report. Restored from
 // the legacy ReportingService — opt-in via env var, privacy-scrubbed
 // before send, rate-limited.
 //
@@ -33,7 +33,6 @@ namespace WKVRCProxy;
 // Default OFF.
 internal static partial class ReportingService
 {
-    private const string Endpoint = "https://whyknot.dev/api/report";
     private static readonly TimeSpan MinInterval = TimeSpan.FromSeconds(30);
     private const int MaxPerSession = 20;
 
@@ -114,7 +113,7 @@ internal static partial class ReportingService
             // MeshJsonContext source-gen. Equivalent wire output to the
             // pre-AOT reflection-based extension method; just AOT-clean.
             using var resp = await _http.PostAsJsonAsync(
-                Endpoint, payload, MeshJsonContext.Default.ReportPayload).ConfigureAwait(false);
+                WhyKnotEndpoints.ReportUrl, payload, MeshJsonContext.Default.ReportPayload).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
                 ConsoleUx.Warn(LogComponent.Report, "server rejected report: " + (int)resp.StatusCode);
         }

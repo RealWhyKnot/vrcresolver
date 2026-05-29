@@ -24,7 +24,7 @@ internal sealed partial class MeshClient
                     ServerMaxWindowBits = 15,
                 };
 
-                var wsUri = new Uri("wss://" + node + "/mesh");
+                var wsUri = WhyKnotEndpoints.MeshWebSocketUrlForHost(node);
                 await _ws.ConnectAsync(wsUri, ct).ConfigureAwait(false);
 
                 _isV3Connection = ShouldSendClientHello(_ws.SubProtocol);
@@ -44,6 +44,7 @@ internal sealed partial class MeshClient
                 }
 
                 _cachedNodeHost = node;
+                _useApexDiscoveryFallback = false;
                 _wasConnected = true;
                 _firstReconnectFailureUtc = DateTime.MinValue;
                 _lastPongUtc = DateTime.UtcNow;
@@ -65,10 +66,18 @@ internal sealed partial class MeshClient
                 }
                 _wasConnected = false;
                 FailAllPending(WireConstants.FallbackServerUnreachable);
+                if (string.Equals(_currentNodeHost, WhyKnotEndpoints.ProxyHost, StringComparison.OrdinalIgnoreCase)
+                    && string.IsNullOrEmpty(_cachedNodeHost))
+                {
+                    _useApexDiscoveryFallback = true;
+                }
                 if (_firstReconnectFailureUtc == DateTime.MinValue)
                     _firstReconnectFailureUtc = DateTime.UtcNow;
                 if (DateTime.UtcNow - _firstReconnectFailureUtc > ApexReResolveAfter)
+                {
                     _cachedNodeHost = null;
+                    _useApexDiscoveryFallback = false;
+                }
             }
             finally
             {
@@ -123,22 +132,19 @@ internal sealed partial class MeshClient
     private async Task<string> ResolveNodeHostAsync(CancellationToken ct)
     {
         if (!string.IsNullOrEmpty(_cachedNodeHost)) return _cachedNodeHost!;
+        if (!_useApexDiscoveryFallback) return WhyKnotEndpoints.ProxyHost;
 
         Exception? lastEx = null;
         for (int attempt = 1; attempt <= 3; attempt++)
         {
             try
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, ApexUrl);
+                using var req = new HttpRequestMessage(HttpMethod.Get, WhyKnotEndpoints.LegacyApexDiscoveryUrl);
                 req.Headers.UserAgent.ParseAdd(_userAgent);
                 using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
                 if ((int)resp.StatusCode >= 300 && (int)resp.StatusCode < 400 && resp.Headers.Location != null)
                 {
-                    var loc = resp.Headers.Location;
-                    var abs = loc.IsAbsoluteUri ? loc : new Uri(ApexUrl, loc);
-                    string host = abs.Host;
-                    if (!string.IsNullOrEmpty(host)
-                        && !host.Equals(ApexUrl.Host, StringComparison.OrdinalIgnoreCase))
+                    if (WhyKnotEndpoints.TryExtractDiscoveryRedirectHost(resp.Headers.Location, out string host))
                     {
                         return host;
                     }

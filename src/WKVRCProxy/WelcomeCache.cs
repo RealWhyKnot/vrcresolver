@@ -4,7 +4,7 @@ using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;
 
-// Per-node persistent cache of v3 welcome contents, keyed by SHA256-prefix
+// Per-host persistent cache of v3 welcome contents, keyed by SHA256-prefix
 // fingerprint the server emits in welcome.welcome_hash. On each reconnect
 // the client sends client_hello carrying the cached hash; if the server's
 // hash matches, it replies with the small welcome_cached frame instead of
@@ -14,10 +14,9 @@ namespace WKVRCProxy;
 // codec-state.json -- same LocalLow state-root convention; see
 // project_locallow_state_layout.md).
 //
-// Per-node keying matters: apex-302 routes to either node1 or node2 and
-// their welcomes can differ (different yt_dlp_version, different node
-// label, different warp_active state). Single-slot would thrash on every
-// node-rotation reconnect.
+// Per-host keying matters: current clients normally use proxy.whyknot.dev,
+// while legacy clients and fallback discovery can still use node aliases.
+// Single-slot would thrash across mixed deployment shapes.
 //
 // Thread-safety: Get / Store / Invalidate are called from the MeshClient
 // run loop only — single reader, single writer. Atomic write (tmp-file +

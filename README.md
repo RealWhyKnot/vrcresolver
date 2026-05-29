@@ -2,7 +2,7 @@
 
 VRChat's in-world video players use yt-dlp under the hood. Vanilla yt-dlp is slow on cold starts, breaks against YouTube changes the moment they ship, and hands AVPro URLs that VRChat's trusted-host allowlist rejects in default-public worlds. WKVRCProxy fixes all three.
 
-A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build that asks a remote resolver (whyknot.dev) and routes the resulting stream URL through a local listener so AVPro accepts it everywhere. If the remote is unreachable or anything else goes wrong, the patched binary falls through to the vanilla yt-dlp it preserved at install time. Watchdog absent does not break VRChat.
+A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build that asks a remote resolver (`proxy.whyknot.dev`) and routes the resulting stream URL through a local listener so AVPro accepts it everywhere. If the remote is unreachable or anything else goes wrong, the patched binary falls through to the vanilla yt-dlp it preserved at install time. Watchdog absent does not break VRChat.
 
 **[Wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki)** | **[Report a bug](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml)**
 
@@ -18,7 +18,7 @@ A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build t
 - **Server auto-updates yt-dlp nightly.** YouTube ships a breaking change at 2 AM UTC; the resolver picks up the upstream fix within 24 hours without you doing anything.
 - **Graceful fallback.** Every failure path execs the vanilla `yt-dlp.exe` that was bundled into VRChat. You never end up with a broken `Tools/yt-dlp.exe`.
 
-What it does NOT do: bypass DRM, change VRChat's per-avatar limits, host content, accept your YouTube login (server tier may use cookies; client tier never does), or work without internet (the fallback path is vanilla yt-dlp; the resolver path needs whyknot.dev reachable).
+What it does NOT do: bypass DRM, change VRChat's per-avatar limits, host content, accept your YouTube login (server tier may use cookies; client tier never does), or work without internet (the fallback path is vanilla yt-dlp; the resolver path needs proxy.whyknot.dev reachable).
 
 ---
 
@@ -68,7 +68,7 @@ Tools/yt-dlp.exe          (our patched shim)
 WKVRCProxy.exe            (watchdog)
    |  WebSocket
    v
-whyknot.dev /mesh         (remote resolver)
+proxy.whyknot.dev /mesh   (remote resolver)
    |  resolves URL
    v
 ... resolved URL streamed back through the watchdog's local listener
@@ -78,7 +78,7 @@ whyknot.dev /mesh         (remote resolver)
 
 If any link breaks, the patched shim execs `yt-dlp-og.exe` and AVPro plays whatever vanilla yt-dlp returns. The watchdog absent removes the server-side path; videos that already worked with vanilla yt-dlp keep working.
 
-The remote resolver is whyknot.dev. The wire protocol is documented in the [Mesh Protocol](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Mesh-Protocol) wiki page; if you want to host your own backend you'll find the details there.
+The remote resolver is proxy.whyknot.dev. The wire protocol is documented in the [Mesh Protocol](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Mesh-Protocol) wiki page; if you want to host your own backend you'll find the details there.
 
 ---
 

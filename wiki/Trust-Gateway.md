@@ -6,7 +6,7 @@ The trust gateway is the local HTTP listener that lets AVPro accept resolved str
 
 VRChat's AVPro layer ships with a hardcoded list of trusted hostnames. In worlds with "Allow Untrusted URLs" off (the default for public instances), AVPro rejects any URL whose host doesn't match an entry in that list. The list is small: `*.youtube.com`, `youtu.be`, `*.googlevideo.com`, `*.facebook.com`, `*.fbcdn.net`, `*.vimeo.com`, `*.twitch.tv`, a handful of others.
 
-The resolver returns URLs of the form `https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=...`. `node1.whyknot.dev` is not on the trust list. AVPro silently rejects with `Loading failed` within ~1 second of opening, no real network fetch attempted.
+The resolver returns URLs of the form `https://proxy.whyknot.dev/api/proxy/manifest.m3u8?q=...`. `proxy.whyknot.dev` is not on the trust list. AVPro silently rejects with `Loading failed` within ~1 second of opening, no real network fetch attempted.
 
 ## The fix
 
@@ -27,7 +27,7 @@ The hosts entry routes the AVPro fetch to `127.0.0.1:{port}`. The listener decod
 ## Request flow
 
 ```
-AVPro:  GET http://localhost.youtube.com:51234/play/7f8a9b0c1d2e/manifest.m3u8?target=aHR0cHM6Ly9ub2RlMS53aHlrbm90LmRldi9hcGk...
+AVPro:  GET http://localhost.youtube.com:51234/play/7f8a9b0c1d2e/manifest.m3u8?target=aHR0cHM6Ly9wcm94eS53aHlrbm90LmRldi9hcGk...
         (Range: bytes=0-1023)
               |
               v  (DNS via hosts file)
@@ -36,7 +36,7 @@ AVPro:  GET http://localhost.youtube.com:51234/play/7f8a9b0c1d2e/manifest.m3u8?t
               |
               v
 +-----------------------------+
-| LocalRelayServer (watchdog) |  base64-decode target -> https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=...
+| LocalRelayServer (watchdog) |  base64-decode target -> https://proxy.whyknot.dev/api/proxy/manifest.m3u8?q=...
 | - HttpListener              |  HttpClient.SendAsync (forwards Range, If-*, User-Agent)
 | - HttpClient                |  reads response headers, streams bytes
 | - relative-prefix map       |  /play/<session>/seg.ts -> upstream base + seg.ts

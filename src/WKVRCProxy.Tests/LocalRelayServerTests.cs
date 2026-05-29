@@ -158,6 +158,7 @@ public class LocalRelayServerTests
     }
 
     [Theory]
+    [InlineData("https://proxy.whyknot.dev/api/proxy/manifest.m3u8?q=abc", true)]
     [InlineData("https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc", true)]
     [InlineData("https://whyknot.dev/api/proxy/lazy-hls/wk_abc/index.m3u8", true)]
     [InlineData("https://node1.whyknot.dev/api/popcorn/proxy/manifest.m3u8?clientId=c&index=1", true)]

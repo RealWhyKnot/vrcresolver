@@ -13,7 +13,7 @@ namespace WKVRCProxy;
 //   http(s)://localhost.youtube.com:{port}/play/<session>/manifest.<ext>?target=<base64>
 // AVPro's trust check passes on the localhost.youtube.com host; the listener
 // decodes target=, forwards to the real upstream (typically
-// `https://node1.whyknot.dev/api/proxy?...`), and streams bytes back.
+// `https://proxy.whyknot.dev/api/proxy?...`), and streams bytes back.
 //
 // If the server-side playlist uses relative subresource URLs, AVPro resolves
 // them under /play/<session>/ and the listener forwards them relative to the

@@ -8,7 +8,7 @@ The watchdog prints to its console window. Useful lines:
 | --- | --- |
 | `Patch applied. Watching for VRChat overwrites -- Ctrl+C to quit.` | Watchdog up, patched yt-dlp in place |
 | `[relay] listening port {port}` | Trust-gateway HTTP listener bound; the wrapper will route resolved URLs through `localhost.youtube.com:{port}` so AVPro accepts them in default-public worlds |
-| `[mesh] connected` | Persistent WS to whyknot.dev established |
+| `[mesh] connected` | Persistent WS to proxy.whyknot.dev established |
 | `[mesh] disconnected -- <reason>` | WS dropped; resolves are falling back to vanilla yt-dlp until the next reconnect |
 | `[mesh] reconnect attempt N in M s` | Backoff window before next reconnect |
 | `[patch] yt-dlp.exe was overwritten -- re-applied.` | VRChat replaced the patched file (typical at launch); watchdog restored within 3 s |
@@ -54,9 +54,9 @@ Defensive halt: both the patched yt-dlp and the bundled fallback are missing fro
 
 ### Watchdog can't reach the server
 
-`[mesh] disconnected` followed by reconnect attempts. The watchdog re-resolves the apex node every 5 minutes of continuous failure. While disconnected, the patched `yt-dlp.exe` execs the vanilla `yt-dlp-og.exe` and you get vanilla yt-dlp behaviour -- playback works, but without the server-assisted resolution.
+`[mesh] disconnected` followed by reconnect attempts. The watchdog connects to `proxy.whyknot.dev` first and can fall back to the legacy apex discovery path if the proxy host is unavailable before a connection is established. While disconnected, the patched `yt-dlp.exe` execs the vanilla `yt-dlp-og.exe` and you get vanilla yt-dlp behaviour -- playback works, but without the server-assisted resolution.
 
-If reconnects never succeed, check that `whyknot.dev` resolves and is reachable from your network.
+If reconnects never succeed, check that `proxy.whyknot.dev` and `whyknot.dev` resolve and are reachable from your network.
 
 ### Hosts entry won't take
 

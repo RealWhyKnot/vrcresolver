@@ -16,11 +16,14 @@ namespace WKVRCProxy;
 // for the user-facing console summary.
 internal readonly record struct MeshResolveResult(byte[] Frame, string Action, string? Reason);
 
-// Persistent reconnecting WebSocket client to whyknot.dev's mesh endpoint.
+// Persistent reconnecting WebSocket client to proxy.whyknot.dev's mesh endpoint.
 //
-// Apex-302 discovery: GET https://whyknot.dev/ with auto-redirect off, parse
-// Location for the assigned nodeN.whyknot.dev hostname. Cached in memory only;
-// re-resolved if reconnect attempts keep failing for more than 5 min straight.
+// Primary path: connect directly to proxy.whyknot.dev and let edge routing pick
+// an origin. If that host is unavailable before a connection is established,
+// fall back to the legacy apex-302 discovery shape so older deployment layouts
+// that return node aliases still work. The selected hostname is cached in
+// memory and re-resolved if reconnect attempts keep failing for more than
+// 5 minutes straight.
 //
 // v2 protocol: on each new WS connection the server emits a one-shot "welcome"
 // frame ~50ms after accept carrying its protocol_version, node, features,
@@ -36,7 +39,6 @@ internal readonly record struct MeshResolveResult(byte[] Frame, string Action, s
 // to the server.
 internal sealed partial class MeshClient : IAsyncDisposable
 {
-    private static readonly Uri ApexUrl = new("https://whyknot.dev/");
     private static readonly TimeSpan ApexAttemptTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan HelperStatusRefreshInterval = TimeSpan.FromSeconds(45);
@@ -97,8 +99,8 @@ internal sealed partial class MeshClient : IAsyncDisposable
     // returns a `resolved` frame. VrcLogMonitor consults this when emitting
     // playback_feedback so the server's dispatcher can hit its correlation
     // cache (TTL 1h) and attribute the failure to the exact (domain, config)
-    // pair instead of falling back to URL-host extraction — which it skips
-    // entirely when the host is whyknot.dev (the proxy URL we returned).
+    // pair instead of falling back to URL-host extraction for a first-party
+    // playback proxy URL.
     private readonly object _recentCidsLock = new();
     private readonly Dictionary<string, (string Cid, DateTime At)> _recentCids = new();
     private const int MaxRecentCids = 256;
@@ -139,6 +141,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
     private int _helperStatusRefreshRunning;
     private int _reconnectAttempt;
     private bool _wasConnected;
+    private bool _useApexDiscoveryFallback;
     private string? _lastSentHelperStatus;
     private string? _lastSentHelperEncoder;
 
@@ -147,8 +150,9 @@ internal sealed partial class MeshClient : IAsyncDisposable
     // it doesn't come back as "whyknot-v3" we fall back to the v2 path
     // (skip client_hello, wait for plain welcome). _currentNodeHost is
     // captured per-connection so the welcome-cache lookup keys on the
-    // exact node we connected to (apex-302 routes to either node1 or
-    // node2 and their welcomes can differ).
+    // exact public host we connected to. The current release uses
+    // proxy.whyknot.dev on the happy path; legacy apex fallback may still
+    // return node aliases.
     private bool _isV3Connection;
     private string _currentNodeHost = "";
     private readonly WelcomeCache _welcomeCache = new();
@@ -181,8 +185,8 @@ internal sealed partial class MeshClient : IAsyncDisposable
     public bool IsConnected => _ws?.State == WebSocketState.Open;
     public int ServerProtocolVersion => _serverProtocolVersion;
     public string? ServerNode => _serverNode;
-    // Hostname of the WS endpoint we're currently connected to (e.g.
-    // "node1.whyknot.dev"). Used by ResolveCache as part of the cache
+    // Hostname of the WS endpoint we're currently connected to (usually
+    // "proxy.whyknot.dev"). Used by ResolveCache as part of the cache
     // key so different mesh nodes never cross-serve cached URLs.
     // Distinct from ServerNode -- ServerNode is the server-supplied
     // logical node label from the welcome frame; CurrentNodeHost is
