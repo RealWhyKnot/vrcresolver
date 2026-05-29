@@ -6,6 +6,8 @@ namespace WKVRCProxy.Tests;
 public class WhyKnotUrlPolicyTests
 {
     [Theory]
+    [InlineData("https://proxy.whyknot.dev/api/proxy/manifest.m3u8?q=abc", true)]
+    [InlineData("https://proxy.whyknot.dev/api/proxy/seg.ts?url=abc&wkedge=node1", true)]
     [InlineData("https://node1.whyknot.dev/api/proxy/manifest.m3u8?q=abc", true)]
     [InlineData("https://whyknot.dev/api/proxy/lazy-hls/wk_abc/index.m3u8", true)]
     [InlineData("https://node2.whyknot.dev/api/popcorn/proxy/manifest.m3u8?clientId=c&index=1", true)]
@@ -22,6 +24,7 @@ public class WhyKnotUrlPolicyTests
     }
 
     [Theory]
+    [InlineData("https://proxy.whyknot.dev/api/proxy/manifest.m3u8?q=abc", "m3u8")]
     [InlineData("https://node1.whyknot.dev/api/proxy/manifest.mpd?q=abc", "mpd")]
     [InlineData("https://node1.whyknot.dev/api/proxy?q=legacy", "m3u8")]
     [InlineData("https://node1.whyknot.dev/api/popcorn/proxy/manifest.m3u8?clientId=c&index=1", "m3u8")]
