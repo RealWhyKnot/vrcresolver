@@ -77,7 +77,7 @@ internal static partial class Program
         {
             string url = ExtractUrl(args);
             string? formatArg = ExtractDashFValue(args);
-            string player = InferPlayer(formatArg);
+            string player = ResolveRequestProfile.InferPlayer(formatArg);
 
             LogStartBanner(args, url, formatArg, player);
 
@@ -176,6 +176,7 @@ internal static partial class Program
     {
         var swPipe = Stopwatch.StartNew();
         long totalDeadlineMs = (long)ResolveDeadline.TotalMilliseconds;
+        int? maxHeight = ResolveRequestProfile.TryGetHeightCap(formatArg);
 
         var req = new ResolveRequest
         {
@@ -183,6 +184,7 @@ internal static partial class Program
             Id = Guid.NewGuid().ToString("N"),
             Url = url,
             Player = player,
+            MaxHeight = maxHeight,
             ProtocolVersion = WireConstants.ClientProtocolVersion,
             VrchatFormatArg = formatArg,
             AcceptProtocols = player == WireConstants.PlayerUnity
@@ -633,18 +635,6 @@ internal static partial class Program
                 return args[i + 1];
         }
         return null;
-    }
-
-    // Heuristic: VRChat caps Unity-player height at 720 in its `-f` selector;
-    // AVPro typically allows up to 1080. Anything else (or a missing -f)
-    // defaults to avpro since it's the more-capable codec set and the
-    // server can downshift when needed.
-    private static string InferPlayer(string? formatArg)
-    {
-        if (string.IsNullOrEmpty(formatArg)) return WireConstants.PlayerAvPro;
-        if (formatArg.Contains("height<=720", StringComparison.OrdinalIgnoreCase))
-            return WireConstants.PlayerUnity;
-        return WireConstants.PlayerAvPro;
     }
 
     // Bare host or "?" if the input isn't a parseable absolute URL. Used
