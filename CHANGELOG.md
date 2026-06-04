@@ -18,6 +18,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 ### Fixed
 - **mesh:** Use proxy public endpoint (648c66b)
 - **resolve:** Forward wrapper height caps (e5d25a3)
+- **build:** Keep BuildInfo generated under obj (3100fd2)
 
 ---
 
