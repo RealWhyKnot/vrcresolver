@@ -51,42 +51,42 @@ public static class ConsoleUx
     // warnings, errors, and resolve outcomes.
     private static ConsoleColor ColorFor(LogComponent c) => c switch
     {
-        LogComponent.Mesh      => ConsoleColor.DarkCyan,
-        LogComponent.Helper    => ConsoleColor.DarkCyan,
-        LogComponent.Ipc       => ConsoleColor.DarkGray,
-        LogComponent.Hosts     => ConsoleColor.DarkGray,
-        LogComponent.Patch     => ConsoleColor.Gray,
-        LogComponent.Wrapper   => ConsoleColor.DarkGray,
+        LogComponent.Mesh => ConsoleColor.DarkCyan,
+        LogComponent.Helper => ConsoleColor.DarkCyan,
+        LogComponent.Ipc => ConsoleColor.DarkGray,
+        LogComponent.Hosts => ConsoleColor.DarkGray,
+        LogComponent.Patch => ConsoleColor.Gray,
+        LogComponent.Wrapper => ConsoleColor.DarkGray,
         LogComponent.Heartbeat => ConsoleColor.DarkGray,
-        LogComponent.Relay     => ConsoleColor.Gray,
-        LogComponent.Terminal  => ConsoleColor.Gray,
-        LogComponent.Codec     => ConsoleColor.Gray,
-        LogComponent.Report    => ConsoleColor.DarkGray,
-        LogComponent.Update    => ConsoleColor.Gray,
-        LogComponent.VrcLog    => ConsoleColor.DarkGray,
-        LogComponent.YtDlp     => ConsoleColor.Gray,
-        LogComponent.Shutdown  => ConsoleColor.DarkRed,
-        _                      => ConsoleColor.Gray,
+        LogComponent.Relay => ConsoleColor.Gray,
+        LogComponent.Terminal => ConsoleColor.Gray,
+        LogComponent.Codec => ConsoleColor.Gray,
+        LogComponent.Report => ConsoleColor.DarkGray,
+        LogComponent.Update => ConsoleColor.Gray,
+        LogComponent.VrcLog => ConsoleColor.DarkGray,
+        LogComponent.YtDlp => ConsoleColor.Gray,
+        LogComponent.Shutdown => ConsoleColor.DarkRed,
+        _ => ConsoleColor.Gray,
     };
 
     private static string Tag(LogComponent c) => c switch
     {
-        LogComponent.Mesh      => "[mesh]",
-        LogComponent.Helper    => "[helper]",
-        LogComponent.Ipc       => "[ipc]",
-        LogComponent.Hosts     => "[hosts]",
-        LogComponent.Patch     => "[patch]",
-        LogComponent.Wrapper   => "[wrapper]",
+        LogComponent.Mesh => "[mesh]",
+        LogComponent.Helper => "[helper]",
+        LogComponent.Ipc => "[ipc]",
+        LogComponent.Hosts => "[hosts]",
+        LogComponent.Patch => "[patch]",
+        LogComponent.Wrapper => "[wrapper]",
         LogComponent.Heartbeat => "[heartbeat]",
-        LogComponent.Relay     => "[relay]",
-        LogComponent.Terminal  => "[terminal]",
-        LogComponent.Codec     => "[codec]",
-        LogComponent.Report    => "[report]",
-        LogComponent.Update    => "[update]",
-        LogComponent.VrcLog    => "[vrclog]",
-        LogComponent.YtDlp     => "[yt-dlp]",
-        LogComponent.Shutdown  => "[shutdown]",
-        _                      => "[?]",
+        LogComponent.Relay => "[relay]",
+        LogComponent.Terminal => "[terminal]",
+        LogComponent.Codec => "[codec]",
+        LogComponent.Report => "[report]",
+        LogComponent.Update => "[update]",
+        LogComponent.VrcLog => "[vrclog]",
+        LogComponent.YtDlp => "[yt-dlp]",
+        LogComponent.Shutdown => "[shutdown]",
+        _ => "[?]",
     };
 
     public static IDisposable UseOverlay(IConsoleOverlay overlay)
@@ -148,7 +148,7 @@ public static class ConsoleUx
     //
     // The lh-yt routing marker, when present, replaces the leading two
     // spaces after the host column so wider hosts still align downstream.
-    private const int HostWidth   = 28;
+    private const int HostWidth = 28;
     private const int PlayerWidth = 14;
     private const int OutcomeWidth = 9;
 
@@ -169,33 +169,33 @@ public static class ConsoleUx
             case ResolveStatus.Resolved:
                 color = ConsoleColor.Green;
                 token = "OK";
-                word  = viaCache ? "cached" : "resolved";
+                word = viaCache ? "cached" : "resolved";
                 break;
             case ResolveStatus.Cached:
                 color = ConsoleColor.Green;
                 token = "OK";
-                word  = "cached";
+                word = "cached";
                 break;
             case ResolveStatus.Fallback:
                 color = ConsoleColor.Yellow;
                 token = "!!";
-                word  = "fallback";
+                word = "fallback";
                 break;
             case ResolveStatus.Failed:
                 color = ConsoleColor.Red;
                 token = "XX";
-                word  = "failed";
+                word = "failed";
                 break;
             default:
                 color = ConsoleColor.DarkGray;
                 token = "??";
-                word  = "unknown";
+                word = "unknown";
                 break;
         }
 
-        string hostCol   = TruncatePad(host,   HostWidth);
+        string hostCol = TruncatePad(host, HostWidth);
         string playerCol = TruncatePad(player, PlayerWidth);
-        string ytTag     = viaLhYt ? " [yt]" : "     ";
+        string ytTag = viaLhYt ? " [yt]" : "     ";
         string elapsedStr = FormatElapsed(elapsed);
         string reasonSuffix = string.IsNullOrEmpty(reason) ? "" : "   " + reason;
 
@@ -230,15 +230,15 @@ public static class ConsoleUx
         bool isDev,
         IReadOnlyList<(string Label, string Value)> paths)
     {
-        const string divider    = "============================================================";
+        const string divider = "============================================================";
         const string subdivider = "------------------------------------------------------------";
 
         lock (s_lock)
         {
             WriteRaw(ConsoleColor.DarkGray, divider);
             WriteRaw(ConsoleColor.White, $"  WKVRCProxy {version}");
-            WriteRaw(ConsoleColor.Gray,  "  local video relay for VRChat");
-            WriteRaw(ConsoleColor.Gray,  $"  sha {sha}  built {buildTime}");
+            WriteRaw(ConsoleColor.Gray, "  local video relay for VRChat");
+            WriteRaw(ConsoleColor.Gray, $"  sha {sha}  built {buildTime}");
             if (isDev)
             {
                 WriteRaw(ConsoleColor.Yellow, "  mode: DEV (diagnostic logs mirrored to console; relay/helper trace enabled)");

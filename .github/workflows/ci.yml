@@ -24,6 +24,7 @@ on:
       - '.gitattributes'
       - '.editorconfig'
       - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -42,9 +43,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Test release notes script
+      - name: Validate PowerShell and release scripts
         shell: pwsh
-        run: ./.github/scripts/Test-GenerateReleaseNotes.ps1
+        run: |
+          ./.github/scripts/Test-WorkflowSyntax.ps1
+          ./.github/scripts/Test-UpdateChangelog.ps1
+          ./.github/scripts/Test-GenerateReleaseNotes.ps1
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
@@ -53,6 +57,14 @@ jobs:
 
       - name: Restore
         run: dotnet restore WKVRCProxy.slnx
+
+      - name: Install PowerShell analyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: Lint and format check
+        shell: pwsh
+        run: ./scripts/lint.ps1
 
       - name: Build
         run: dotnet build WKVRCProxy.slnx --configuration Release --no-restore -warnaserror

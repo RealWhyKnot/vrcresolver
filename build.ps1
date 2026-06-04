@@ -23,9 +23,9 @@ Set-Location $PSScriptRoot
 # Idempotent; harmlessly no-ops outside a git checkout.
 try { & git config --local core.hooksPath .githooks 2>$null } catch {}
 
-$BuildDir     = Join-Path $PSScriptRoot "dist"
-$ToolsStage   = Join-Path $PSScriptRoot "_tools_staging"
-$StateFile    = Join-Path $PSScriptRoot ".local_build_state.json"
+$BuildDir = Join-Path $PSScriptRoot "dist"
+$ToolsStage = Join-Path $PSScriptRoot "_tools_staging"
+$StateFile = Join-Path $PSScriptRoot ".local_build_state.json"
 $CreatePackage = $Package -and -not $SkipZip
 
 # --- Versioning ---
@@ -42,19 +42,22 @@ if ($Version) {
         throw "Invalid -Version '$Version'. Expected YYYY.M.D.N (release), YYYY.M.D.N-XXXX (dev), or YYYY.M.D.N-beta (prerelease)."
     }
     $FullVersion = $Version
-} else {
+}
+else {
     $Today = Get-Date -Format "yyyy.M.d"
     $BuildCount = 0
     if (Test-Path $StateFile) {
         $State = Get-Content $StateFile | ConvertFrom-Json
         if ($State.Date -eq $Today) { $BuildCount = [int]$State.Count + 1 }
     }
-    $UID = [Guid]::NewGuid().ToString().Substring(0,4).ToUpper()
+    $UID = [Guid]::NewGuid().ToString().Substring(0, 4).ToUpper()
     $FullVersion = "$Today.$BuildCount-$UID"
     @{ Date = $Today; Count = $BuildCount } | ConvertTo-Json | Out-File $StateFile -Encoding utf8
 }
 # AssemblyVersion must be pure numeric (no -XXXX dev suffix)
 $AsmVersion = ($FullVersion -split '-')[0]
+$VersionFile = Join-Path $PSScriptRoot "version.txt"
+[System.IO.File]::WriteAllText($VersionFile, $FullVersion, [System.Text.UTF8Encoding]::new($false))
 Write-Host "Building Version: $FullVersion" -ForegroundColor Magenta
 
 # --- Clean dist ---
@@ -76,12 +79,14 @@ $gitSha = "<unknown>"
 try {
     $resolved = & git rev-parse --short=12 HEAD 2>$null
     if ($LASTEXITCODE -eq 0 -and $resolved) { $gitSha = $resolved.Trim() }
-} catch { }
+}
+catch { }
 $gitDirty = ""
 try {
     $statusOut = & git status --porcelain 2>$null
     if ($LASTEXITCODE -eq 0 -and $statusOut) { $gitDirty = "-dirty" }
-} catch { }
+}
+catch { }
 $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 # IsDevBuild gates verbose [relay] req= logging in LocalRelayServer. The
@@ -96,7 +101,8 @@ $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 # experiments and the verbose log is the whole point.
 if ($env:GITHUB_ACTIONS -eq 'true') {
     $isDev = $FullVersion -match '-'
-} else {
+}
+else {
     $isDev = ($FullVersion -match '-') -or ($gitDirty -ne "")
 }
 $isDevLiteral = if ($isDev) { "true" } else { "false" }
@@ -185,7 +191,8 @@ $ProgFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
 $VsInstaller = Join-Path $ProgFilesX86 'Microsoft Visual Studio\Installer'
 if (Test-Path (Join-Path $VsInstaller 'vswhere.exe')) {
     if ($env:PATH -notlike "*$VsInstaller*") { $env:PATH = "$VsInstaller;$env:PATH" }
-} else {
+}
+else {
     Write-Warning "vswhere.exe not found at $VsInstaller -- AOT link step may fail. Install Visual Studio Build Tools with the Desktop C++ workload."
 }
 
@@ -193,9 +200,9 @@ if (Test-Path (Join-Path $VsInstaller 'vswhere.exe')) {
 # WatchdogPubArgs profile (single-file, R2R, JIT) is no longer used --
 # AOT produces a single native exe inherently and PublishSingleFile is
 # incompatible with PublishAot. Same $AotPubArgs for all of them.
-$AotPubArgs      = @("-c","Release","-r","win-x64","--self-contained","true",
-                     "/p:Version=$AsmVersion",
-                     "-o",$BuildDir,"--nologo")
+$AotPubArgs = @("-c", "Release", "-r", "win-x64", "--self-contained", "true",
+    "/p:Version=$AsmVersion",
+    "-o", $BuildDir, "--nologo")
 dotnet publish "src/WKVRCProxy/WKVRCProxy.csproj" @AotPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy publish failed" }
 dotnet publish "src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" @AotPubArgs
@@ -227,9 +234,9 @@ Get-ChildItem $FfmpegExtractRoot -Recurse -File |
 # Drops PublishSingleFile (AOT incompatible — produces a single native .exe
 # inherently). vswhere.exe is already on PATH from the front-loaded munge
 # at the top of the publish section.
-$YtDlpPubArgs = @("-c","Release","-r","win-x64","--self-contained","true",
-                  "/p:Version=$AsmVersion",
-                  "-o",$BuildTools,"--nologo")
+$YtDlpPubArgs = @("-c", "Release", "-r", "win-x64", "--self-contained", "true",
+    "/p:Version=$AsmVersion",
+    "-o", $BuildTools, "--nologo")
 dotnet publish "src/WKVRCProxy.YtDlp/WKVRCProxy.YtDlp.csproj" @YtDlpPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.YtDlp publish failed" }
 
@@ -248,7 +255,8 @@ New-Item -ItemType Directory $BuildData -Force | Out-Null
 $KnownHashesSrc = Join-Path $PSScriptRoot "data/known_wrapper_hashes.txt"
 if (Test-Path $KnownHashesSrc) {
     Copy-Item $KnownHashesSrc (Join-Path $BuildData "known_wrapper_hashes.txt") -Force
-} else {
+}
+else {
     Write-Warning "data/known_wrapper_hashes.txt missing from repo -- shipping empty list"
     "" | Out-File (Join-Path $BuildData "known_wrapper_hashes.txt") -Encoding utf8 -NoNewline
 }

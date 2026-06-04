@@ -31,6 +31,7 @@ wwwroot/
 # Project Specific
 _tools_staging/
 .local_build_state.json
+version.txt
 *.log
 
 # Test / sample media — not for version control

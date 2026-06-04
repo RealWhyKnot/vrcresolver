@@ -104,11 +104,11 @@ try {
 
     $TemplateDir = Join-Path $TempRoot '.github/release-template'
     $StableNotes = (& $Generator `
-        -Tag v2026.5.3.0 `
-        -Repo RealWhyKnot/WKVRCProxy `
-        -TemplateDir $TemplateDir `
-        -PrereleaseTags v2026.5.2.0 `
-        -SkipScrub) -join "`n"
+            -Tag v2026.5.3.0 `
+            -Repo RealWhyKnot/WKVRCProxy `
+            -TemplateDir $TemplateDir `
+            -PrereleaseTags v2026.5.2.0 `
+            -SkipScrub) -join "`n"
 
     Assert-Contains -Text $StableNotes -Expected 'fix(helper): plain prerelease fallback'
     Assert-Contains -Text $StableNotes -Expected 'fix(relay): beta port fallback'
@@ -118,11 +118,11 @@ try {
     Assert-NotContains -Text $StableNotes -Unexpected 'compare/v2026.5.2.1-beta...v2026.5.3.0'
 
     $BetaNotes = (& $Generator `
-        -Tag v2026.5.2.1-beta `
-        -Repo RealWhyKnot/WKVRCProxy `
-        -TemplateDir $TemplateDir `
-        -PrereleaseTags v2026.5.2.0 `
-        -SkipScrub) -join "`n"
+            -Tag v2026.5.2.1-beta `
+            -Repo RealWhyKnot/WKVRCProxy `
+            -TemplateDir $TemplateDir `
+            -PrereleaseTags v2026.5.2.0 `
+            -SkipScrub) -join "`n"
 
     Assert-Contains -Text $BetaNotes -Expected 'fix(relay): beta port fallback'
     Assert-Contains -Text $BetaNotes -Expected 'compare/v2026.5.2.0...v2026.5.2.1-beta'
@@ -130,11 +130,11 @@ try {
     Assert-NotContains -Text $BetaNotes -Unexpected 'fix(vrclog): stable startup tail'
 
     $PlainPrereleaseNotes = (& $Generator `
-        -Tag v2026.5.2.0 `
-        -Repo RealWhyKnot/WKVRCProxy `
-        -TemplateDir $TemplateDir `
-        -PrereleaseTags v2026.5.2.0 `
-        -SkipScrub) -join "`n"
+            -Tag v2026.5.2.0 `
+            -Repo RealWhyKnot/WKVRCProxy `
+            -TemplateDir $TemplateDir `
+            -PrereleaseTags v2026.5.2.0 `
+            -SkipScrub) -join "`n"
 
     Assert-Contains -Text $PlainPrereleaseNotes -Expected 'fix(helper): plain prerelease fallback'
     Assert-Contains -Text $PlainPrereleaseNotes -Expected 'compare/v2026.5.1.0...v2026.5.2.0'

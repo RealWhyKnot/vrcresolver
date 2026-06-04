@@ -113,8 +113,10 @@ internal sealed class WelcomeCache
                     string aside = _path + ".oversized-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
                     File.Move(_path, aside);
                 }
-                catch { /* best-effort — if rename fails next launch
-                          will hit this same branch and try again */ }
+                catch
+                { /* best-effort — if rename fails next launch
+                          will hit this same branch and try again */
+                }
                 return null;
             }
             using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);

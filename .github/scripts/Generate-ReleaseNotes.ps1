@@ -110,15 +110,15 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Tag         = $(if ($env:TAG_NAME) { $env:TAG_NAME } else { $env:GITHUB_REF_NAME }),
-    [string] $Repo        = $env:GITHUB_REPOSITORY,
-    [string] $Extras      = $null,
+    [string] $Tag = $(if ($env:TAG_NAME) { $env:TAG_NAME } else { $env:GITHUB_REF_NAME }),
+    [string] $Repo = $env:GITHUB_REPOSITORY,
+    [string] $Extras = $null,
     [string] $TemplateDir = $null,
-    [string] $Manifest    = $null,
-    [string] $ZipPath     = $null,
-    [string] $ZipName     = $null,
-    [long]   $ZipSize     = 0,
-    [string] $ZipSha256   = $null,
+    [string] $Manifest = $null,
+    [string] $ZipPath = $null,
+    [string] $ZipName = $null,
+    [long]   $ZipSize = 0,
+    [string] $ZipSha256 = $null,
     [switch] $AllowEmpty,
     [string[]] $PrereleaseTags = @(),
     [switch] $SkipScrub
@@ -172,7 +172,7 @@ function Get-KnownPrereleaseTags([string]$Repo, [string[]]$AdditionalTags) {
     }
 
     if ($Repo) {
-        $listJson = & gh release list --repo $Repo --limit 100 --json tagName,isPrerelease 2>$null
+        $listJson = & gh release list --repo $Repo --limit 100 --json tagName, isPrerelease 2>$null
         if ($LASTEXITCODE -eq 0 -and $listJson) {
             try {
                 $releases = $listJson | ConvertFrom-Json
@@ -181,7 +181,8 @@ function Get-KnownPrereleaseTags([string]$Repo, [string[]]$AdditionalTags) {
                         $set[$release.tagName] = $true
                     }
                 }
-            } catch {
+            }
+            catch {
                 Write-Host "::warning::Failed to parse 'gh release list' output while reading prerelease tags: $_."
             }
         }
@@ -232,7 +233,7 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo, [string[]]$Additio
 
     # Layer 2: subject-match the most recent published GitHub release.
     if ($Repo) {
-        $listJson = & gh release list --repo $Repo --limit 20 --json tagName,publishedAt,isPrerelease 2>$null
+        $listJson = & gh release list --repo $Repo --limit 20 --json tagName, publishedAt, isPrerelease 2>$null
         if ($LASTEXITCODE -eq 0 -and $listJson) {
             $candidatePrevTag = $null
             try {
@@ -242,7 +243,8 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo, [string[]]$Additio
                     Sort-Object publishedAt -Descending |
                     Select-Object -First 1
                 if ($candidate) { $candidatePrevTag = $candidate.tagName }
-            } catch {
+            }
+            catch {
                 Write-Host "::warning::Failed to parse 'gh release list' output: $_."
             }
 
@@ -266,7 +268,7 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo, [string[]]$Additio
                         $rebasedSha = $null
                         $logLines = & git log $Tag --format='%H%x09%s' 2>$null
                         if ($LASTEXITCODE -eq 0 -and $logLines) {
-                            $lineArr = if ($logLines -is [array]) { $logLines } else { ,$logLines }
+                            $lineArr = if ($logLines -is [array]) { $logLines } else { , $logLines }
                             foreach ($line in $lineArr) {
                                 if (-not $line) { continue }
                                 $parts = $line -split "`t", 2
@@ -290,7 +292,8 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo, [string[]]$Additio
                     }
                 }
             }
-        } else {
+        }
+        else {
             Write-Host "::warning::'gh release list' produced no usable output (gh not authed or no releases yet). Falling back to first-release changelog notes."
         }
     }
@@ -308,9 +311,9 @@ function Resolve-PrevTagForSlice([string]$Tag, [string]$Repo, [string[]]$Additio
 }
 
 $prevInfo = Resolve-PrevTagForSlice -Tag $Tag -Repo $Repo -AdditionalPrereleaseTags $PrereleaseTags
-$prevTag  = $prevInfo.Tag
-$logArgs  = $prevInfo.LogArgs
-$range    = $prevInfo.Display
+$prevTag = $prevInfo.Tag
+$logArgs = $prevInfo.LogArgs
+$range = $prevInfo.Display
 
 function Read-ChangelogNotes([string]$Version) {
     $path = Join-Path -Path (Get-Location) -ChildPath 'CHANGELOG.md'
@@ -345,9 +348,10 @@ if ($prevInfo.Source -eq 'first-release') {
     if (-not $changelogNotes) {
         if ($AllowEmpty) {
             $changelogNotes = '_First release; see commit log for details._'
-        } else {
+        }
+        else {
             throw "No prior tag or release exists, and CHANGELOG.md has no notes for $Tag or Unreleased. " +
-                  "For the first release, write curated public notes under ## Unreleased before tagging."
+            "For the first release, write curated public notes under ## Unreleased before tagging."
         }
     }
 }
@@ -376,16 +380,16 @@ $entries = foreach ($line in $lines) {
     if ($line -match '\[skip changelog\]') { continue }
     $parts = $line -split "`t", 4
     if ($parts.Count -lt 4) { continue }
-    $sha     = $parts[0]
-    $short   = $parts[1]
-    $author  = $parts[2]
+    $sha = $parts[0]
+    $short = $parts[1]
+    $author = $parts[2]
     if ($AuthorHandleMap.ContainsKey($author)) { $author = $AuthorHandleMap[$author] }
     $subject = $parts[3]
 
     # Strip embedded version-stamp noise like " (2026.4.30.13-EB4B)". Some
     # repos append it mid-subject before a trailing PR ref like " (#42)".
-    $subject = $subject -replace '\s*\(\d{4}\.\d+\.\d+\.\d+-[A-Fa-f0-9]+\)\s*',' '
-    $subject = $subject.Trim() -replace '\s{2,}',' '
+    $subject = $subject -replace '\s*\(\d{4}\.\d+\.\d+\.\d+-[A-Fa-f0-9]+\)\s*', ' '
+    $subject = $subject.Trim() -replace '\s{2,}', ' '
 
     [pscustomobject]@{
         Sha     = $sha
@@ -406,24 +410,24 @@ if (-not $changelogNotes -and (-not $entries -or $entries.Count -eq 0)) {
         return "## What's Changed`n`n_First release; see commit log for details._`n"
     }
     throw "No commits found in range $range. " +
-          "Either the previous tag is misdetected, every commit in the range " +
-          "carries [skip changelog], or the tag points at an empty branch. " +
-          "Pass -AllowEmpty for a first release. Otherwise amend the offending " +
-          "commits or push a real change before tagging."
+    "Either the previous tag is misdetected, every commit in the range " +
+    "carries [skip changelog], or the tag points at an empty branch. " +
+    "Pass -AllowEmpty for a first release. Otherwise amend the offending " +
+    "commits or push a real change before tagging."
 }
 
 function Get-Category([string] $subject) {
-    if ($subject -match '^feat(\(.+?\))?!?:')     { return @{ Order = 1;  Name = 'Features' } }
-    if ($subject -match '^fix(\(.+?\))?!?:')      { return @{ Order = 2;  Name = 'Bug Fixes' } }
-    if ($subject -match '^perf(\(.+?\))?!?:')     { return @{ Order = 3;  Name = 'Performance' } }
-    if ($subject -match '^refactor(\(.+?\))?!?:') { return @{ Order = 4;  Name = 'Refactors' } }
-    if ($subject -match '^revert(\(.+?\))?!?:')   { return @{ Order = 5;  Name = 'Reverts' } }
-    if ($subject -match '^docs(\(.+?\))?!?:')     { return @{ Order = 6;  Name = 'Documentation' } }
-    if ($subject -match '^style(\(.+?\))?!?:')    { return @{ Order = 7;  Name = 'Style' } }
-    if ($subject -match '^test(\(.+?\))?!?:')     { return @{ Order = 8;  Name = 'Tests' } }
-    if ($subject -match '^ci(\(.+?\))?!?:')       { return @{ Order = 9;  Name = 'CI' } }
-    if ($subject -match '^build(\(.+?\))?!?:')    { return @{ Order = 10; Name = 'Build' } }
-    if ($subject -match '^chore(\(.+?\))?!?:')    { return @{ Order = 11; Name = 'Chores' } }
+    if ($subject -match '^feat(\(.+?\))?!?:') { return @{ Order = 1; Name = 'Features' } }
+    if ($subject -match '^fix(\(.+?\))?!?:') { return @{ Order = 2; Name = 'Bug Fixes' } }
+    if ($subject -match '^perf(\(.+?\))?!?:') { return @{ Order = 3; Name = 'Performance' } }
+    if ($subject -match '^refactor(\(.+?\))?!?:') { return @{ Order = 4; Name = 'Refactors' } }
+    if ($subject -match '^revert(\(.+?\))?!?:') { return @{ Order = 5; Name = 'Reverts' } }
+    if ($subject -match '^docs(\(.+?\))?!?:') { return @{ Order = 6; Name = 'Documentation' } }
+    if ($subject -match '^style(\(.+?\))?!?:') { return @{ Order = 7; Name = 'Style' } }
+    if ($subject -match '^test(\(.+?\))?!?:') { return @{ Order = 8; Name = 'Tests' } }
+    if ($subject -match '^ci(\(.+?\))?!?:') { return @{ Order = 9; Name = 'CI' } }
+    if ($subject -match '^build(\(.+?\))?!?:') { return @{ Order = 10; Name = 'Build' } }
+    if ($subject -match '^chore(\(.+?\))?!?:') { return @{ Order = 11; Name = 'Chores' } }
     return @{ Order = 99; Name = 'Other Changes' }
 }
 
@@ -433,8 +437,8 @@ function Get-Category([string] $subject) {
 $nonConforming = @()
 if (-not $changelogNotes) {
     $nonConforming = @($entries | Where-Object {
-        $_.Subject -notmatch '^(feat|fix|perf|refactor|revert|docs|style|test|ci|build|chore)(\(.+?\))?!?:'
-    })
+            $_.Subject -notmatch '^(feat|fix|perf|refactor|revert|docs|style|test|ci|build|chore)(\(.+?\))?!?:'
+        })
     if ($nonConforming.Count -gt 0) {
         Write-Host "::warning::$($nonConforming.Count) commit(s) in range $range do not follow conventional-commit prefixes; bucketed under 'Other Changes':"
         foreach ($e in $nonConforming) {
@@ -463,7 +467,8 @@ if ($Repo -and ($Repo -match '/')) {
     $parts = $Repo -split '/', 2
     $ownerOnly = $parts[0]
     $repoShort = $parts[1]
-} elseif ($Repo) {
+}
+elseif ($Repo) {
     $repoShort = $Repo
 }
 $tagCommitSha = ''
@@ -476,11 +481,12 @@ try {
         $tagCommitSha = $tagSha.Trim()
         if ($tagCommitSha.Length -ge 12) { $tagCommitShort = $tagCommitSha.Substring(0, 12) }
     }
-} finally {
+}
+finally {
     $ErrorActionPreference = $prevErrorActionPreference
 }
 $priorTagToken = if ($prevTag) { $prevTag } else { '' }
-$zipNameToken  = if ($ZipName) { $ZipName } elseif ($ZipPath) { (Split-Path -Leaf $ZipPath) } else { '' }
+$zipNameToken = if ($ZipName) { $ZipName } elseif ($ZipPath) { (Split-Path -Leaf $ZipPath) } else { '' }
 $tokens = @{
     '{tag}'              = $Tag
     '{version}'          = ($Tag -replace '^v', '')
@@ -533,7 +539,8 @@ if ($repoShort) {
 if ($changelogNotes) {
     [void]$sb.AppendLine($changelogNotes)
     [void]$sb.AppendLine()
-} elseif ($useGroups) {
+}
+elseif ($useGroups) {
     $tagged = foreach ($e in $entries) {
         $cat = Get-Category $e.Subject
         [pscustomobject]@{ Order = $cat.Order; Name = $cat.Name; Entry = $e }
@@ -547,7 +554,8 @@ if ($changelogNotes) {
         }
         [void]$sb.AppendLine()
     }
-} else {
+}
+else {
     foreach ($e in $entries) {
         [void]$sb.AppendLine("- $($e.Subject) by @$($e.Author) in $($e.Short)")
     }
@@ -596,14 +604,15 @@ if ($includeIntegrity) {
     # group. Reads better for a user verifying a hash: the binary they
     # double-click on is at the top.
     $sortedEntries = $manifestEntries |
-        Sort-Object @{Expression = { ($_.Path -split '/').Count }}, Path
+        Sort-Object @{Expression = { ($_.Path -split '/').Count } }, Path
     foreach ($entry in $sortedEntries) {
         $indented = "  " + $entry.Path
         $sizeStr = Format-Bytes $entry.Size
         [void]$sb.AppendLine(("{0,-36}    {1,8}    SHA256: {2}" -f $indented, $sizeStr, $entry.Sha256.ToUpper()))
     }
     [void]$sb.AppendLine('```')
-} elseif ($Manifest -or $ZipPath -or $ZipSha256) {
+}
+elseif ($Manifest -or $ZipPath -or $ZipSha256) {
     Write-Host "::warning::File-integrity section skipped: -Manifest, -ZipPath, -ZipSize, and -ZipSha256 must all be set. Got Manifest='$Manifest' ZipPath='$ZipPath' ZipSize=$ZipSize ZipSha256='$ZipSha256'."
 }
 
@@ -650,15 +659,15 @@ $body = $sb.ToString().TrimEnd()
 # reject a multi-char replacement like '--' or '...'.
 $asciiSubs = @(
     @{ Pattern = [string][char]0x2014; Replacement = '--' }        # em-dash
-    @{ Pattern = [string][char]0x2013; Replacement = '-'  }        # en-dash
+    @{ Pattern = [string][char]0x2013; Replacement = '-' }        # en-dash
     @{ Pattern = [string][char]0x2026; Replacement = '...' }       # ellipsis
-    @{ Pattern = [string][char]0x201C; Replacement = '"'  }        # left double quote
-    @{ Pattern = [string][char]0x201D; Replacement = '"'  }        # right double quote
-    @{ Pattern = [string][char]0x2018; Replacement = "'"  }        # left single quote
-    @{ Pattern = [string][char]0x2019; Replacement = "'"  }        # right single quote
-    @{ Pattern = [string][char]0x00A0; Replacement = ' '  }        # non-breaking space
-    @{ Pattern = [string][char]0x2022; Replacement = '*'  }        # bullet
-    @{ Pattern = [string][char]0x00D7; Replacement = 'x'  }        # multiplication sign
+    @{ Pattern = [string][char]0x201C; Replacement = '"' }        # left double quote
+    @{ Pattern = [string][char]0x201D; Replacement = '"' }        # right double quote
+    @{ Pattern = [string][char]0x2018; Replacement = "'" }        # left single quote
+    @{ Pattern = [string][char]0x2019; Replacement = "'" }        # right single quote
+    @{ Pattern = [string][char]0x00A0; Replacement = ' ' }        # non-breaking space
+    @{ Pattern = [string][char]0x2022; Replacement = '*' }        # bullet
+    @{ Pattern = [string][char]0x00D7; Replacement = 'x' }        # multiplication sign
     @{ Pattern = [string][char]0x2192; Replacement = '->' }        # right arrow
     @{ Pattern = [string][char]0x2190; Replacement = '<-' }        # left arrow
     @{ Pattern = [string][char]0x21D2; Replacement = '=>' }        # double right arrow
@@ -695,9 +704,9 @@ if (-not $SkipScrub) {
     if ($offenders) {
         $report = $offenders | ForEach-Object { "  line $($_.Line) col $($_.Col): $($_.Code) in: $($_.Text)" }
         throw "Non-ASCII characters in release body after normalisation:`n$($report -join "`n")`n" +
-              "Fix: amend the offending commit subject (or extras file) to use ASCII equivalents. " +
-              "Common substitutes are pre-mapped in Generate-ReleaseNotes.ps1; if a new character " +
-              "trips this, add it to `$asciiSubs and try again."
+        "Fix: amend the offending commit subject (or extras file) to use ASCII equivalents. " +
+        "Common substitutes are pre-mapped in Generate-ReleaseNotes.ps1; if a new character " +
+        "trips this, add it to `$asciiSubs and try again."
     }
 
     # Voice + internal-only-vocabulary grep. The release body is the public
@@ -745,8 +754,8 @@ if (-not $SkipScrub) {
     if ($matches) {
         $report = $matches | ForEach-Object { "  pattern $($_.Pattern) matched '$($_.Match)' at index $($_.Index)" }
         throw "voice or internal-only-vocabulary patterns in release body:`n$($report -join "`n")`n" +
-              "Fix: amend the offending commit subject (or extras file) to use plainer language, " +
-              "or mark the commit [skip changelog] if the term is unavoidable."
+        "Fix: amend the offending commit subject (or extras file) to use plainer language, " +
+        "or mark the commit [skip changelog] if the term is unavoidable."
     }
 }
 

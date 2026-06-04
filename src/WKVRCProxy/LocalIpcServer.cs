@@ -482,7 +482,7 @@ internal sealed partial class LocalIpcServer : IDisposable
         }
     }
 
-                                                public void Dispose()
+    public void Dispose()
     {
         _cts.Cancel();
         _cts.Dispose();

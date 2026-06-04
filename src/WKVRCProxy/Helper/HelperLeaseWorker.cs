@@ -387,8 +387,8 @@ internal static partial class HelperLeaseWorker
     private static readonly TimeSpan DefaultHoldTtl = TimeSpan.FromSeconds(8);
     private static int s_holdSweepGate;
 
-                private sealed record UploadResult(int HttpStatus, long Bytes, long ElapsedMs);
+    private sealed record UploadResult(int HttpStatus, long Bytes, long ElapsedMs);
 
-            private sealed record FfmpegProcessResult(bool TimedOut, int ExitCode, string Stderr);
+    private sealed record FfmpegProcessResult(bool TimedOut, int ExitCode, string Stderr);
 
-                                                    }
+}

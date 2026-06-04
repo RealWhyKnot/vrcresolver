@@ -194,7 +194,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
     public string CurrentNodeHost => _currentNodeHost;
     public bool? WarpActive => _warpActive;
 
-        // Pure predicate so the subprotocol-mismatch fallback can be unit-
+    // Pure predicate so the subprotocol-mismatch fallback can be unit-
     // tested without standing up a real ClientWebSocket. True iff the
     // server echoed the v3 subprotocol literal back on the upgrade —
     // null/empty/anything-else means the server (or an intermediate
@@ -232,7 +232,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
             + " hash=" + (cachedHash ?? "null"));
     }
 
-                                        public MeshClient()
+    public MeshClient()
     {
         var ver = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         _userAgent = "WKVRCProxy-Watchdog/" + ver;
@@ -266,7 +266,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
         }
     }
 
-        // Format helper for log lines, only when correlation_id is populated.
+    // Format helper for log lines, only when correlation_id is populated.
     private static string CidSuffix(string? correlationId) =>
         string.IsNullOrEmpty(correlationId) ? "" : " cid=" + LogUtil.SanitizeForConsole(correlationId, 64);
 
@@ -287,7 +287,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
         }
     }
 
-                        public async ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         await StopAsync().ConfigureAwait(false);
         // StopAsync's CloseAsync attempt may have left _ws in a closed-but-

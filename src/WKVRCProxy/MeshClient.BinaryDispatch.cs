@@ -33,98 +33,98 @@ internal sealed partial class MeshClient
         switch (action)
         {
             case WireConstants.ActionResolved:
-            {
-                MsgpackResolvedFrame? mp;
-                try { mp = MessagePackSerializer.Deserialize<MsgpackResolvedFrame>(payload, s_msgpackOpts); }
-                catch (Exception ex)
                 {
-                    LogBinaryParseFailure("resolved deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                    MsgpackResolvedFrame? mp;
+                    try { mp = MessagePackSerializer.Deserialize<MsgpackResolvedFrame>(payload, s_msgpackOpts); }
+                    catch (Exception ex)
+                    {
+                        LogBinaryParseFailure("resolved deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                        return;
+                    }
+                    if (mp == null || string.IsNullOrEmpty(mp.Id)) return;
+
+                    // Transcode to the JSON ResolveResponse shape the
+                    // wrapper expects. Field-by-field copy — server's
+                    // msgpack tag list omits Reason/Message on resolved
+                    // frames so we just don't populate them.
+                    var resp = new ResolveResponse
+                    {
+                        Action = WireConstants.ActionResolved,
+                        Id = mp.Id ?? "",
+                        Url = mp.Url,
+                        Engine = mp.Engine,
+                        Config = mp.Config,
+                        Container = mp.Container,
+                        VideoCodec = mp.VideoCodec,
+                        AudioCodec = mp.AudioCodec,
+                        Protocol = mp.Protocol,
+                        AudioChannels = mp.AudioChannels,
+                        BytesEstimate = mp.BytesEstimate,
+                        ExpiresAt = mp.ExpiresAt,
+                    };
+                    byte[] jsonFrame = JsonSerializer.SerializeToUtf8Bytes(resp, MeshJsonContext.Default.ResolveResponse);
+
+                    // Same downstream routing as the text-path: stats
+                    // recording (bytes_estimate accumulator), recent-cid
+                    // map (resolved URL → cid for VrcLogMonitor), pending
+                    // TCS resolve.
+                    if (mp.BytesEstimate.HasValue)
+                        WatchdogStats.RecordBytesEstimate(mp.BytesEstimate.Value);
+
+                    _inflightCids.TryRemove(mp.Id!, out var cid);
+                    if (!string.IsNullOrEmpty(cid) && !string.IsNullOrEmpty(mp.Url))
+                        RememberResolvedUrlCid(mp.Url!, cid);
+
+                    if (_pending.TryRemove(mp.Id!, out var tcs))
+                    {
+                        _reconnectAttempt = 0;
+                        tcs.TrySetResult(new MeshResolveResult(jsonFrame, WireConstants.ActionResolved, null));
+                    }
                     return;
                 }
-                if (mp == null || string.IsNullOrEmpty(mp.Id)) return;
-
-                // Transcode to the JSON ResolveResponse shape the
-                // wrapper expects. Field-by-field copy — server's
-                // msgpack tag list omits Reason/Message on resolved
-                // frames so we just don't populate them.
-                var resp = new ResolveResponse
-                {
-                    Action = WireConstants.ActionResolved,
-                    Id = mp.Id ?? "",
-                    Url = mp.Url,
-                    Engine = mp.Engine,
-                    Config = mp.Config,
-                    Container = mp.Container,
-                    VideoCodec = mp.VideoCodec,
-                    AudioCodec = mp.AudioCodec,
-                    Protocol = mp.Protocol,
-                    AudioChannels = mp.AudioChannels,
-                    BytesEstimate = mp.BytesEstimate,
-                    ExpiresAt = mp.ExpiresAt,
-                };
-                byte[] jsonFrame = JsonSerializer.SerializeToUtf8Bytes(resp, MeshJsonContext.Default.ResolveResponse);
-
-                // Same downstream routing as the text-path: stats
-                // recording (bytes_estimate accumulator), recent-cid
-                // map (resolved URL → cid for VrcLogMonitor), pending
-                // TCS resolve.
-                if (mp.BytesEstimate.HasValue)
-                    WatchdogStats.RecordBytesEstimate(mp.BytesEstimate.Value);
-
-                _inflightCids.TryRemove(mp.Id!, out var cid);
-                if (!string.IsNullOrEmpty(cid) && !string.IsNullOrEmpty(mp.Url))
-                    RememberResolvedUrlCid(mp.Url!, cid);
-
-                if (_pending.TryRemove(mp.Id!, out var tcs))
-                {
-                    _reconnectAttempt = 0;
-                    tcs.TrySetResult(new MeshResolveResult(jsonFrame, WireConstants.ActionResolved, null));
-                }
-                return;
-            }
             case WireConstants.ActionFallbackNative:
-            {
-                MsgpackFallbackNativeFrame? mp;
-                try { mp = MessagePackSerializer.Deserialize<MsgpackFallbackNativeFrame>(payload, s_msgpackOpts); }
-                catch (Exception ex)
                 {
-                    LogBinaryParseFailure("fallback_native deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                    MsgpackFallbackNativeFrame? mp;
+                    try { mp = MessagePackSerializer.Deserialize<MsgpackFallbackNativeFrame>(payload, s_msgpackOpts); }
+                    catch (Exception ex)
+                    {
+                        LogBinaryParseFailure("fallback_native deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                        return;
+                    }
+                    if (mp == null || string.IsNullOrEmpty(mp.Id)) return;
+
+                    LogFallbackNative(mp.Id!, mp.Reason);
+
+                    var resp = new ResolveResponse
+                    {
+                        Action = WireConstants.ActionFallbackNative,
+                        Id = mp.Id ?? "",
+                        Reason = mp.Reason,
+                    };
+                    byte[] jsonFrame = JsonSerializer.SerializeToUtf8Bytes(resp, MeshJsonContext.Default.ResolveResponse);
+
+                    _inflightCids.TryRemove(mp.Id!, out _);
+                    if (_pending.TryRemove(mp.Id!, out var tcs))
+                    {
+                        tcs.TrySetResult(new MeshResolveResult(jsonFrame, WireConstants.ActionFallbackNative, mp.Reason));
+                    }
                     return;
                 }
-                if (mp == null || string.IsNullOrEmpty(mp.Id)) return;
-
-                LogFallbackNative(mp.Id!, mp.Reason);
-
-                var resp = new ResolveResponse
-                {
-                    Action = WireConstants.ActionFallbackNative,
-                    Id = mp.Id ?? "",
-                    Reason = mp.Reason,
-                };
-                byte[] jsonFrame = JsonSerializer.SerializeToUtf8Bytes(resp, MeshJsonContext.Default.ResolveResponse);
-
-                _inflightCids.TryRemove(mp.Id!, out _);
-                if (_pending.TryRemove(mp.Id!, out var tcs))
-                {
-                    tcs.TrySetResult(new MeshResolveResult(jsonFrame, WireConstants.ActionFallbackNative, mp.Reason));
-                }
-                return;
-            }
             case WireConstants.ActionResolveLog:
-            {
-                MsgpackResolveLogFrame? mp;
-                try { mp = MessagePackSerializer.Deserialize<MsgpackResolveLogFrame>(payload, s_msgpackOpts); }
-                catch (Exception ex)
                 {
-                    LogBinaryParseFailure("resolve_log deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                    MsgpackResolveLogFrame? mp;
+                    try { mp = MessagePackSerializer.Deserialize<MsgpackResolveLogFrame>(payload, s_msgpackOpts); }
+                    catch (Exception ex)
+                    {
+                        LogBinaryParseFailure("resolve_log deserialize: " + ex.GetType().Name + ": " + ex.Message, payload);
+                        return;
+                    }
+                    if (mp == null) return;
+                    Logger.WriteFileOnly(
+                        "[mesh][resolve_log] id=" + LogUtil.SanitizeForConsole(mp.Id ?? "", 32) +
+                        " " + LogUtil.SanitizeForConsole(mp.Message ?? "", 240));
                     return;
                 }
-                if (mp == null) return;
-                Logger.WriteFileOnly(
-                    "[mesh][resolve_log] id=" + LogUtil.SanitizeForConsole(mp.Id ?? "", 32) +
-                    " " + LogUtil.SanitizeForConsole(mp.Message ?? "", 240));
-                return;
-            }
             // Defense-in-depth (2026-05-05 incident): per the v3.1 spec, control
             // frames (pong / protocol_error / rate_limited) ALWAYS go as JSON-Text,
             // but a server-side regression at commit 2c4b432 (since fixed) routed
@@ -144,19 +144,19 @@ internal sealed partial class MeshClient
                 Logger.WriteFileOnly("[mesh] pong received via binary path (server should send as Text per v3.1 spec)");
                 return;
             case WireConstants.ActionPing:
-            {
-                Logger.WriteFileOnly("[mesh] ping received via binary path (server should send as Text per v3.1 spec)");
-                try
                 {
-                    var pongWs = _ws;
-                    if (pongWs is { State: WebSocketState.Open })
+                    Logger.WriteFileOnly("[mesh] ping received via binary path (server should send as Text per v3.1 spec)");
+                    try
                     {
-                        await SendTextFrameAsync(PongFrame, ct).ConfigureAwait(false);
+                        var pongWs = _ws;
+                        if (pongWs is { State: WebSocketState.Open })
+                        {
+                            await SendTextFrameAsync(PongFrame, ct).ConfigureAwait(false);
+                        }
                     }
+                    catch { /* heartbeat will catch dead socket */ }
+                    return;
                 }
-                catch { /* heartbeat will catch dead socket */ }
-                return;
-            }
             case "protocol_error":
             case "rate_limited":
                 ConsoleUx.Warn(LogComponent.Mesh, "" + action + " received via binary path "

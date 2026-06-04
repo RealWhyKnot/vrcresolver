@@ -92,7 +92,7 @@ function Write-TextUtf8 {
 # would carry a noisy "(2026.4.27.14-A130)" tail.
 function Strip-BuildStamp {
     param([string]$Subject)
-    return ($Subject -replace ' \(\d{4}\.\d+\.\d+\.\d+(-[A-Fa-f0-9]{4,8})?\)$', '').Trim()
+    return ($Subject -replace ' \(\d{4}\.\d+\.\d+\.\d+(-([A-Fa-f0-9]{4,8}|beta))?\)$', '').Trim()
 }
 
 # Conventional-commit bucketing. Returns $null for types we deliberately skip
@@ -136,22 +136,22 @@ function Parse-CommitSubject {
     }
 
     $bucket = switch ($type) {
-        'feat'     { 'Added' }
-        'fix'      { 'Fixed' }
-        'perf'     { 'Changed' }
+        'feat' { 'Added' }
+        'fix' { 'Fixed' }
+        'perf' { 'Changed' }
         'refactor' { 'Changed' }
-        'revert'   { 'Changed' }
-        'chore'    {
+        'revert' { 'Changed' }
+        'chore' {
             # Surface dependency bumps (Dependabot et al.) -- those are user-
             # facing in the security/footprint sense -- but skip everything
             # else. `chore(deps)` and `chore(deps-dev)` both qualify.
             if ($scope -and $scope -match '^deps') { 'Changed' } else { $null }
         }
-        default    { $null }  # docs / build / ci / test
+        default { $null }  # docs / build / ci / test
     }
 
     if (-not $bucket) { return $null }
-    if ($isBreaking)  { $bucket = 'Breaking' }
+    if ($isBreaking) { $bucket = 'Breaking' }
 
     $scopePrefix = if ($scope) { "**${scope}:** " } else { '' }
     $shortSha = $Sha.Substring(0, 7)
@@ -272,7 +272,7 @@ function Update-OneFile {
     }
 
     $bodyStart = $section.StartIdx + 1
-    $bodyEnd   = $section.EndIdx - 1
+    $bodyEnd = $section.EndIdx - 1
     $bodyLines = if ($bodyEnd -ge $bodyStart) { $section.Lines[$bodyStart..$bodyEnd] } else { @() }
 
     $existing = Parse-UnreleasedBody -BodyLines $bodyLines
@@ -296,7 +296,7 @@ function Update-OneFile {
 
     $rendered = Render-UnreleasedBody -Buckets $existing
     $before = if ($section.StartIdx -gt 0) { $section.Lines[0..($section.StartIdx)] } else { @($section.Lines[0]) }
-    $after  = if ($section.EndIdx -lt $section.Lines.Length) { $section.Lines[$section.EndIdx..($section.Lines.Length - 1)] } else { @() }
+    $after = if ($section.EndIdx -lt $section.Lines.Length) { $section.Lines[$section.EndIdx..($section.Lines.Length - 1)] } else { @() }
 
     $newLines = @()
     $newLines += $before
@@ -321,7 +321,8 @@ if ($Mode -eq 'Append') {
             Write-Host "git log returned non-zero for range '$Range' -- treating as no commits."
             return
         }
-    } finally {
+    }
+    finally {
         Pop-Location
     }
 
@@ -371,7 +372,7 @@ if ($Mode -eq 'Append') {
 
 if ($Mode -eq 'Promote') {
     if (-not $Version) { throw "Promote mode requires -Version (e.g. v2026.4.27.3)." }
-    if (-not $Repo)    { throw "Promote mode requires -Repo or `$env:GITHUB_REPOSITORY (e.g. owner/repo)." }
+    if (-not $Repo) { throw "Promote mode requires -Repo or `$env:GITHUB_REPOSITORY (e.g. owner/repo)." }
 
     $today = (Get-Date -Format 'yyyy-MM-dd')
     $heading = "## [$Version](https://github.com/$Repo/releases/tag/$Version) - $today"
@@ -384,7 +385,7 @@ if ($Mode -eq 'Promote') {
 
     $lines = $section.Lines
     $bodyStart = $section.StartIdx + 1
-    $bodyEnd   = $section.EndIdx - 1
+    $bodyEnd = $section.EndIdx - 1
     $bodyLines = if ($bodyEnd -ge $bodyStart) { $lines[$bodyStart..$bodyEnd] } else { @() }
 
     # Drop the placeholder if it's the only thing in the body.
@@ -412,7 +413,7 @@ if ($Mode -eq 'Promote') {
     #   ---
     #   <rest>
     $before = if ($section.StartIdx -gt 0) { $lines[0..($section.StartIdx - 1)] } else { @() }
-    $after  = if ($section.EndIdx -lt $lines.Length) { $lines[$section.EndIdx..($lines.Length - 1)] } else { @() }
+    $after = if ($section.EndIdx -lt $lines.Length) { $lines[$section.EndIdx..($lines.Length - 1)] } else { @() }
 
     $newLines = @()
     $newLines += $before
@@ -455,7 +456,7 @@ if ($Mode -eq 'Notes') {
     $section = Find-UnreleasedSection -Content $content
     if (-not $section) { Write-Error "No '## Unreleased' section found."; exit 1 }
     $bodyStart = $section.StartIdx + 1
-    $bodyEnd   = $section.EndIdx - 1
+    $bodyEnd = $section.EndIdx - 1
     $bodyLines = if ($bodyEnd -ge $bodyStart) { $section.Lines[$bodyStart..$bodyEnd] } else { @() }
     Write-Output (($bodyLines -join "`n").Trim())
     return

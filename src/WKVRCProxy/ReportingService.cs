@@ -3,8 +3,8 @@ using System.Net.Http.Json;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using WKVRCProxy.Shared;
 
 namespace WKVRCProxy;

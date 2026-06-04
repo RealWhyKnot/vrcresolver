@@ -53,8 +53,14 @@ jobs:
         id: beta
         shell: pwsh
         run: |
-          $isBeta = '${{ github.ref_name }}' -like '*-beta*'
+          $isBeta = '${{ github.ref_name }}' -match '^v\d{4}\.\d+\.\d+\.\d+-beta$'
           "is_beta=$($isBeta.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+      - name: Validate PowerShell and changelog scripts
+        shell: pwsh
+        run: |
+          ./.github/scripts/Test-WorkflowSyntax.ps1
+          ./.github/scripts/Test-UpdateChangelog.ps1
 
       - name: Fetch release tags
         shell: pwsh
