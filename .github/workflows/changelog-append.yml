@@ -1,18 +1,14 @@
 name: Changelog append
 
 # On every push to main, walk the commits in the push range and append bullets
-# under "## Unreleased" in CHANGELOG.md (root, embedded into the in-app viewer)
-# and wiki/Changelog.md (mirrored to the GitHub Wiki). Then commit the updated
-# files back to main via the GraphQL createCommitOnBranch mutation (so the
+# under "## Unreleased" in CHANGELOG.md (root, embedded into the in-app viewer).
+# Then commit the updated file back to main via the GraphQL createCommitOnBranch mutation (so the
 # resulting commit is signed server-side with GitHub's bot key and clears the
 # "Commits must have verified signatures" protected-branch rule on main; a
-# plain `git push` of an unsigned commit gets GH006). Then trigger wiki-sync
-# so the Wiki reflects the new state without waiting for the next manual push.
+# plain `git push` of an unsigned commit gets GH006).
 #
 # A commit made by GITHUB_TOKEN (whether via push or via createCommitOnBranch)
 # does NOT trigger workflow runs, so the appender's own commit will not recurse.
-# The wiki-sync workflow is fired explicitly at the end of this job for the
-# same reason -- its push trigger wouldn't fire off a token-authored commit.
 # Belt-and-braces: the commit message carries [skip changelog] and the job's
 # `if:` filter rejects messages with that marker, so even a manual re-trigger
 # or non-token actor cannot recurse.
@@ -25,7 +21,6 @@ on:
     # release.yml's promotion commit (it modifies CHANGELOG.md exclusively).
     paths-ignore:
       - 'CHANGELOG.md'
-      - 'wiki/Changelog.md'
       - 'LICENSE'
       - '.gitignore'
       - '.gitattributes'
@@ -42,7 +37,6 @@ on:
 
 permissions:
   contents: write   # push the appender's commit back to main
-  actions: write    # gh workflow run wiki-sync.yml
 
 concurrency:
   # Serialise: two concurrent appenders racing to push could lose entries.
@@ -117,14 +111,14 @@ jobs:
           ./.github/scripts/Update-Changelog.ps1 -Mode Append -Range '${{ steps.range.outputs.range }}'
 
           # Mark whether anything actually changed so the next steps can skip.
-          $changed = & git status --porcelain CHANGELOG.md wiki/Changelog.md
+          $changed = & git status --porcelain CHANGELOG.md
           if ([string]::IsNullOrWhiteSpace($changed)) {
             "changed=false" >> $env:GITHUB_OUTPUT
             Write-Host "No changelog updates produced."
           } else {
             "changed=true"  >> $env:GITHUB_OUTPUT
             Write-Host "Changelog updates ready to commit."
-            & git --no-pager diff --stat CHANGELOG.md wiki/Changelog.md
+            & git --no-pager diff --stat CHANGELOG.md
           }
 
       - name: Commit via createCommitOnBranch (verified)
@@ -148,7 +142,6 @@ jobs:
           short_sha="${GITHUB_SHA::7}"
           expected_oid=$(git rev-parse HEAD)
           changelog_b64=$(base64 -w 0 CHANGELOG.md)
-          wiki_b64=$(base64 -w 0 wiki/Changelog.md)
 
           headline="docs(changelog): auto-append entries from ${short_sha} [skip changelog]"
           body=$(printf '%s\n%s' \
@@ -162,7 +155,6 @@ jobs:
             --arg body "$body" \
             --arg oid "$expected_oid" \
             --arg changelog "$changelog_b64" \
-            --arg wiki "$wiki_b64" \
             '{
               query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
               variables: {
@@ -171,8 +163,7 @@ jobs:
                   message: { headline: $headline, body: $body },
                   fileChanges: {
                     additions: [
-                      { path: "CHANGELOG.md",      contents: $changelog },
-                      { path: "wiki/Changelog.md", contents: $wiki }
+                      { path: "CHANGELOG.md", contents: $changelog }
                     ]
                   },
                   expectedHeadOid: $oid
@@ -210,15 +201,3 @@ jobs:
             exit 1
           fi
           echo "Verification: ok"
-
-      - name: Trigger wiki sync
-        # wiki/Changelog.md changed under github-actions[bot] auth, which
-        # doesn't fire push triggers — kick wiki-sync explicitly so the Wiki
-        # mirrors the new entry without waiting for an unrelated push.
-        if: steps.append.outputs.changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run wiki-sync.yml --ref main || \
-            echo "::warning::Failed to trigger wiki-sync; the next wiki/** push will pick it up."

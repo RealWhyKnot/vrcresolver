@@ -6,4 +6,4 @@
 4. Run `WKVRCProxy.exe`. Accept the UAC prompt to add the hosts entry.
 5. Launch VRChat. Watch for `[mesh] connected` in the watchdog window. Paste a URL in any in-world video player.
 
-Full walkthrough: [Quick Start](https://github.com/{full-repo}/wiki/Quick-Start).
+Full walkthrough: [README quick start](https://github.com/{full-repo}#quick-start).

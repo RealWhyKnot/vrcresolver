@@ -140,7 +140,7 @@ replace via `gh release edit`.
 ## Extras file
 
 For content that the auto-generator can't capture -- server-side coordination
-notes, migration instructions, links to a long-form wiki page, etc. -- create
+notes, migration instructions, operational context, etc. -- create
 a markdown file at `.github/release-extras/<tag>.md` BEFORE pushing the tag.
 The file's contents get appended verbatim below the auto section with a
 `---` separator and an `## Additional notes` heading.

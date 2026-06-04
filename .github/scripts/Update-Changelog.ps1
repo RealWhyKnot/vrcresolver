@@ -1,15 +1,14 @@
 <#
 .SYNOPSIS
-  Maintains CHANGELOG.md (root, embedded into the in-app viewer) and
-  wiki/Changelog.md (synced to the GitHub Wiki) so the changelog stays
-  current without manual editing on every release.
+  Maintains CHANGELOG.md so the changelog stays current without manual editing
+  on every release.
 
 .DESCRIPTION
   Three modes:
 
     Append   Parses commit subjects in -Range, buckets them by conventional-
              commit type, and inserts bullets under the "## Unreleased" heading
-             at the top of both files. Skips merge commits, bot commits, and
+             at the top of the file. Skips merge commits, bot commits, and
              commits explicitly tagged "[skip changelog]" in the subject. Skips
              types that aren't user-visible (docs/build/ci/chore/test) so the
              changelog stays focused on behavior changes.
@@ -69,13 +68,9 @@ if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 
-# Both files are kept in lock-step. The root copy is the canonical CHANGELOG;
-# the wiki/ copy is mirrored to the GitHub Wiki by .github/workflows/wiki-sync.yml.
 $RootChangelog = Join-Path $RepoRoot 'CHANGELOG.md'
-$WikiChangelog = Join-Path $RepoRoot 'wiki/Changelog.md'
 
 if (-not (Test-Path $RootChangelog)) { throw "CHANGELOG.md not found at $RootChangelog" }
-if (-not (Test-Path $WikiChangelog)) { throw "wiki/Changelog.md not found at $WikiChangelog" }
 
 # --- Helpers ---------------------------------------------------------------
 
@@ -367,9 +362,8 @@ if ($Mode -eq 'Append') {
     }
 
     Update-OneFile -Path $RootChangelog -NewBullets $newBullets
-    Update-OneFile -Path $WikiChangelog -NewBullets $newBullets
 
-    Write-Host "Appended $included entr(ies) to both CHANGELOG.md and wiki/Changelog.md."
+    Write-Host "Appended $included entr(ies) to CHANGELOG.md."
     return
 }
 
@@ -382,69 +376,66 @@ if ($Mode -eq 'Promote') {
     $today = (Get-Date -Format 'yyyy-MM-dd')
     $heading = "## [$Version](https://github.com/$Repo/releases/tag/$Version) - $today"
 
-    foreach ($path in @($RootChangelog, $WikiChangelog)) {
-        $content = Read-TextUtf8 -Path $path
-        $section = Find-UnreleasedSection -Content $content
-        if (-not $section) {
-            throw "$path is missing the '## Unreleased' section. Cannot promote."
-        }
-
-        $lines = $section.Lines
-        $bodyStart = $section.StartIdx + 1
-        $bodyEnd   = $section.EndIdx - 1
-        $bodyLines = if ($bodyEnd -ge $bodyStart) { $lines[$bodyStart..$bodyEnd] } else { @() }
-
-        # Drop the placeholder if it's the only thing in the body.
-        $hasReal = $false
-        foreach ($l in $bodyLines) {
-            if ($l -match '^\s*- ' -or $l -match '^###\s+') { $hasReal = $true; break }
-        }
-        if (-not $hasReal) {
-            # Empty section: the released version still gets an entry, just
-            # with a stub note. This keeps the heading -> release-page link
-            # alive so users browsing the changelog can click through.
-            $bodyLines = @('', '_Maintenance release; see commit log for details._', '')
-        }
-
-        # Build the new file:
-        #   <preamble through line StartIdx-1>
-        #   ## Unreleased
-        #
-        #   _No notable changes since the last release._
-        #
-        #   ---
-        #
-        #   ## [vX] - DATE
-        #   <bodyLines>
-        #   ---
-        #   <rest>
-        $before = if ($section.StartIdx -gt 0) { $lines[0..($section.StartIdx - 1)] } else { @() }
-        $after  = if ($section.EndIdx -lt $lines.Length) { $lines[$section.EndIdx..($lines.Length - 1)] } else { @() }
-
-        $newLines = @()
-        $newLines += $before
-        $newLines += '## Unreleased'
-        $newLines += ''
-        $newLines += '_No notable changes since the last release._'
-        $newLines += ''
-        $newLines += '---'
-        $newLines += ''
-        $newLines += $heading
-        $newLines += $bodyLines
-        # $after starts with the existing "---" separator (or next ## heading).
-        $newLines += $after
-
-        Write-TextUtf8 -Path $path -Content (($newLines -join "`n"))
+    $content = Read-TextUtf8 -Path $RootChangelog
+    $section = Find-UnreleasedSection -Content $content
+    if (-not $section) {
+        throw "$RootChangelog is missing the '## Unreleased' section. Cannot promote."
     }
 
-    Write-Host "Promoted Unreleased -> $heading in both files."
+    $lines = $section.Lines
+    $bodyStart = $section.StartIdx + 1
+    $bodyEnd   = $section.EndIdx - 1
+    $bodyLines = if ($bodyEnd -ge $bodyStart) { $lines[$bodyStart..$bodyEnd] } else { @() }
+
+    # Drop the placeholder if it's the only thing in the body.
+    $hasReal = $false
+    foreach ($l in $bodyLines) {
+        if ($l -match '^\s*- ' -or $l -match '^###\s+') { $hasReal = $true; break }
+    }
+    if (-not $hasReal) {
+        # Empty section: the released version still gets an entry, just
+        # with a stub note. This keeps the heading -> release-page link
+        # alive so users browsing the changelog can click through.
+        $bodyLines = @('', '_Maintenance release; see commit log for details._', '')
+    }
+
+    # Build the new file:
+    #   <preamble through line StartIdx-1>
+    #   ## Unreleased
+    #
+    #   _No notable changes since the last release._
+    #
+    #   ---
+    #
+    #   ## [vX] - DATE
+    #   <bodyLines>
+    #   ---
+    #   <rest>
+    $before = if ($section.StartIdx -gt 0) { $lines[0..($section.StartIdx - 1)] } else { @() }
+    $after  = if ($section.EndIdx -lt $lines.Length) { $lines[$section.EndIdx..($lines.Length - 1)] } else { @() }
+
+    $newLines = @()
+    $newLines += $before
+    $newLines += '## Unreleased'
+    $newLines += ''
+    $newLines += '_No notable changes since the last release._'
+    $newLines += ''
+    $newLines += '---'
+    $newLines += ''
+    $newLines += $heading
+    $newLines += $bodyLines
+    # $after starts with the existing "---" separator (or next ## heading).
+    $newLines += $after
+
+    Write-TextUtf8 -Path $RootChangelog -Content (($newLines -join "`n"))
+
+    Write-Host "Promoted Unreleased -> $heading in CHANGELOG.md."
     return
 }
 
 # --- Mode: Notes -----------------------------------------------------------
 
 if ($Mode -eq 'Notes') {
-    # Read from the root copy -- same content as wiki copy by construction.
     $content = Read-TextUtf8 -Path $RootChangelog
 
     if ($ForVersion) {

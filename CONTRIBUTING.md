@@ -1,6 +1,6 @@
 # Contributing to WKVRCProxy
 
-Thanks for your interest. This file is the short version — the [Engineering Standards](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Engineering-Standards) wiki page has the load-bearing rules.
+Thanks for your interest. This file is the contributor guide for the repo.
 
 ## Before you start
 
@@ -33,8 +33,8 @@ The first `build.ps1` run also configures `git config core.hooksPath = .githooks
 Subject style follows the existing log: `type(scope?): short summary (YYYY.M.D.N-XXXX)`.
 
 - `type` is one of `feat`, `fix`, `build`, `docs`, `refactor`, `test`, `chore`.
-- The `(YYYY.M.D.N-XXXX)` build-version stamp at the end is automatic — `build.ps1` produces it. **Do not paste the same stamp twice in one subject.** The `.githooks/commit-msg` hook will reject duplicates.
-- Body explains the *why*, not the *what* — the diff is the what.
+- The `(YYYY.M.D.N-XXXX)` build-version stamp at the end is automatic -- `build.ps1` produces it. **Do not paste the same stamp twice in one subject.** The `.githooks/commit-msg` hook will reject duplicates.
+- Body explains the *why*, not the *what* -- the diff is the what.
 
 ## Code style
 
@@ -45,7 +45,7 @@ Subject style follows the existing log: `type(scope?): short summary (YYYY.M.D.N
 
 - Refactors bundled with feature work — split them.
 - Introducing a new class for a one-off case.
-- Code paths that can leave VRChat with a broken `yt-dlp.exe` (no patched build, no fallback). The og-fallback invariant is non-negotiable — see [Engineering Standards](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Engineering-Standards).
+- Code paths that can leave VRChat with a broken `yt-dlp.exe` (no patched build, no fallback). The og-fallback invariant is non-negotiable.
 
 ## Reporting bugs / asking questions
 

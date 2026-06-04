@@ -622,7 +622,7 @@ foreach ($name in $templateOrder) {
 
 # Optional extras append. Free-form prose for the rare case where a release
 # needs to communicate something that isn't captured by commit subjects --
-# server-side coordination notes, migration steps, a wiki link, etc. The
+# server-side coordination notes, migration steps, operational context, etc. The
 # file is read verbatim so the author has full markdown control; the same
 # scrub gates run on the final composed body so voice violations in the
 # extras fail the workflow just as if they were in commit subjects.

@@ -9,7 +9,6 @@ body:
         Welcome. Questions are issues here — don't worry about filing one for something that turns out to be obvious. If it leads to a doc fix or a real bug we'll relabel.
 
         **Read first:**
-        - [Wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki) — especially [Architecture](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Architecture), [Settings Reference](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Settings-Reference), and [Troubleshooting](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting).
         - [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) — install / build / first-run.
 
   - type: textarea
@@ -26,7 +25,7 @@ body:
     attributes:
       label: What have you tried so far?
       description: |
-        Helps us not retread ground. "Nothing yet" is fine — but if you've checked the wiki / settings / logs, say what you saw.
+        Helps us not retread ground. "Nothing yet" is fine, but if you've checked the README / settings / logs, say what you saw.
     validations:
       required: false
 
@@ -43,6 +42,6 @@ body:
     id: context
     attributes:
       label: Anything else
-      description: Screenshots, log snippets, the part of the wiki/README that confused you, etc. Optional.
+      description: Screenshots, log snippets, the part of the README that confused you, etc. Optional.
     validations:
       required: false

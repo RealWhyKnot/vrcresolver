@@ -1,8 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Wiki — long-form documentation
-    url: https://github.com/RealWhyKnot/WKVRCProxy/wiki
-    about: Architecture, resolution cascade, relay server, settings reference, troubleshooting, AVPro vs Unity. Read the relevant page before filing an issue — many "is this a bug?" cases are answered there.
   - name: Security vulnerability
     url: https://github.com/RealWhyKnot/WKVRCProxy/security/advisories/new
     about: Report privately via GitHub Security Advisories. Do NOT open a public issue for security reports.

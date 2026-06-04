@@ -11,8 +11,8 @@ name: Release
 # from dist/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
 #
 # Changelog promotion: before the build runs, .github/scripts/Update-Changelog.ps1 renames the
-# "## Unreleased" heading in CHANGELOG.md and wiki/Changelog.md to "## [vTAG] - DATE", linking
-# to this release. After the GitHub release is created the promoted files are pushed to a
+# "## Unreleased" heading in CHANGELOG.md to "## [vTAG] - DATE", linking
+# to this release. After the GitHub release is created the promoted file is pushed to a
 # release/promote-changelog-<tag> branch and a PR is opened with auto-merge so main eventually
 # carries the promotion (squashed in by github-actions[bot] once CI passes). Direct push does
 # not work on protected main: the dotnet-build-+-test required check is missing on bot pushes,
@@ -79,12 +79,11 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           ./.github/scripts/Update-Changelog.ps1 -Mode Promote -Version '${{ github.ref_name }}'
-          # Stash the promoted files so we can re-apply them on main after the
+          # Stash the promoted file so we can re-apply it on main after the
           # release. Doing it now (before build.ps1 mutates the worktree) means
           # the bytes we push back to main are exactly what shipped in the exe.
-          New-Item -ItemType Directory -Force -Path .changelog-stash/wiki | Out-Null
-          Copy-Item CHANGELOG.md       .changelog-stash/CHANGELOG.md       -Force
-          Copy-Item wiki/Changelog.md  .changelog-stash/wiki/Changelog.md  -Force
+          New-Item -ItemType Directory -Force -Path .changelog-stash | Out-Null
+          Copy-Item CHANGELOG.md .changelog-stash/CHANGELOG.md -Force
 
       - name: Build distribution
         shell: pwsh
@@ -386,7 +385,7 @@ jobs:
         # "dotnet build + test" status check, which a bot push bypasses (so
         # the push is rejected). Instead we open a PR off the tag and let
         # auto-merge squash it once CI goes green. ci.yml has CHANGELOG.md
-        # and wiki/Changelog.md carved out of paths-ignore so the required
+        # carved out of paths-ignore so the required
         # check actually runs on changelog-only PRs.
         #
         # Done last so a build/release failure doesn't leave a phantom
@@ -403,23 +402,22 @@ jobs:
           branch="release/promote-changelog-${TAG_NAME}"
           git checkout -b "$branch"
 
-          # Replay the stashed files (captured before build.ps1 ran) so the
+          # Replay the stashed file (captured before build.ps1 ran) so the
           # bytes we put on main are exactly what shipped in the embedded exe.
-          cp .changelog-stash/CHANGELOG.md           CHANGELOG.md
-          cp .changelog-stash/wiki/Changelog.md wiki/Changelog.md
+          cp .changelog-stash/CHANGELOG.md CHANGELOG.md
 
-          if [[ -z "$(git status --porcelain CHANGELOG.md wiki/Changelog.md)" ]]; then
+          if [[ -z "$(git status --porcelain CHANGELOG.md)" ]]; then
             echo "Nothing to promote — main is already in promoted state."
             exit 0
           fi
 
           # [skip changelog] keeps changelog-append from re-bulleting this commit
           # if the squash trigger ever races past the bot-actor filter.
-          git add CHANGELOG.md wiki/Changelog.md
+          git add CHANGELOG.md
           git commit -m "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]"
           git push origin "$branch"
 
-          pr_body="Promotion PR opened by .github/workflows/release.yml after publishing **${TAG_NAME}**. Mirrors the embedded \`CHANGELOG.md\` (and \`wiki/Changelog.md\`) that shipped inside the exe back onto \`main\` so the next push starts with a fresh \`## Unreleased\` section. Auto-merge enabled -- will squash once \`dotnet build + test\` passes."
+          pr_body="Promotion PR opened by .github/workflows/release.yml after publishing **${TAG_NAME}**. Mirrors the embedded \`CHANGELOG.md\` that shipped inside the exe back onto \`main\` so the next push starts with a fresh \`## Unreleased\` section. Auto-merge enabled -- will squash once \`dotnet build + test\` passes."
           if pr_url="$(gh pr create \
             --base main \
             --head "$branch" \
@@ -442,5 +440,5 @@ jobs:
             fi
           else
             cat pr-create.err >&2
-            echo "::warning::Release published, but GitHub Actions could not create the promotion PR. Branch '$branch' was pushed; promote CHANGELOG.md and wiki/Changelog.md manually."
+            echo "::warning::Release published, but GitHub Actions could not create the promotion PR. Branch '$branch' was pushed; promote CHANGELOG.md manually."
           fi

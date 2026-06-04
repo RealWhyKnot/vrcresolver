@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, scan [open issues](https://github.com/RealWhyKnot/WKVRCProxy/issues?q=is%3Aissue) and the [wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki) — the architecture and resolution cascade pages explain a lot of "why isn't this already in here?" questions.
+        Before filing, scan [open issues](https://github.com/RealWhyKnot/WKVRCProxy/issues?q=is%3Aissue) and the README.
 
         For non-trivial changes, please **open this issue first** so we can agree on direction before you spend time on a PR.
 
@@ -39,7 +39,7 @@ body:
         - "Settings / UI / UX"
         - "Build pipeline / vendoring / release"
         - "Updater / Uninstaller"
-        - "Documentation / wiki"
+        - "Documentation"
         - "Other / not sure"
     validations:
       required: true

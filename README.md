@@ -4,7 +4,7 @@ VRChat's in-world video players use yt-dlp under the hood. Vanilla yt-dlp is slo
 
 A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build that asks a remote resolver (`proxy.whyknot.dev`) and routes the resulting stream URL through a local listener so AVPro accepts it everywhere. If the remote is unreachable or anything else goes wrong, the patched binary falls through to the vanilla yt-dlp it preserved at install time. Watchdog absent does not break VRChat.
 
-**[Wiki](https://github.com/RealWhyKnot/WKVRCProxy/wiki)** | **[Report a bug](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml)**
+**[Report a bug](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml)**
 
 ---
 
@@ -52,7 +52,7 @@ To uninstall: run `WKVRCProxy.Uninstaller.exe` from the same folder. It restores
 
 The watchdog window scrolls one summary line per resolve. Green = resolved, yellow = server replied with og-fallback, red = local timeout or pipe error. Per-URL detail goes to `%LOCALAPPDATA%Low\WKVRCProxy\logs\`.
 
-Common failures and what to look at, in order: did the watchdog start? Does the watchdog show `[mesh] connected`? Does the watchdog show resolves when you paste a URL in-game? See the [Troubleshooting](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting) wiki page for the exact log lines to grep and what each one means.
+Common failures and what to look at, in order: did the watchdog start? Does the watchdog show `[mesh] connected`? Does the watchdog show resolves when you paste a URL in-game? Include the relevant correlation-ID block from the Logs tab when filing a bug.
 
 ---
 
@@ -78,17 +78,7 @@ proxy.whyknot.dev /mesh   (remote resolver)
 
 If any link breaks, the patched shim execs `yt-dlp-og.exe` and AVPro plays whatever vanilla yt-dlp returns. The watchdog absent removes the server-side path; videos that already worked with vanilla yt-dlp keep working.
 
-The remote resolver is proxy.whyknot.dev. The wire protocol is documented in the [Mesh Protocol](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Mesh-Protocol) wiki page; if you want to host your own backend you'll find the details there.
-
----
-
-## Going deeper
-
-- [Quick Start](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Quick-Start) -- first-run walkthrough and the UAC prompts to expect
-- [Mesh Protocol](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Mesh-Protocol) -- v3 wire details, msgpack negotiation, welcome cache, fallback paths
-- [Troubleshooting](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting) -- log-line greps for every common failure mode
-- [Update and Uninstall](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Update-and-Uninstall) -- what the bundled updater and uninstaller actually do
-- [Engineering Standards](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Engineering-Standards) -- contributor rules
+The remote resolver is proxy.whyknot.dev.
 
 ---
 

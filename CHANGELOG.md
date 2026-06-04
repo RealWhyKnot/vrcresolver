@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to WKVRCProxy. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses date-driven versioning (`YYYY.M.D.N` for releases, `YYYY.M.D.N-XXXX` for development builds; see the [release reference](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Build-Pipeline) for shape rules).
+All notable changes to WKVRCProxy. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses date-driven versioning (`YYYY.M.D.N` for releases, `YYYY.M.D.N-XXXX` for development builds).
 
 Release entries are listed newest first. This changelog starts with the first public GitHub release.
 
@@ -93,7 +93,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 ### Changed
 - Reorganized the client into focused modules for URL policy, relay target validation, manifest rewriting, header forwarding, port tracking, resolve cache, and wrapper behavior.
 - Hardened relay shutdown and cleanup so port files, patched binaries, sidecar files, state files, named pipes, and child processes are cleaned when possible.
-- Build and release pipeline now signs tagged builds, emits a per-file SHA256 manifest, syncs wiki docs, and gates release notes for public wording and ASCII output.
+- Build and release pipeline now signs tagged builds, emits a per-file SHA256 manifest, and gates release notes for public wording and ASCII output.
 - Documentation now describes the current watchdog-only architecture, trust gateway behavior, quick start, updater, uninstaller, build pipeline, and release process.
 
 ### Fixed

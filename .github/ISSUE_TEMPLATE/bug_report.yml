@@ -11,7 +11,7 @@ body:
         - the hosts-file mapping `127.0.0.1 localhost.youtube.com` didn't take (declined UAC, AV blocked it),
         - the host needs a direct connection and isn't on the deny-list (`vr-m.net` etc.).
 
-        The fields below collect the minimum we need to triage without back-and-forth. Read [Troubleshooting](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting) first if you haven't.
+        The fields below collect the minimum we need to triage without back-and-forth.
 
   - type: checkboxes
     id: latest
@@ -20,7 +20,7 @@ body:
       options:
         - label: I'm running the latest release (or a build pulled from `main` in the last few days).
           required: true
-        - label: I've read the [Troubleshooting wiki page](https://github.com/RealWhyKnot/WKVRCProxy/wiki/Troubleshooting) and my issue isn't covered there.
+        - label: I've checked the README and my issue isn't covered there.
           required: true
         - label: I understand this is alpha software.
           required: true
