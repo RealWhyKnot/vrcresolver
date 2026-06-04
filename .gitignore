@@ -32,6 +32,7 @@ wwwroot/
 _tools_staging/
 .local_build_state.json
 version.txt
+src/WKVRCProxy/Generated/
 *.log
 
 # Test / sample media — not for version control
