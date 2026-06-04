@@ -7,6 +7,7 @@
 // checkout src/WKVRCProxy/Generated/BuildInfo.cs` reverts to the
 // placeholder. CI builds via build.ps1 don't commit the modification.
 namespace WKVRCProxy;
+
 internal static class BuildInfo
 {
     public const string GitSha = "<unknown>";

@@ -112,6 +112,7 @@ $buildInfoContent = @"
 // <unknown> placeholders; running build.ps1 overwrites with the real
 // SHA + UTC timestamp. ``git checkout`` reverts to the placeholder.
 namespace WKVRCProxy;
+
 internal static class BuildInfo
 {
     public const string GitSha = "$gitSha$gitDirty";
