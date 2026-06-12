@@ -11,6 +11,12 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
+_No notable changes since the last release._
+
+---
+
+## [v2026.6.12.0](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.6.12.0) - 2026-06-12
+
 ### Changed
 - Refactor proxy client hotspots (27aa711)
 - Bump the minor-and-patch group with 1 update (#63) (cc33fb8)
