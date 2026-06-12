@@ -140,6 +140,29 @@ try {
     Assert-Contains -Text $PlainPrereleaseNotes -Expected 'compare/v2026.5.1.0...v2026.5.2.0'
     Assert-NotContains -Text $PlainPrereleaseNotes -Unexpected 'fix(relay): beta port fallback'
 
+    New-Item -ItemType Directory -Force -Path 'artifacts' | Out-Null
+    $zipPath = Join-Path $TempRoot 'artifacts/WKVRCProxy-v2026.5.3.0.zip'
+    $manifestPath = Join-Path $TempRoot 'artifacts/WKVRCProxy-v2026.5.3.0.manifest.tsv'
+    $zipSha = 'E8966F33BE8246922756E3E8234CF8309FB6D3151665594203F53BBF5725164B'
+    Write-TestFile -Path 'artifacts/WKVRCProxy-v2026.5.3.0.zip' -Content 'zip'
+    Write-TestFile -Path 'artifacts/WKVRCProxy-v2026.5.3.0.manifest.tsv' -Content "A24EA7D3DF2B0718AFF60B5B9EBEBDF590ED4938D81A6B08CDEC7A880B326B0C`t123`tWKVRCProxy.exe`n"
+
+    $IntegrityNotes = (& $Generator `
+            -Tag v2026.5.3.0 `
+            -Repo RealWhyKnot/WKVRCProxy `
+            -TemplateDir $TemplateDir `
+            -PrereleaseTags v2026.5.2.0 `
+            -ZipPath $zipPath `
+            -ZipName 'WKVRCProxy-v2026.5.3.0.zip' `
+            -ZipSize 157017922 `
+            -ZipSha256 $zipSha `
+            -Manifest $manifestPath `
+            -SkipScrub) -join "`n"
+
+    Assert-Contains -Text $IntegrityNotes -Expected "SHA256: $zipSha"
+    Assert-Contains -Text $IntegrityNotes -Expected 'WKVRCProxy-v2026.5.3.0.integrity.tsv'
+    Assert-NotContains -Text $IntegrityNotes -Unexpected 'WKVRCProxy.exe                        '
+
     Write-Host 'Generate-ReleaseNotes tests passed.'
 }
 finally {

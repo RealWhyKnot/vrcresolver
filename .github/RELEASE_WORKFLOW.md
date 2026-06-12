@@ -12,8 +12,8 @@ that the auto-generator can't produce, the only supported path is the
 [extras file](#extras-file).
 
 The workflow calls `build.ps1 -Package`; local builds do not create a
-repo-root `release/` directory. The zip and manifest are emitted under
-`dist/` for the workflow to upload.
+repo-root `release/` directory. The zip, build manifest, and release
+integrity TSV are emitted under `dist/` for the workflow to upload.
 
 ## Tag shapes
 
@@ -29,17 +29,12 @@ repo-root `release/` directory. The zip and manifest are emitted under
 ## Body composition
 
 The release body is the verbatim output of
-[Generate-ReleaseNotes.ps1](scripts/Generate-ReleaseNotes.ps1), preceded
-only by a fixed header (title + zip download instruction + SHA256). Layout:
+[Generate-ReleaseNotes.ps1](scripts/Generate-ReleaseNotes.ps1). The body keeps
+a bare `SHA256: <hash>` line for older updaters; the full integrity table is
+uploaded as `WKVRCProxy-v<version>.integrity.tsv`. Layout:
 
 ```
-## WKVRCProxy <tag>
-
-Download <zip> below and extract anywhere. ...
-
-SHA256: <hash>
-
----
+# WKVRCProxy <tag>
 
 ## What's Changed
 
@@ -51,7 +46,13 @@ SHA256: <hash>
 
 **Full Changelog**: <compare-url>
 
-[--- Additional notes (extras file, if present) ---]
+SHA256: <hash>
+
+## File integrity
+
+Full SHA256 hashes are attached as `<integrity asset>`.
+
+[Additional notes (extras file, if present)]
 ```
 
 Stable release bodies deliberately skip beta tags when picking the compare

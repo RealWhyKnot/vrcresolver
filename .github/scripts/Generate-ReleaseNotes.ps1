@@ -10,9 +10,8 @@
     1. Title (h1: "<repo> <tag>")
     2. What's Changed (auto-changelog from the commit slice between prev tag
        and this tag; bucketed by conventional-commit prefix)
-    3. File integrity (auto-generated SHA256 + size table for the release zip
-       and every file inside it; reads inner-file metadata from the manifest
-       emitted by build.ps1)
+    3. File integrity (legacy bare SHA256 line plus a pointer to the attached
+       integrity TSV asset)
     4. More (from .github/release-template/links.md, with token substitution)
     5. Install (fresh) (from .github/release-template/install.md)
     6. Uninstall (from .github/release-template/uninstall.md)
@@ -567,50 +566,18 @@ if ($Repo -and $prevTag) {
 }
 
 # --- File integrity ---
-# Composes a code-block with the release zip on the first line and indented
-# inner-file rows below. Inner-file hashes come from the manifest emitted by
-# build.ps1 (dist/<zip-name>.manifest.tsv); the zip itself is hashed by the
-# workflow's "Locate release zip" step and passed in via -ZipPath/-ZipSha256/-ZipSize.
-# If any of those are missing (running locally without a build, or the workflow
-# wiring is incomplete), the section is skipped with a warning so the operator
-# notices.
+# Keep a bare SHA256 line in the body for older updaters. Full integrity data
+# is published as a separate .integrity.tsv release asset.
 $includeIntegrity = $ZipPath -and $ZipSha256 -and $ZipSize -gt 0 -and $Manifest -and (Test-Path -LiteralPath $Manifest)
 if ($includeIntegrity) {
-    $manifestEntries = @()
-    foreach ($line in Get-Content -LiteralPath $Manifest -Encoding UTF8) {
-        if (-not $line) { continue }
-        $parts = $line -split "`t", 3
-        if ($parts.Count -ne 3) {
-            Write-Host "::warning::Skipping malformed manifest line: $line"
-            continue
-        }
-        $manifestEntries += [pscustomobject]@{
-            Sha256 = $parts[0]
-            Size   = [long]$parts[1]
-            Path   = $parts[2]
-        }
-    }
+    $zipNameForLine = if ($zipNameToken) { $zipNameToken } else { Split-Path -Leaf $ZipPath }
+    $integrityName = $zipNameForLine -replace '\.zip$', '.integrity.tsv'
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("SHA256: $($ZipSha256.ToUpper())")
     [void]$sb.AppendLine()
     [void]$sb.AppendLine("## File integrity")
     [void]$sb.AppendLine()
-    [void]$sb.AppendLine("Every file in the release zip is hashed below. Verify with ``Get-FileHash <file> -Algorithm SHA256`` on PowerShell.")
-    [void]$sb.AppendLine()
-    [void]$sb.AppendLine('```')
-    $zipNameForLine = if ($zipNameToken) { $zipNameToken } else { Split-Path -Leaf $ZipPath }
-    $zipSizeStr = Format-Bytes $ZipSize
-    [void]$sb.AppendLine(("{0,-36}    {1,8}    SHA256: {2}" -f $zipNameForLine, $zipSizeStr, $ZipSha256.ToUpper()))
-    [void]$sb.AppendLine()
-    # Top-level files before subdirectory files; alphabetical within each
-    # group. Reads better for a user verifying a hash: the binary they
-    # double-click on is at the top.
-    $sortedEntries = $manifestEntries |
-        Sort-Object @{Expression = { ($_.Path -split '/').Count } }, Path
-    foreach ($entry in $sortedEntries) {
-        $indented = "  " + $entry.Path
-        $sizeStr = Format-Bytes $entry.Size
-        [void]$sb.AppendLine(("{0,-36}    {1,8}    SHA256: {2}" -f $indented, $sizeStr, $entry.Sha256.ToUpper()))
-    }
-    [void]$sb.AppendLine('```')
+    [void]$sb.AppendLine("Full SHA256 hashes are attached as ``$integrityName``.")
 }
 elseif ($Manifest -or $ZipPath -or $ZipSha256) {
     Write-Host "::warning::File-integrity section skipped: -Manifest, -ZipPath, -ZipSize, and -ZipSha256 must all be set. Got Manifest='$Manifest' ZipPath='$ZipPath' ZipSize=$ZipSize ZipSha256='$ZipSha256'."

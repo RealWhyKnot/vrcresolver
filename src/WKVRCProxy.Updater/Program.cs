@@ -31,6 +31,10 @@ internal static partial class Program
     private const string StableLatestUrl = "https://api.github.com/repos/" + Repo + "/releases/latest";
     private const string AnyReleasesUrl = "https://api.github.com/repos/" + Repo + "/releases?per_page=10";
     private const string WatchdogExeName = "WKVRCProxy.exe";
+    private const string UpdaterExeName = "WKVRCProxy.Updater.exe";
+    private const string StagedUpdaterExeName = "WKVRCProxy.Updater.next.exe";
+    private const string ShippedManifestRelativePath = "data/release-manifest.tsv";
+    private const string AssumeYesEnvVar = "WKVRCPROXY_UPDATE_REQUESTED";
     private const int PromptTimeoutSec = 15;
 
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(30);
@@ -61,7 +65,7 @@ internal static partial class Program
             Version current = ReadCurrentVersion(watchdogPath);
             Console.WriteLine($"Current version: {current}");
 
-            (Version latest, string zipUrl, string tagName, string? expectedSha256) = await FetchLatestAsync();
+            (Version latest, string zipUrl, string zipName, string tagName, string? expectedSha256) = await FetchLatestAsync();
             if (latest <= current)
             {
                 Console.WriteLine("You're on the latest version.");
@@ -70,7 +74,7 @@ internal static partial class Program
             Console.WriteLine($"Update available: {tagName}");
             if (string.IsNullOrEmpty(expectedSha256))
             {
-                Console.Error.WriteLine("Refusing to update: release body did not contain a SHA256: line.");
+                Console.Error.WriteLine("Refusing to update: release did not provide a zip SHA256.");
                 return 12;
             }
 
@@ -101,6 +105,8 @@ internal static partial class Program
 
             string tempExtract = Path.Combine(Path.GetTempPath(), $"WKVRCProxy-extract-{Guid.NewGuid():N}");
             ZipFile.ExtractToDirectory(tempZip, tempExtract);
+            string payloadRoot = ResolvePayloadRoot(tempExtract);
+            EnsureStagedUpdaterCopy(payloadRoot);
 
             // From here on we WILL stop the watchdog; pre-stop failures above
             // returned without touching the running install.
@@ -108,7 +114,7 @@ internal static partial class Program
 
             try
             {
-                AtomicCopyOver(tempExtract, installDir);
+                AtomicCopyOver(payloadRoot, installDir);
             }
             catch
             {
@@ -177,7 +183,7 @@ internal static partial class Program
         return v;
     }
 
-    private static async Task<(Version Latest, string ZipUrl, string TagName, string? Sha256)> FetchLatestAsync()
+    private static async Task<(Version Latest, string ZipUrl, string ZipName, string TagName, string? Sha256)> FetchLatestAsync()
     {
         bool includePrereleases = ReadIncludePrereleasesFromSettings();
 
@@ -223,14 +229,24 @@ internal static partial class Program
         Version v = ParseTagVersion(tag);
 
         string zipUrl = "";
+        string zipName = "";
+        string? zipDigest = null;
+        string integrityUrl = "";
         foreach (var asset in releaseElement.GetProperty("assets").EnumerateArray())
         {
             string name = asset.GetProperty("name").GetString() ?? "";
             if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
             {
                 zipUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                zipName = name;
+                zipDigest = asset.TryGetProperty("digest", out JsonElement digestEl) ? digestEl.GetString() : null;
                 Logger.WriteFileOnly("[updater] selected asset: " + name + " url=" + zipUrl);
-                break;
+                continue;
+            }
+            if (name.EndsWith(".integrity.tsv", StringComparison.OrdinalIgnoreCase))
+            {
+                integrityUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                Logger.WriteFileOnly("[updater] selected integrity asset: " + name + " url=" + integrityUrl);
             }
         }
         if (string.IsNullOrEmpty(zipUrl))
@@ -239,12 +255,87 @@ internal static partial class Program
         // Pull the SHA256: <hex> line out of the release body. release.yml
         // always emits one; releases published by other paths won't.
         string body = releaseElement.TryGetProperty("body", out var b) ? (b.GetString() ?? "") : "";
-        var match = Sha256Line.Match(body);
-        string? sha = match.Success ? match.Groups[1].Value : null;
-        Logger.WriteFileOnly("[updater] sha256-line "
+        string? sha = await ResolveExpectedZipShaAsync(http, zipName, zipDigest, integrityUrl, body)
+            .ConfigureAwait(false);
+        Logger.WriteFileOnly("[updater] expected-sha256 "
             + (sha != null ? "matched (" + sha.Length + " chars)" : "absent"));
 
-        return (v, zipUrl, tag, sha);
+        return (v, zipUrl, zipName, tag, sha);
+    }
+
+    private static async Task<string?> ResolveExpectedZipShaAsync(
+        HttpClient http,
+        string zipName,
+        string? zipDigest,
+        string integrityUrl,
+        string releaseBody)
+    {
+        if (!string.IsNullOrWhiteSpace(integrityUrl))
+        {
+            try
+            {
+                string integrity = await http.GetStringAsync(integrityUrl).ConfigureAwait(false);
+                string? fromIntegrity = TryParseIntegritySha(integrity, zipName);
+                if (fromIntegrity != null) return fromIntegrity;
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteFileOnly("[updater] integrity asset read failed: " + ex.GetType().Name + ": " + ex.Message);
+            }
+        }
+
+        string? fromDigest = TryParseAssetDigest(zipDigest);
+        if (fromDigest != null) return fromDigest;
+
+        return TryParseLegacyBodySha(releaseBody);
+    }
+
+    internal static string? TryParseIntegritySha(string integrityText, string zipName)
+    {
+        if (string.IsNullOrWhiteSpace(integrityText) || string.IsNullOrWhiteSpace(zipName))
+            return null;
+
+        foreach (string rawLine in integrityText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
+        {
+            string line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
+            string[] parts = line.Split('\t', 3);
+            if (parts.Length != 3) continue;
+            if (!parts[2].Trim().Equals(zipName, StringComparison.OrdinalIgnoreCase)) continue;
+            string sha = parts[0].Trim();
+            return IsSha256Hex(sha) ? sha.ToUpperInvariant() : null;
+        }
+
+        return null;
+    }
+
+    internal static string? TryParseAssetDigest(string? digest)
+    {
+        if (string.IsNullOrWhiteSpace(digest)) return null;
+        string trimmed = digest.Trim();
+        const string prefix = "sha256:";
+        if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        string sha = trimmed[prefix.Length..].Trim();
+        return IsSha256Hex(sha) ? sha.ToUpperInvariant() : null;
+    }
+
+    internal static string? TryParseLegacyBodySha(string body)
+    {
+        var match = Sha256Line.Match(body ?? "");
+        return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
+    }
+
+    private static bool IsSha256Hex(string value)
+    {
+        if (value.Length != 64) return false;
+        foreach (char c in value)
+        {
+            bool hex = (c >= '0' && c <= '9')
+                || (c >= 'a' && c <= 'f')
+                || (c >= 'A' && c <= 'F');
+            if (!hex) return false;
+        }
+        return true;
     }
 
     // Read just the maintenance.include_prereleases flag straight from
@@ -312,6 +403,12 @@ internal static partial class Program
 
     private static bool PromptUpdate()
     {
+        if (string.Equals(Environment.GetEnvironmentVariable(AssumeYesEnvVar), "1", StringComparison.Ordinal))
+        {
+            Console.WriteLine("Update requested from WKVRCProxy; installing without a second prompt.");
+            return true;
+        }
+
         // KeyAvailable throws InvalidOperationException when stdin is redirected
         // (updater piped from another tool, run from Task Scheduler, etc.).
         // In that case we treat it as headless and default to N rather than
@@ -546,6 +643,32 @@ internal static partial class Program
         return Convert.ToHexString(sha.ComputeHash(s));
     }
 
+    internal static string ResolvePayloadRoot(string extractRoot)
+    {
+        if (File.Exists(Path.Combine(extractRoot, WatchdogExeName)))
+            return extractRoot;
+
+        string[] candidates = Directory.GetDirectories(extractRoot)
+            .Where(dir => File.Exists(Path.Combine(dir, WatchdogExeName)))
+            .ToArray();
+        if (candidates.Length == 1) return candidates[0];
+
+        throw new InvalidOperationException(
+            "Release zip did not contain a recognizable WKVRCProxy payload root for " + WatchdogExeName + ".");
+    }
+
+    private static void EnsureStagedUpdaterCopy(string payloadRoot)
+    {
+        string updater = Path.Combine(payloadRoot, UpdaterExeName);
+        if (!File.Exists(updater)) return;
+        string staged = Path.Combine(payloadRoot, StagedUpdaterExeName);
+        try { File.Copy(updater, staged, overwrite: true); }
+        catch (Exception ex)
+        {
+            throw new IOException("Failed to stage updater refresh copy in extracted payload.", ex);
+        }
+    }
+
     // Atomic two-pass copy: stage every file from the new payload as
     // "<dst>.new-<short>", then rename pass replaces originals via
     // File.Move(overwrite:true). On rename failure, all already-renamed
@@ -560,14 +683,20 @@ internal static partial class Program
     internal static void AtomicCopyOver(string from, string to)
     {
         var stagedFiles = new List<(string TempNew, string FinalDst)>();
+        HashSet<string> newManifestPaths = ReadShippedManifestPaths(from);
+        HashSet<string> oldManifestPaths = ReadShippedManifestPaths(to);
+        HashSet<string> deleteRelPaths = oldManifestPaths.Count > 0 && newManifestPaths.Count > 0
+            ? oldManifestPaths.Except(newManifestPaths, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         try
         {
             foreach (string file in Directory.GetFiles(from, "*", SearchOption.AllDirectories))
             {
                 string rel = Path.GetRelativePath(from, file);
-                string target = Path.Combine(to, rel);
+                string target = SafeInstallPath(to, rel);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                if (Path.GetFileName(target).Equals("WKVRCProxy.Updater.exe", StringComparison.OrdinalIgnoreCase))
+                if (Path.GetFileName(target).Equals(UpdaterExeName, StringComparison.OrdinalIgnoreCase))
                     continue; // can't overwrite our own running exe
                 string tempNew = target + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
                 File.Copy(file, tempNew, overwrite: true);
@@ -626,6 +755,14 @@ internal static partial class Program
                     throw;
                 }
             }
+            foreach (string rel in deleteRelPaths)
+            {
+                string dst = SafeInstallPath(to, rel);
+                if (!File.Exists(dst)) continue;
+                string backup = dst + ".old-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                MoveWithRetry(dst, backup, retries: 3);
+                renamed.Add((backup, dst));
+            }
         }
         catch (Exception primaryEx)
         {
@@ -667,6 +804,50 @@ internal static partial class Program
         {
             try { File.Delete(backup); } catch { /* best-effort */ }
         }
+    }
+
+    internal static HashSet<string> ReadShippedManifestPaths(string root)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string manifest = SafeInstallPath(root, ShippedManifestRelativePath);
+        if (!File.Exists(manifest)) return paths;
+
+        foreach (string line in File.ReadLines(manifest))
+        {
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#", StringComparison.Ordinal)) continue;
+            string[] parts = line.Split('\t', 3);
+            if (parts.Length != 3) continue;
+            if (!TryNormalizeRelativePath(parts[2], out string? rel)) continue;
+            paths.Add(rel);
+        }
+
+        return paths;
+    }
+
+    private static bool TryNormalizeRelativePath(string path, out string rel)
+    {
+        rel = "";
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string cleaned = path.Trim().Replace('\\', '/');
+        if (cleaned.StartsWith("/", StringComparison.Ordinal) || cleaned.Contains(":", StringComparison.Ordinal))
+            return false;
+        string[] parts = cleaned.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return false;
+        if (parts.Any(p => p == "." || p == "..")) return false;
+        rel = string.Join(Path.DirectorySeparatorChar, parts);
+        return true;
+    }
+
+    private static string SafeInstallPath(string root, string relative)
+    {
+        if (!TryNormalizeRelativePath(relative, out string? rel))
+            throw new InvalidOperationException("Unsafe release manifest path: " + relative);
+        string rootFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        string full = Path.GetFullPath(Path.Combine(rootFull, rel));
+        if (!full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Release path escapes install directory: " + relative);
+        return full;
     }
 
     // Retry a File.Move up to `retries` times with 200ms backoff between

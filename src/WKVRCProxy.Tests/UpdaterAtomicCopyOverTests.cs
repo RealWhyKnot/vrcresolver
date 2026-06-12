@@ -128,4 +128,67 @@ public class UpdaterAtomicCopyOverTests : IDisposable
         Assert.Equal("A", File.ReadAllText(Path.Combine(_to, "a.bin")));
         Assert.Equal("B", File.ReadAllText(Path.Combine(_to, "subdir/b.bin")));
     }
+
+    [Fact]
+    public void ResolvePayloadRoot_accepts_flat_zip_extract()
+    {
+        File.WriteAllText(Path.Combine(_from, "WKVRCProxy.exe"), "WATCHDOG");
+
+        string root = UpdaterProgram.ResolvePayloadRoot(_from);
+
+        Assert.Equal(_from, root);
+    }
+
+    [Fact]
+    public void ResolvePayloadRoot_accepts_single_root_folder_zip_extract()
+    {
+        string nested = Path.Combine(_from, "WKVRCProxy-v2026.6.12.0");
+        Directory.CreateDirectory(nested);
+        File.WriteAllText(Path.Combine(nested, "WKVRCProxy.exe"), "WATCHDOG");
+
+        string root = UpdaterProgram.ResolvePayloadRoot(_from);
+
+        Assert.Equal(nested, root);
+    }
+
+    [Fact]
+    public void Manifest_aware_copy_removes_old_shipped_files_and_preserves_unknown_files()
+    {
+        Directory.CreateDirectory(Path.Combine(_to, "data"));
+        File.WriteAllText(Path.Combine(_to, "kept.txt"), "OLD-KEPT");
+        File.WriteAllText(Path.Combine(_to, "removed.txt"), "OLD-REMOVED");
+        File.WriteAllText(Path.Combine(_to, "user.txt"), "USER");
+        WriteManifest(_to, "kept.txt", "removed.txt");
+
+        Directory.CreateDirectory(Path.Combine(_from, "data"));
+        File.WriteAllText(Path.Combine(_from, "kept.txt"), "NEW-KEPT");
+        WriteManifest(_from, "kept.txt");
+
+        UpdaterProgram.AtomicCopyOver(_from, _to);
+
+        Assert.Equal("NEW-KEPT", File.ReadAllText(Path.Combine(_to, "kept.txt")));
+        Assert.False(File.Exists(Path.Combine(_to, "removed.txt")));
+        Assert.Equal("USER", File.ReadAllText(Path.Combine(_to, "user.txt")));
+    }
+
+    [Fact]
+    public void AtomicCopyOver_copies_staged_updater_refresh_file()
+    {
+        File.WriteAllText(Path.Combine(_from, "WKVRCProxy.Updater.next.exe"), "NEW-UPDATER");
+
+        UpdaterProgram.AtomicCopyOver(_from, _to);
+
+        Assert.Equal("NEW-UPDATER", File.ReadAllText(Path.Combine(_to, "WKVRCProxy.Updater.next.exe")));
+    }
+
+    private static void WriteManifest(string root, params string[] paths)
+    {
+        string dataDir = Path.Combine(root, "data");
+        Directory.CreateDirectory(dataDir);
+        string manifest = Path.Combine(dataDir, "release-manifest.tsv");
+        string[] lines = paths
+            .Select(path => "0000000000000000000000000000000000000000000000000000000000000000\t1\t" + path.Replace('\\', '/'))
+            .ToArray();
+        File.WriteAllLines(manifest, lines);
+    }
 }

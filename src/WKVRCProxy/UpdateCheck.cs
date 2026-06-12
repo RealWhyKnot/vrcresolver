@@ -7,7 +7,7 @@ namespace WKVRCProxy;
 
 // Best-effort, fire-and-forget startup check against the GitHub
 // releases-latest endpoint. If a newer version exists, print one line so
-// users running the watchdog see the prompt to run WKVRCProxy.Updater.exe.
+// users running the watchdog see the prompt to type /update.
 //
 // The dedicated WKVRCProxy.Updater.exe still owns the actual upgrade flow
 // (download / SHA-verify / atomic swap / relaunch). This is just the
@@ -78,7 +78,7 @@ internal static class UpdateCheck
             ConsoleUx.Success(
                 LogComponent.Update,
                 "version " + best.Value.tag + channelTag
-                    + " is available; run WKVRCProxy.Updater.exe to install" +
+                    + " is available; type /update to install" +
                 (string.IsNullOrEmpty(best.Value.htmlUrl) ? "" : " (" + best.Value.htmlUrl + ")"));
         }
         catch

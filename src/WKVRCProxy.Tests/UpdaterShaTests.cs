@@ -55,6 +55,45 @@ public class UpdaterShaTests
     }
 
     [Fact]
+    public void Sha256Line_does_not_match_integrity_table_row()
+    {
+        const string body = "WKVRCProxy-v2026.6.12.0.zip    149.74 MB    SHA256: E8966F33BE8246922756E3E8234CF8309FB6D3151665594203F53BBF5725164B";
+        Assert.False(UpdaterProgram.Sha256Line.Match(body).Success);
+    }
+
+    [Fact]
+    public void TryParseIntegritySha_reads_zip_row()
+    {
+        const string sha = "e8966f33be8246922756e3e8234cf8309fb6d3151665594203f53bbf5725164b";
+        string tsv = "A24EA7D3DF2B0718AFF60B5B9EBEBDF590ED4938D81A6B08CDEC7A880B326B0C\t1\tWKVRCProxy.exe\n"
+            + sha + "\t157017922\tWKVRCProxy-v2026.6.12.0.zip\n";
+
+        string? parsed = UpdaterProgram.TryParseIntegritySha(tsv, "WKVRCProxy-v2026.6.12.0.zip");
+
+        Assert.Equal(sha.ToUpperInvariant(), parsed);
+    }
+
+    [Fact]
+    public void TryParseAssetDigest_reads_github_digest()
+    {
+        const string sha = "e8966f33be8246922756e3e8234cf8309fb6d3151665594203f53bbf5725164b";
+
+        string? parsed = UpdaterProgram.TryParseAssetDigest("sha256:" + sha);
+
+        Assert.Equal(sha.ToUpperInvariant(), parsed);
+    }
+
+    [Fact]
+    public void TryParseLegacyBodySha_reads_bare_line()
+    {
+        const string sha = "e8966f33be8246922756e3e8234cf8309fb6d3151665594203f53bbf5725164b";
+
+        string? parsed = UpdaterProgram.TryParseLegacyBodySha("notes\nSHA256: " + sha + "\nmore");
+
+        Assert.Equal(sha.ToUpperInvariant(), parsed);
+    }
+
+    [Fact]
     public void ComputeSha256_matches_known_vector()
     {
         // SHA-256("hello\n") = 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03

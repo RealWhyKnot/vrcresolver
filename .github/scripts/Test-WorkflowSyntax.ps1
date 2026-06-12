@@ -106,6 +106,17 @@ if (Test-Path -LiteralPath $workflowDir) {
     }
 }
 
+$releaseWorkflow = Join-Path $workflowDir 'release.yml'
+if (Test-Path -LiteralPath $releaseWorkflow) {
+    $releaseText = Get-Content -LiteralPath $releaseWorkflow -Raw
+    if ($releaseText -notmatch '\.integrity\.tsv') {
+        $errors.Add('release.yml does not create an integrity TSV asset.') | Out-Null
+    }
+    if ($releaseText -notmatch 'gh release create \$tag \$zip \$integrity') {
+        $errors.Add('release.yml does not upload both the zip and integrity TSV assets.') | Out-Null
+    }
+}
+
 if ($errors.Count -gt 0) {
     Write-Host 'PowerShell syntax errors:'
     foreach ($err in $errors) { Write-Host "  $err" }

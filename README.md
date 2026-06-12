@@ -29,7 +29,7 @@ What it does NOT do: bypass DRM, change VRChat's per-avatar limits, host content
 | `WKVRCProxy.exe` | the watchdog. Long-running console window. Patches VRChat, holds the WebSocket, runs the trust-gateway listener. |
 | `tools/yt-dlp.exe` | the patched shim. Replaces VRChat's bundled yt-dlp at install time. AOT, 3.3 MB. |
 | `tools/yt-dlp-og-fallback.exe` | bundled vanilla yt-dlp. Safety net when VRChat's own copy is missing (fresh install, file deleted, etc.). |
-| `WKVRCProxy.Updater.exe` | self-update against GitHub releases. Manual run. |
+| `WKVRCProxy.Updater.exe` | self-update helper used by the watchdog's `/update` command. Manual run still works. |
 | `WKVRCProxy.Uninstaller.exe` | restore the original `yt-dlp.exe`, remove the hosts entry, wipe state. No prompt; running it IS consent. |
 
 Target: Windows 10/11 x64. Single-file, self-contained .NET 10. No installer, no admin install dir.
@@ -45,6 +45,8 @@ Target: Windows 10/11 x64. Single-file, self-contained .NET 10. No installer, no
 5. **Launch VRChat.** The watchdog window prints `[mesh] connected` once the WebSocket is up. Paste a YouTube URL in any in-world video player.
 
 To uninstall: run `WKVRCProxy.Uninstaller.exe` from the same folder. It restores VRChat's vanilla `yt-dlp.exe`, removes the hosts entry, wipes `%LOCALAPPDATA%Low\WKVRCProxy\`, and deletes its own install directory.
+
+To update: run `WKVRCProxy.exe` and type `/update` in the watchdog window.
 
 ---
 

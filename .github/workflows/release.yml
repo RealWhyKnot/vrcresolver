@@ -115,13 +115,24 @@ jobs:
           $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash
           $manifest = Get-ChildItem dist/WKVRCProxy-*.manifest.tsv | Select-Object -First 1
           if (-not $manifest) { throw "No manifest found in dist/ -- build.ps1 -Package did not produce one. Generate-ReleaseNotes.ps1 needs it for the File integrity section." }
+          $integrityName = $zip.Name -replace '\.zip$', '.integrity.tsv'
+          $integrity = Join-Path $zip.DirectoryName $integrityName
+          $zipLine = "$hash`t$($zip.Length)`t$($zip.Name)"
+          $manifestLines = Get-Content -LiteralPath $manifest.FullName -Encoding UTF8
+          [System.IO.File]::WriteAllLines(
+            $integrity,
+            [string[]](@($zipLine) + $manifestLines),
+            [System.Text.UTF8Encoding]::new($false))
           "path=$($zip.FullName)"           >> $env:GITHUB_OUTPUT
           "name=$($zip.Name)"               >> $env:GITHUB_OUTPUT
           "size=$($zip.Length)"             >> $env:GITHUB_OUTPUT
           "sha256=$hash"                    >> $env:GITHUB_OUTPUT
           "manifest=$($manifest.FullName)"  >> $env:GITHUB_OUTPUT
+          "integrity=$integrity"             >> $env:GITHUB_OUTPUT
+          "integrity_name=$integrityName"    >> $env:GITHUB_OUTPUT
           Write-Host "Release zip:      $($zip.Name)"
           Write-Host "Release manifest: $($manifest.Name)"
+          Write-Host "Integrity asset:  $integrityName"
           Write-Host "SHA256:           $hash"
 
       - name: Generate release body
@@ -136,7 +147,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Composes the full release body: title + auto-changelog slice +
-          # File integrity (from the manifest emitted by build.ps1) + four
+          # legacy zip SHA + integrity-asset pointer + four
           # templated evergreen sections (More / Install / Uninstall / What
           # you need to do) + optional .github/release-extras/<tag>.md.
           # See .github/scripts/Generate-ReleaseNotes.ps1 for filtering rules,
@@ -163,6 +174,7 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $zip = "${{ steps.zip.outputs.path }}"
+          $integrity = "${{ steps.zip.outputs.integrity }}"
           $notes = @'
           ${{ steps.changelog.outputs.body }}
           '@
@@ -175,7 +187,7 @@ jobs:
           # gh release create accepts the asset paths as positional arguments after the tag.
           $extra = @()
           if ('${{ steps.beta.outputs.is_beta }}' -eq 'true') { $extra = @('--prerelease','--latest=false') }
-          gh release create $tag $zip --title $tag --notes-file $notesPath @extra
+          gh release create $tag $zip $integrity --title $tag --notes-file $notesPath @extra
 
       - name: Verify published release body matches input
         env:

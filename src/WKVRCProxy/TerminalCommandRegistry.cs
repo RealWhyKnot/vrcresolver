@@ -81,6 +81,12 @@ internal sealed class TerminalCommandRegistry
             "paths");
 
         registry.Add(
+            "update",
+            "Check for and install the latest WKVRCProxy release.",
+            UpdateCommand.ExecuteAsync,
+            "upgrade");
+
+        registry.Add(
             "clear",
             "Clear the terminal view.",
             static (ctx, _, _) =>

@@ -195,6 +195,13 @@ dotnet publish "src/WKVRCProxy/WKVRCProxy.csproj" @WatchdogPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy publish failed" }
 dotnet publish "src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" @AotPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Updater publish failed" }
+$UpdaterExe = Join-Path $BuildDir "WKVRCProxy.Updater.exe"
+if (Test-Path $UpdaterExe) {
+    Copy-Item $UpdaterExe (Join-Path $BuildDir "WKVRCProxy.Updater.next.exe") -Force
+}
+else {
+    throw "WKVRCProxy.Updater.exe missing after publish"
+}
 dotnet publish "src/WKVRCProxy.Uninstaller/WKVRCProxy.Uninstaller.csproj" @AotPubArgs
 if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Uninstaller publish failed" }
 
@@ -251,6 +258,21 @@ else {
 
 # --- Trim debug symbols we don't ship ---
 Get-ChildItem $BuildDir -Filter "*.pdb" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
+
+# --- Stage shipped-file manifest in dist ---
+# The updater uses this manifest on the next update to remove files that were
+# shipped by an older release but no longer exist in the new release. Unknown
+# user-created files are not listed here, so they are left alone.
+$InstallManifestPath = Join-Path $BuildData "release-manifest.tsv"
+$InstallManifestLines = Get-ChildItem $BuildDir -Recurse -File |
+    Where-Object { $_.FullName -ne $InstallManifestPath } |
+    Sort-Object FullName |
+    ForEach-Object {
+        $relPath = $_.FullName.Substring($BuildDir.Length + 1) -replace '\\', '/'
+        $sha = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+        "$sha`t$($_.Length)`t$relPath"
+    }
+[System.IO.File]::WriteAllLines($InstallManifestPath, [string[]]$InstallManifestLines, [System.Text.UTF8Encoding]::new($false))
 
 # --- Package artifacts for GitHub releases ---
 # Local builds stop at dist/. GitHub release builds pass -Package, which writes

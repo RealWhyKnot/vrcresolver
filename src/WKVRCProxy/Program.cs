@@ -123,6 +123,7 @@ internal static class Program
 
             try
             {
+                UpdaterRepair.ApplyIfPresent(AppContext.BaseDirectory);
                 return RunWatchdog();
             }
             finally
