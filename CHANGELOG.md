@@ -14,6 +14,7 @@ Release entries are listed newest first. This changelog starts with the first pu
 ### Changed
 - Refactor proxy client hotspots (27aa711)
 - Bump the minor-and-patch group with 1 update (#63) (cc33fb8)
+- Bump MessagePack and MessagePackAnalyzer (#64) (eb1e893)
 
 ### Fixed
 - **mesh:** Use proxy public endpoint (648c66b)
