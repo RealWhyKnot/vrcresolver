@@ -11,7 +11,9 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
-_No notable changes since the last release._
+### Fixed
+- **vrc:** Arm native fallback on playback failure (4c506cd)
+- **updater:** Recover release update flow (a70a452)
 
 ---
 
