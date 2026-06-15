@@ -8,7 +8,7 @@ name: Release
 # zip filename all match the tag. build.ps1 validates the shape and fails fast on a malformed tag.
 # Builds the full distribution via build.ps1 on a Windows runner — required because the build
 # produces win-x64 exes and uses PowerShell-only cmdlets — then attaches the zip
-# from dist/ to a GitHub release with a SHA256 line so updater.exe can verify the download.
+# from dist/ to a GitHub release with an integrity TSV so updater.exe can verify the download.
 #
 # Changelog promotion: before the build runs, .github/scripts/Update-Changelog.ps1 renames the
 # "## Unreleased" heading in CHANGELOG.md to "## [vTAG] - DATE", linking
@@ -141,7 +141,7 @@ jobs:
           Write-Host "Release zip:      $($zip.Name)"
           Write-Host "Release manifest: $($manifest.Name)"
           Write-Host "Integrity asset:  $integrityName"
-          Write-Host "SHA256:           $hash"
+          Write-Host "Zip digest:       $hash"
 
       - name: Generate release body
         id: changelog
@@ -155,9 +155,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Composes the full release body: title + auto-changelog slice +
-          # legacy zip SHA + integrity-asset pointer + four
-          # templated evergreen sections (More / Install / Uninstall / What
-          # you need to do) + optional .github/release-extras/<tag>.md.
+          # integrity-asset pointer + four templated evergreen sections
+          # (More / Install / Uninstall / What you need to do) + optional
+          # .github/release-extras/<tag>.md.
           # See .github/scripts/Generate-ReleaseNotes.ps1 for filtering rules,
           # token substitution, and scrub gates.
           $body = & ./.github/scripts/Generate-ReleaseNotes.ps1 `

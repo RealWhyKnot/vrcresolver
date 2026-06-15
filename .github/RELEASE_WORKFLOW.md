@@ -29,9 +29,9 @@ integrity TSV are emitted under `dist/` for the workflow to upload.
 ## Body composition
 
 The release body is the verbatim output of
-[Generate-ReleaseNotes.ps1](scripts/Generate-ReleaseNotes.ps1). The body keeps
-a bare `SHA256: <hash>` line for older updaters; the full integrity table is
-uploaded as `WKVRCProxy-v<version>.integrity.tsv`. Layout:
+[Generate-ReleaseNotes.ps1](scripts/Generate-ReleaseNotes.ps1). The body points
+readers at `WKVRCProxy-v<version>.integrity.tsv`; the checksum values live in
+that TSV asset. Layout:
 
 ```
 # WKVRCProxy <tag>
@@ -46,11 +46,9 @@ uploaded as `WKVRCProxy-v<version>.integrity.tsv`. Layout:
 
 **Full Changelog**: <compare-url>
 
-SHA256: <hash>
-
 ## File integrity
 
-Full SHA256 hashes are attached as `<integrity asset>`.
+Full SHA256 hashes are attached as `<integrity TSV>`.
 
 [Additional notes (extras file, if present)]
 ```

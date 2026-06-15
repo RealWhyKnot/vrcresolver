@@ -10,8 +10,7 @@
     1. Title (h1: "<repo> <tag>")
     2. What's Changed (auto-changelog from the commit slice between prev tag
        and this tag; bucketed by conventional-commit prefix)
-    3. File integrity (legacy bare SHA256 line plus a pointer to the attached
-       integrity TSV asset)
+    3. File integrity (pointer to the attached integrity TSV asset)
     4. More (from .github/release-template/links.md, with token substitution)
     5. Install (fresh) (from .github/release-template/install.md)
     6. Uninstall (from .github/release-template/uninstall.md)
@@ -73,7 +72,7 @@
 .PARAMETER Manifest
   Path to the per-file manifest emitted by build.ps1 alongside the zip.
   Tab-separated <sha256>\t<size_bytes>\t<relative_path> per line. Used
-  to compose the inner-file rows of the File integrity section.
+  to confirm that the integrity TSV asset can cover the release contents.
   Required (along with -ZipPath, -ZipSize, -ZipSha256) for the File
   integrity section to render; otherwise that section is skipped.
 
@@ -566,14 +565,11 @@ if ($Repo -and $prevTag) {
 }
 
 # --- File integrity ---
-# Keep a bare SHA256 line in the body for older updaters. Full integrity data
-# is published as a separate .integrity.tsv release asset.
+# Full integrity data is published as a separate .integrity.tsv release asset.
 $includeIntegrity = $ZipPath -and $ZipSha256 -and $ZipSize -gt 0 -and $Manifest -and (Test-Path -LiteralPath $Manifest)
 if ($includeIntegrity) {
     $zipNameForLine = if ($zipNameToken) { $zipNameToken } else { Split-Path -Leaf $ZipPath }
     $integrityName = $zipNameForLine -replace '\.zip$', '.integrity.tsv'
-    [void]$sb.AppendLine()
-    [void]$sb.AppendLine("SHA256: $($ZipSha256.ToUpper())")
     [void]$sb.AppendLine()
     [void]$sb.AppendLine("## File integrity")
     [void]$sb.AppendLine()

@@ -252,8 +252,8 @@ internal static partial class Program
         if (string.IsNullOrEmpty(zipUrl))
             throw new InvalidOperationException("No .zip asset on latest release.");
 
-        // Pull the SHA256: <hex> line out of the release body. release.yml
-        // always emits one; releases published by other paths won't.
+        // Prefer the integrity TSV asset, then GitHub's asset digest. Keep
+        // the body parser as a compatibility fallback for older releases.
         string body = releaseElement.TryGetProperty("body", out var b) ? (b.GetString() ?? "") : "";
         string? sha = await ResolveExpectedZipShaAsync(http, zipName, zipDigest, integrityUrl, body)
             .ConfigureAwait(false);

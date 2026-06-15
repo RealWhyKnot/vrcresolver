@@ -7,9 +7,9 @@ using UpdaterProgram = WKVRCProxy.Updater.Program;
 
 namespace WKVRCProxy.Tests;
 
-// Updater's SHA256-line regex extraction + ComputeSha256 + tag-version
-// parsing. These are the gates between "tampered/corrupted zip" and
-// "installed-on-user-machine" — a regression here lets bad zips through.
+// Updater checksum extraction + ComputeSha256 + tag-version parsing. These
+// are the gates between "tampered/corrupted zip" and "installed-on-user-
+// machine"; a regression here lets bad zips through.
 public class UpdaterShaTests
 {
     [Fact]

@@ -159,8 +159,8 @@ try {
             -Manifest $manifestPath `
             -SkipScrub) -join "`n"
 
-    Assert-Contains -Text $IntegrityNotes -Expected "SHA256: $zipSha"
     Assert-Contains -Text $IntegrityNotes -Expected 'WKVRCProxy-v2026.5.3.0.integrity.tsv'
+    Assert-NotContains -Text $IntegrityNotes -Unexpected "SHA256: $zipSha"
     Assert-NotContains -Text $IntegrityNotes -Unexpected 'WKVRCProxy.exe                        '
 
     Write-Host 'Generate-ReleaseNotes tests passed.'
