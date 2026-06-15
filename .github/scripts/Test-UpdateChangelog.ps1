@@ -39,6 +39,13 @@ function Assert-Contains {
     }
 }
 
+function Assert-NotContains {
+    param([string]$Text, [string]$Unexpected)
+    if ($Text.Contains($Unexpected)) {
+        throw "Expected text not to contain '$Unexpected'."
+    }
+}
+
 try {
     New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
     Push-Location $TempRoot
@@ -78,6 +85,13 @@ _No notable changes since the last release._
 
     $notes = (& $Updater -Mode Notes -ForVersion -Version 'v2026.6.4.0' -RepoRoot $TempRoot) -join "`n"
     Assert-Contains -Text $notes -Expected '**mesh:** Test changelog append'
+
+    & $Updater -Mode Promote -Version 'v2026.6.5.0' -RepoRoot $TempRoot -Repo 'RealWhyKnot/WKVRCProxy'
+    if ($LASTEXITCODE -ne 0) { throw "Update-Changelog empty Promote failed with exit code $LASTEXITCODE" }
+
+    $emptyPromoted = [System.IO.File]::ReadAllText((Join-Path $TempRoot 'CHANGELOG.md'), $Utf8NoBom)
+    Assert-Contains -Text $emptyPromoted -Expected '_No user-visible changes in this release._'
+    Assert-NotContains -Text $emptyPromoted -Unexpected 'Maintenance release'
 
     Write-Host 'Update-Changelog tests passed.'
 }

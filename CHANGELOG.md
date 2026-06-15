@@ -11,15 +11,15 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
-### Fixed
-- **vrc:** Arm native fallback on playback failure (4c506cd)
-- **updater:** Recover release update flow (a70a452)
+_No notable changes since the last release._
 
 ---
 
 ## [v2026.6.15.0](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.6.15.0) - 2026-06-15
 
-_Maintenance release; see commit log for details._
+### Fixed
+- **vrc:** Arm native fallback on playback failure (4c506cd)
+- **updater:** Recover release update flow (a70a452)
 
 ---
 

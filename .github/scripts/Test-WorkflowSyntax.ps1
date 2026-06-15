@@ -115,6 +115,15 @@ if (Test-Path -LiteralPath $releaseWorkflow) {
     if ($releaseText -notmatch 'gh release create \$tag \$zip \$integrity') {
         $errors.Add('release.yml does not upload both the zip and integrity TSV assets.') | Out-Null
     }
+    if ($releaseText -match 'gh pr create|Open promotion PR|promote-changelog') {
+        $errors.Add('release.yml contains the deprecated changelog-promotion PR path.') | Out-Null
+    }
+    if ($releaseText -notmatch 'Preloading changelog entries from') {
+        $errors.Add('release.yml does not preload changelog entries before promotion.') | Out-Null
+    }
+    if ($releaseText -notmatch 'Commit promoted CHANGELOG\.md back to main \(verified\)') {
+        $errors.Add('release.yml does not commit promoted CHANGELOG.md back through the verified path.') | Out-Null
+    }
 }
 
 if ($errors.Count -gt 0) {

@@ -12,11 +12,9 @@ name: Release
 #
 # Changelog promotion: before the build runs, .github/scripts/Update-Changelog.ps1 renames the
 # "## Unreleased" heading in CHANGELOG.md to "## [vTAG] - DATE", linking
-# to this release. After the GitHub release is created the promoted file is pushed to a
-# release/promote-changelog-<tag> branch and a PR is opened with auto-merge so main eventually
-# carries the promotion (squashed in by github-actions[bot] once CI passes). Direct push does
-# not work on protected main: the dotnet-build-+-test required check is missing on bot pushes,
-# so branch protection rejects them.
+# to this release. After the GitHub release is created, the promoted file is
+# committed back to main through the verified createCommitOnBranch path so main
+# carries the same CHANGELOG.md that shipped in the release artifact.
 on:
   push:
     tags:
@@ -24,7 +22,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write   # release step opens a PR for the changelog promotion
 
 # Share a concurrency group with changelog-append so the appender can't run
 # during a release build and add entries to main's Unreleased that the release
@@ -45,8 +42,8 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          # GITHUB_TOKEN is enough: the promotion-PR step pushes the bot's
-          # branch (not main) and uses gh to open + auto-merge the PR.
+          # GITHUB_TOKEN is enough for release publishing and the verified
+          # createCommitOnBranch mutations used after publish.
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Detect beta tag
@@ -89,7 +86,18 @@ jobs:
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          ./.github/scripts/Update-Changelog.ps1 -Mode Promote -Version '${{ github.ref_name }}'
+          $tag = '${{ github.ref_name }}'
+          $prevTag = ''
+          $prevOutput = & git describe --tags --abbrev=0 --exclude '*-*' "$tag^" 2>$null
+          if ($LASTEXITCODE -eq 0 -and $prevOutput) {
+            $prevTag = [string]$prevOutput
+            Write-Host "Preloading changelog entries from $prevTag..$tag before promotion."
+            ./.github/scripts/Update-Changelog.ps1 -Mode Append -Range "$prevTag..$tag"
+          } else {
+            Write-Host "No previous stable tag found before $tag; promoting the existing Unreleased section."
+          }
+
+          ./.github/scripts/Update-Changelog.ps1 -Mode Promote -Version $tag
           # Stash the promoted file so we can re-apply it on main after the
           # release. Doing it now (before build.ps1 mutates the worktree) means
           # the bytes we push back to main are exactly what shipped in the exe.
@@ -402,66 +410,80 @@ jobs:
           fi
           echo "Hash append commit: $new_oid (verified)"
 
-      - name: Open promotion PR + enable auto-merge
+      - name: Commit promoted CHANGELOG.md back to main (verified)
         if: ${{ steps.beta.outputs.is_beta != 'true' }}
-        # We can't push directly to main: branch protection requires the
-        # "dotnet build + test" status check, which a bot push bypasses (so
-        # the push is rejected). Instead we open a PR off the tag and let
-        # auto-merge squash it once CI goes green. ci.yml has CHANGELOG.md
-        # carved out of paths-ignore so the required
-        # check actually runs on changelog-only PRs.
-        #
+        # Uses the same createCommitOnBranch pattern as changelog-append.yml
+        # and the wrapper-hash step so the commit lands verified on main.
         # Done last so a build/release failure doesn't leave a phantom
-        # "promotion PR open but never released" state.
+        # changelog promotion for a release that never shipped.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          git config user.name  'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-
-          branch="release/promote-changelog-${TAG_NAME}"
-          git checkout -b "$branch"
 
           # Replay the stashed file (captured before build.ps1 ran) so the
           # bytes we put on main are exactly what shipped in the embedded exe.
           cp .changelog-stash/CHANGELOG.md CHANGELOG.md
 
-          if [[ -z "$(git status --porcelain CHANGELOG.md)" ]]; then
-            echo "Nothing to promote — main is already in promoted state."
+          main_oid=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+          main_changelog_blob=$(gh api "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$main_oid" --jq '.sha' 2>/dev/null || echo "")
+          local_changelog_blob=$(git hash-object CHANGELOG.md)
+
+          if [[ "$main_changelog_blob" == "$local_changelog_blob" ]]; then
+            echo "main already carries the promoted changelog -- nothing to commit."
             exit 0
           fi
 
-          # [skip changelog] keeps changelog-append from re-bulleting this commit
-          # if the squash trigger ever races past the bot-actor filter.
-          git add CHANGELOG.md
-          git commit -m "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]"
-          git push origin "$branch"
+          changelog_b64=$(base64 -w 0 CHANGELOG.md)
+          headline="docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]"
+          body=$(printf '%s\n%s' \
+            "Promotes the CHANGELOG.md section published for ${TAG_NAME}." \
+            'Mirrors the file that shipped in the release artifact back to main.')
 
-          pr_body="Promotion PR opened by .github/workflows/release.yml after publishing **${TAG_NAME}**. Mirrors the embedded \`CHANGELOG.md\` that shipped inside the exe back onto \`main\` so the next push starts with a fresh \`## Unreleased\` section. Auto-merge enabled -- will squash once \`dotnet build + test\` passes."
-          if pr_url="$(gh pr create \
-            --base main \
-            --head "$branch" \
-            --title "docs(changelog): promote Unreleased -> ${TAG_NAME}" \
-            --body "$pr_body" \
-            2>pr-create.err)"; then
-            echo "Opened: $pr_url"
+          payload=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg branch "main" \
+            --arg headline "$headline" \
+            --arg body "$body" \
+            --arg oid "$main_oid" \
+            --arg changelog "$changelog_b64" \
+            '{
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
+              variables: {
+                input: {
+                  branch: { repositoryNameWithOwner: $repo, branchName: $branch },
+                  message: { headline: $headline, body: $body },
+                  fileChanges: {
+                    additions: [
+                      { path: "CHANGELOG.md", contents: $changelog }
+                    ]
+                  },
+                  expectedHeadOid: $oid
+                }
+              }
+            }')
 
-            # --auto queues the merge; it actually fires once required checks pass.
-            # Use --subject so the squash commit subject keeps the [skip changelog]
-            # marker (the appender also filters by bot actor, but belt-and-braces).
-            if ! gh pr merge "$pr_url" \
-              --auto \
-              --squash \
-              --delete-branch \
-              --subject "docs(changelog): promote Unreleased -> ${TAG_NAME} [skip changelog]" \
-              2>pr-merge.err; then
-              cat pr-merge.err >&2
-              echo "::warning::Release published, but auto-merge could not be enabled for promotion PR $pr_url."
-            fi
-          else
-            cat pr-create.err >&2
-            echo "::warning::Release published, but GitHub Actions could not create the promotion PR. Branch '$branch' was pushed; promote CHANGELOG.md manually."
+          response=$(printf '%s' "$payload" | gh api graphql --input -)
+          echo "$response" | jq .
+
+          if echo "$response" | jq -e '.errors // empty' >/dev/null; then
+            echo "::error::createCommitOnBranch returned GraphQL errors"
+            exit 1
           fi
+
+          new_oid=$(echo "$response" | jq -r '.data.createCommitOnBranch.commit.oid')
+          if [[ -z "$new_oid" || "$new_oid" == "null" ]]; then
+            echo "::error::createCommitOnBranch did not return a commit oid"
+            exit 1
+          fi
+
+          verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$new_oid" --jq '.commit.verification.verified')
+          if [[ "$verified" != "true" ]]; then
+            echo "::error::Commit $new_oid is not verified (got: $verified)"
+            gh api "repos/$GITHUB_REPOSITORY/commits/$new_oid" --jq '.commit.verification'
+            exit 1
+          fi
+          echo "Changelog promotion commit: $new_oid (verified)"

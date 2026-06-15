@@ -173,6 +173,19 @@ body via `gh release view --json body` and compares it byte-for-byte
 This catches GitHub-side normalisation surprises (which are rare but real)
 without letting a malformed body sit on the release indefinitely.
 
+## Changelog promotion
+
+The workflow promotes `## Unreleased` to the tagged section before the build
+so the embedded `CHANGELOG.md` matches the shipped release. Before promotion,
+it also replays the commit range since the previous stable tag into
+`## Unreleased`; that keeps the release notes correct when the tag job starts
+before the push-triggered changelog appender has committed back to main.
+
+After the release publishes, the stashed promoted `CHANGELOG.md` is committed
+back to main with GitHub's `createCommitOnBranch` mutation. This is the same
+verified-commit path used by `changelog-append.yml` and avoids the old
+promotion-branch PR flow.
+
 ## Failure modes + remediations
 
 | Symptom | Fix |
@@ -182,7 +195,7 @@ without letting a malformed body sit on the release indefinitely.
 | `Voice or internal-only-vocabulary patterns in release body` | Amend the offending commit subject. Or `[skip changelog]` it if the term is genuinely unavoidable. |
 | `Generate-ReleaseNotes.ps1 returned empty output` | The script failed silently or the slice was empty. Check the workflow log for warnings; if the slice really is empty, the empty-slice guard would have already thrown -- so this is a script bug. |
 | `Release body still differs after auto-correct` | A GitHub-side issue. Compare the input file in the runner artifacts against what `gh release view` returns. Often a trailing-whitespace or unicode-form difference. |
-| `Open promotion PR ... pull request create failed` | Repo setting `Allow GitHub Actions to create and approve pull requests` is OFF. The release publishes correctly; only the `## Unreleased` -> tagged-section promotion fails. Cosmetic; flip the setting if you want it. |
+| `createCommitOnBranch returned GraphQL errors` | Main moved after the workflow read its head, or GitHub rejected the file update. Re-run the workflow after main settles; if it repeats, inspect the GraphQL error text and push the same CHANGELOG.md promotion in the next source commit. |
 
 ## Updating the workflow
 

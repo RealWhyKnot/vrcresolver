@@ -394,10 +394,9 @@ if ($Mode -eq 'Promote') {
         if ($l -match '^\s*- ' -or $l -match '^###\s+') { $hasReal = $true; break }
     }
     if (-not $hasReal) {
-        # Empty section: the released version still gets an entry, just
-        # with a stub note. This keeps the heading -> release-page link
-        # alive so users browsing the changelog can click through.
-        $bodyLines = @('', '_Maintenance release; see commit log for details._', '')
+        # Empty section: the released version still gets an entry, but avoid
+        # describing the release type when there were no changelog bullets.
+        $bodyLines = @('', '_No user-visible changes in this release._', '')
     }
 
     # Build the new file:
