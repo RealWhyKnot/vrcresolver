@@ -224,29 +224,11 @@ internal sealed partial class VrcLogMonitor : IDisposable
                     // If it was cached, the cached entry is poison --
                     // evict so the next resolve goes back to mesh and
                     // gets a fresh URL.
-                    int evicted = _cache?.EvictByUrl(failed) ?? 0;
-
-                    // Reactive og-fallback: mark the source URL (the one
-                    // the wrapper was originally invoked with) so the
-                    // wrapper's next call short-circuits to yt-dlp-og.exe
-                    // for a brief window. Without this, the user has to
-                    // mash Play and watch the same broken URL come back
-                    // from mesh until the strategy stops being selected
-                    // server-side. The hint is transient (60 s default),
-                    // populated only by observed failures, and never
-                    // grows past in-memory bounds.
-                    bool ogHintArmed = false;
-                    if (_ogFallbackHint != null
-                        && _cache != null
-                        && _cache.TryGetSourceUrlForResolved(failed, out string sourceUrl))
-                    {
-                        _ogFallbackHint.RecordLoadFailure(sourceUrl);
-                        ogHintArmed = true;
-                    }
+                    var fallback = MarkPlaybackFailure(failed);
 
                     ConsoleUx.Warn(LogComponent.VrcLog, "load_failure ms=" + ms + " url=" + LogUtil.RedactUrl(failed)
-                        + (evicted > 0 ? " evicted=" + evicted : "")
-                        + (ogHintArmed ? " og_hint=armed" : ""));
+                        + (fallback.Evicted > 0 ? " evicted=" + fallback.Evicted : "")
+                        + (fallback.OgHintArmed ? " og_hint=armed" : ""));
                 }
                 CancelStallWatchdog();
                 CancelPlayingFeedbackLoop();
@@ -320,11 +302,35 @@ internal sealed partial class VrcLogMonitor : IDisposable
             _activePlaybackAt = default;
             // v3.2: AVPro fell silent on a URL we just served. If it was
             // cached, the cached entry is poison -- evict so the next
-            // resolve goes back to mesh and gets a fresh URL.
-            int evicted = _cache?.EvictByUrl(reportedUrl) ?? 0;
+            // resolve goes back to mesh and gets a fresh URL. Arm the same
+            // transient og hint as load_failure so black-screen stalls get
+            // one native retry instead of looping through the same mesh URL.
+            var fallback = MarkPlaybackFailure(reportedUrl);
             ConsoleUx.Warn(LogComponent.VrcLog, "silent_stall ms=" + ms + " url=" + LogUtil.RedactUrl(reportedUrl)
-                + (evicted > 0 ? " evicted=" + evicted : ""));
+                + (fallback.Evicted > 0 ? " evicted=" + fallback.Evicted : "")
+                + (fallback.OgHintArmed ? " og_hint=armed" : ""));
         });
+    }
+
+    internal PlaybackFailureRecovery MarkPlaybackFailureForTests(string reportedUrl) => MarkPlaybackFailure(reportedUrl);
+
+    private PlaybackFailureRecovery MarkPlaybackFailure(string reportedUrl)
+    {
+        bool ogHintArmed = false;
+
+        // Reverse lookup must happen before eviction. EvictByUrl removes the
+        // cached resolved-url entry we need in order to recover the original
+        // source URL for the wrapper's next invocation.
+        if (_ogFallbackHint != null
+            && _cache != null
+            && _cache.TryGetSourceUrlForResolved(reportedUrl, out string sourceUrl))
+        {
+            _ogFallbackHint.RecordLoadFailure(sourceUrl);
+            ogHintArmed = true;
+        }
+
+        int evicted = _cache?.EvictByUrl(reportedUrl) ?? 0;
+        return new PlaybackFailureRecovery(evicted, ogHintArmed);
     }
 
     internal static bool TryParseObservedResolution(string line, out int width, out int height)
@@ -489,6 +495,8 @@ internal sealed partial class VrcLogMonitor : IDisposable
             ? targetUrl
             : url;
     }
+
+    internal readonly record struct PlaybackFailureRecovery(int Evicted, bool OgHintArmed);
 
     private void CancelStallWatchdog()
     {
