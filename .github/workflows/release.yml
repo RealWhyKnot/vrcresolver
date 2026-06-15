@@ -61,6 +61,7 @@ jobs:
         run: |
           ./.github/scripts/Test-WorkflowSyntax.ps1
           ./.github/scripts/Test-UpdateChangelog.ps1
+          ./.github/scripts/Test-ReleaseVersionSequence.ps1
 
       - name: Fetch release tags
         shell: pwsh
@@ -69,6 +70,10 @@ jobs:
           $tags = git tag --list 'v*'
           if (-not $tags) { throw "No release tags available after fetch; release-note range would walk from root." }
           $tags | Sort-Object | ForEach-Object { Write-Host "release-tag=$_" }
+
+      - name: Validate release version sequence
+        shell: pwsh
+        run: ./.github/scripts/Assert-ReleaseVersionSequence.ps1 -Tag '${{ github.ref_name }}'
 
       - name: Test release notes generator
         shell: pwsh
