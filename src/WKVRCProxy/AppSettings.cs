@@ -18,9 +18,6 @@ internal sealed class AppSettings
     [JsonPropertyName("maintenance")]
     public MaintenanceAppSettings Maintenance { get; set; } = new();
 
-    [JsonPropertyName("helper")]
-    public HelperAppSettings Helper { get; set; } = new();
-
     public AppSettings Clone()
     {
         return new AppSettings
@@ -29,7 +26,6 @@ internal sealed class AppSettings
             Terminal = (Terminal ?? new TerminalAppSettings()).Clone(),
             Relay = (Relay ?? new RelayAppSettings()).Clone(),
             Maintenance = (Maintenance ?? new MaintenanceAppSettings()).Clone(),
-            Helper = (Helper ?? new HelperAppSettings()).Clone(),
         }.Normalize();
     }
 
@@ -39,12 +35,10 @@ internal sealed class AppSettings
         Terminal ??= new TerminalAppSettings();
         Relay ??= new RelayAppSettings();
         Maintenance ??= new MaintenanceAppSettings();
-        Helper ??= new HelperAppSettings();
 
         Terminal.Normalize();
         Relay.Normalize();
         Maintenance.Normalize();
-        Helper.Normalize();
         return this;
     }
 }
@@ -128,43 +122,6 @@ internal sealed class MaintenanceAppSettings
 
     public void Normalize()
     {
-    }
-}
-
-internal sealed class HelperAppSettings
-{
-    [JsonPropertyName("gpu_sharing")]
-    public bool GpuSharing { get; set; } = true;
-
-    [JsonPropertyName("upload_limit_mbps")]
-    public int UploadLimitMbps { get; set; }
-
-    [JsonPropertyName("allow_on_battery")]
-    public bool AllowOnBattery { get; set; }
-
-    [JsonPropertyName("encoding_quality")]
-    public string EncodingQuality { get; set; } = HelperEncodingQualityNames.Auto;
-
-    // Pre-shared key for operator-trusted helpers. When set, the client
-    // responds to helper_challenge frames from the server with an HMAC-SHA256
-    // signature. Leave empty (the default) to operate as a standard helper.
-    [JsonPropertyName("trust_key")]
-    public string? TrustKey { get; set; }
-
-    public HelperAppSettings Clone() => new()
-    {
-        GpuSharing = GpuSharing,
-        UploadLimitMbps = UploadLimitMbps,
-        AllowOnBattery = AllowOnBattery,
-        EncodingQuality = EncodingQuality,
-        TrustKey = TrustKey,
-    };
-
-    public void Normalize()
-    {
-        UploadLimitMbps = Math.Clamp(UploadLimitMbps, 0, 500);
-        EncodingQuality = HelperEncodingQualityNames.Format(
-            HelperEncodingQualityNames.ParseOrAuto(EncodingQuality));
     }
 }
 

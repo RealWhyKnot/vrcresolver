@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace WKVRCProxy;
 
 internal static class AppSettingsRegistry
@@ -8,71 +6,6 @@ internal static class AppSettingsRegistry
 
     public static IReadOnlyList<AppSettingDefinition> All { get; } =
     [
-        new AppSettingDefinition(
-            "sharing",
-            "Let this PC help repair videos when sharing is available.",
-            ["on", "off"],
-            static s => FormatBool(s.Helper.GpuSharing),
-            static (AppSettings s, string value, out string error) =>
-            {
-                if (!TryParseBool(value, out bool parsed, out error)) return false;
-                s.Helper.GpuSharing = parsed;
-                return true;
-            },
-            static s => s.Helper.GpuSharing = s_defaults.Helper.GpuSharing,
-            completionValues: ["on", "off"],
-            aliases: ["gpu-sharing", "helper.gpu-sharing"]),
-
-        new AppSettingDefinition(
-            "upload-limit",
-            "Maximum upload speed used for sharing.",
-            ["number from 0 to 500; 0 means automatic; shown as MB/s"],
-            static s => s.Helper.UploadLimitMbps == 0
-                ? "automatic"
-                : s.Helper.UploadLimitMbps.ToString(CultureInfo.InvariantCulture) + " MB/s",
-            static (AppSettings s, string value, out string error) =>
-            {
-                if (!TryParseMegabytesPerSecond(value, 0, 500, out int parsed, out error)) return false;
-                s.Helper.UploadLimitMbps = parsed;
-                return true;
-            },
-            static s => s.Helper.UploadLimitMbps = s_defaults.Helper.UploadLimitMbps,
-            completionValues: ["0", "5", "10", "25", "50"],
-            aliases: ["upload", "helper.upload-limit"]),
-
-        new AppSettingDefinition(
-            "allow-on-battery",
-            "Allow sharing while this PC is on battery power.",
-            ["on", "off"],
-            static s => FormatBool(s.Helper.AllowOnBattery),
-            static (AppSettings s, string value, out string error) =>
-            {
-                if (!TryParseBool(value, out bool parsed, out error)) return false;
-                s.Helper.AllowOnBattery = parsed;
-                return true;
-            },
-            static s => s.Helper.AllowOnBattery = s_defaults.Helper.AllowOnBattery,
-            completionValues: ["on", "off"],
-            aliases: ["battery", "helper.allow-on-battery"]),
-
-        new AppSettingDefinition(
-            "encoding-quality",
-            "Video repair quality used by this PC.",
-            ["auto, fast, balanced, quality"],
-            static s => s.Helper.EncodingQuality == HelperEncodingQualityNames.Auto
-                ? "auto"
-                : s.Helper.EncodingQuality,
-            static (AppSettings s, string value, out string error) =>
-            {
-                if (!HelperEncodingQualityNames.TryParseUserValue(value, out HelperEncodingQuality parsed, out error))
-                    return false;
-                s.Helper.EncodingQuality = HelperEncodingQualityNames.Format(parsed);
-                return true;
-            },
-            static s => s.Helper.EncodingQuality = s_defaults.Helper.EncodingQuality,
-            completionValues: ["auto", "fast", "balanced", "quality"],
-            aliases: ["quality", "preset", "encoder-quality", "helper.encoding-quality"]),
-
         new AppSettingDefinition(
             "status-line",
             "Show the live status line at the prompt.",
@@ -153,7 +86,7 @@ internal static class AppSettingsRegistry
 
         new AppSettingDefinition(
             "video-support-updates",
-            "Keep playback compatibility helpers current.",
+            "Keep playback support files current.",
             ["on", "off"],
             static s => FormatBool(s.Maintenance.CodecAutoInstall),
             static (AppSettings s, string value, out string error) =>
@@ -205,36 +138,6 @@ internal static class AppSettingsRegistry
                 error = "expected on or off";
                 return false;
         }
-    }
-
-    private static bool TryParsePercent(string value, int min, int max, out int parsed, out string error)
-    {
-        return TryParseNumberRange((value ?? "").Trim(), min, max, out parsed, out error, "%");
-    }
-
-    private static bool TryParseMegabytesPerSecond(string value, int min, int max, out int parsed, out string error)
-    {
-        return TryParseNumberRange((value ?? "").Trim(), min, max, out parsed, out error, " MB/s");
-    }
-
-    private static bool TryParseNumberRange(string value, int min, int max, out int parsed, out string error, string unit)
-    {
-        parsed = 0;
-        if (value.Length == 0 || value.Any(ch => ch < '0' || ch > '9')
-            || !int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed))
-        {
-            error = "enter a number from " + min + " to " + max + unit;
-            return false;
-        }
-
-        if (parsed < min || parsed > max)
-        {
-            error = "enter a number from " + min + " to " + max + unit;
-            return false;
-        }
-
-        error = "";
-        return true;
     }
 
     private static string FormatBool(bool value) => value ? "on" : "off";

@@ -41,7 +41,6 @@ internal sealed partial class MeshClient : IAsyncDisposable
 {
     private static readonly TimeSpan ApexAttemptTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(45);
-    private static readonly TimeSpan HelperStatusRefreshInterval = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan PongDeadline = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ApexReResolveAfter = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan WelcomeTimeout = TimeSpan.FromSeconds(1);
@@ -112,38 +111,15 @@ internal sealed partial class MeshClient : IAsyncDisposable
     // the request's `id` so the server can still cache-key on something stable.
     private readonly ConcurrentDictionary<string, string> _inflightCids = new();
 
-    // Window-pull handshake state. _windowHolds is keyed by lease_id; the
-    // worker registers a TCS before sending helper_window_ready and parks on
-    // it. JsonDispatch's helper_pull_window / helper_drop_window handlers
-    // complete the TCS. Worker removes its own entry on resolution or TTL.
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<HelperWindowResolution>> _windowHolds = new();
-
-    // Per-process lease concurrency cap. Sized to match the server's default
-    // HelperOptions.InFlightLimit so the client doesn't accept more leases
-    // than the server would issue. Static so it survives reconnects; the
-    // server keys leases by lease_id, not connection, and an in-flight
-    // lease on the old socket may complete after reconnect.
-    private static readonly SemaphoreSlim s_leaseSlots = new(3, 3);
-
-    // Visible lease-queue depth (Transcoding | ReadyAnnounced | AwaitingPull
-    // | Uploading) for the lease_queue_depth field on helper_status. Lets
-    // the server treat us as inflight_busy without waiting for its own
-    // per-helper InFlight counter to update across the connection.
-    private int _leaseQueueDepth;
-
     private ClientWebSocket? _ws;
     private string? _cachedNodeHost;
     private CancellationTokenSource? _runCts;
     private Task? _runner;
     private DateTime _firstReconnectFailureUtc = DateTime.MinValue;
     private DateTime _lastPongUtc = DateTime.MinValue;
-    private long _lastHelperStatusRefreshTicks;
-    private int _helperStatusRefreshRunning;
     private int _reconnectAttempt;
     private bool _wasConnected;
     private bool _useApexDiscoveryFallback;
-    private string? _lastSentHelperStatus;
-    private string? _lastSentHelperEncoder;
 
     // v3 handshake state (per-connection). _isV3Connection is set on
     // ConnectAsync return based on the server's echoed subprotocol; if
@@ -156,10 +132,6 @@ internal sealed partial class MeshClient : IAsyncDisposable
     private bool _isV3Connection;
     private string _currentNodeHost = "";
     private readonly WelcomeCache _welcomeCache = new();
-    // Set to true on helper_trust_granted receipt; read back for console logging.
-#pragma warning disable CS0414
-    private bool _isTrusted;
-#pragma warning restore CS0414
 
     // v3.1: post-welcome wire format the server selected for THIS
     // connection. Set on welcome / welcome_cached receipt from the

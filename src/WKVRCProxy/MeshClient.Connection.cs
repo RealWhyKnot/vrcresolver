@@ -111,7 +111,6 @@ internal sealed partial class MeshClient
         _isV3Connection = false;
         _negotiatedFormat = WireConstants.FormatJson;
         _isMsgpackFormat = false;
-        _isTrusted = false;
         _currentNodeHost = node;
         _welcomeTcs = new TaskCompletionSource<WelcomeFrame?>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -221,8 +220,6 @@ internal sealed partial class MeshClient
             DateTime sentAt = DateTime.UtcNow;
             try { await SendTextFrameAsync(PingFrame, ct).ConfigureAwait(false); }
             catch { return; }
-            QueueHelperStatusRefresh();
-
             try { await Task.Delay(PongDeadline, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
 

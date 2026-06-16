@@ -15,7 +15,6 @@ namespace WKVRCProxy.Shared;
 public enum LogComponent
 {
     Mesh,
-    Helper,
     Ipc,
     Hosts,
     Patch,
@@ -52,7 +51,6 @@ public static class ConsoleUx
     private static ConsoleColor ColorFor(LogComponent c) => c switch
     {
         LogComponent.Mesh => ConsoleColor.DarkCyan,
-        LogComponent.Helper => ConsoleColor.DarkCyan,
         LogComponent.Ipc => ConsoleColor.DarkGray,
         LogComponent.Hosts => ConsoleColor.DarkGray,
         LogComponent.Patch => ConsoleColor.Gray,
@@ -72,7 +70,6 @@ public static class ConsoleUx
     private static string Tag(LogComponent c) => c switch
     {
         LogComponent.Mesh => "[mesh]",
-        LogComponent.Helper => "[helper]",
         LogComponent.Ipc => "[ipc]",
         LogComponent.Hosts => "[hosts]",
         LogComponent.Patch => "[patch]",
@@ -241,7 +238,7 @@ public static class ConsoleUx
             WriteRaw(ConsoleColor.Gray, $"  sha {sha}  built {buildTime}");
             if (isDev)
             {
-                WriteRaw(ConsoleColor.Yellow, "  mode: DEV (diagnostic logs mirrored to console; relay/helper trace enabled)");
+                WriteRaw(ConsoleColor.Yellow, "  mode: DEV (diagnostic logs mirrored to console; relay trace enabled)");
             }
             WriteRaw(ConsoleColor.DarkGray, subdivider);
 

@@ -109,8 +109,8 @@ $BuildInfoProps = @(
     "/p:BuildInfoIsDevBuild=$isDevLiteral"
 )
 
-# --- Bundled FFmpeg / FFprobe for local helper encoding ---
-# WKVRCProxy helpers should not depend on a user-installed FFmpeg. Stage a
+# --- Bundled FFmpeg / FFprobe for local playback support ---
+# WKVRCProxy should not depend on a user-installed FFmpeg. Stage a
 # static Windows build into dist/tools/ffmpeg.exe and dist/tools/ffprobe.exe,
 # with the upstream checksum verified before extraction.
 $FfmpegArchiveName = "ffmpeg-master-latest-win64-gpl.zip"
@@ -119,7 +119,7 @@ $FfmpegArchive = Join-Path $ToolsStage $FfmpegArchiveName
 $FfmpegShaFile = Join-Path $ToolsStage "$FfmpegArchiveName.sha256"
 $FfmpegChecksums = Join-Path $ToolsStage "ffmpeg-checksums.sha256"
 $FfmpegExtractRoot = Join-Path $ToolsStage "ffmpeg-win64-gpl"
-Write-Host "`n--- Fetching bundled FFmpeg helper tools ---" -ForegroundColor Cyan
+Write-Host "`n--- Fetching bundled FFmpeg tools ---" -ForegroundColor Cyan
 Invoke-WebRequest -Uri "$FfmpegReleaseBase/checksums.sha256" -OutFile $FfmpegChecksums -UseBasicParsing
 $ChecksumLine = Get-Content $FfmpegChecksums |
     Where-Object { $_ -match "\s\*?$([regex]::Escape($FfmpegArchiveName))$" } |
@@ -155,7 +155,7 @@ $FfprobeExe = Get-ChildItem $FfmpegExtractRoot -Recurse -Filter "ffprobe.exe" | 
 if (-not $FfmpegExe -or -not $FfprobeExe) {
     throw "Extracted FFmpeg archive did not contain ffmpeg.exe and ffprobe.exe"
 }
-Write-Host "FFmpeg helper tools ready ($($ExpectedFfmpegSha.Substring(0,12)))." -ForegroundColor Green
+Write-Host "FFmpeg tools ready ($($ExpectedFfmpegSha.Substring(0,12)))." -ForegroundColor Green
 
 # --- Publish .NET projects ---
 # The four exes split into two publish profiles:

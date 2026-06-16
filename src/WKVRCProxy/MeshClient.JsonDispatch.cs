@@ -1,6 +1,4 @@
 using System.Net.WebSockets;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using WKVRCProxy.Shared;
 
@@ -174,7 +172,6 @@ internal sealed partial class MeshClient
                         }
                     }
                     _welcomeTcs?.TrySetResult(welcome);
-                    QueueHelperStatusRefresh(force: true);
                     doc.Dispose();
                     return;
                 }
@@ -256,21 +253,6 @@ internal sealed partial class MeshClient
                     // here. ResolveAsync waiters key off _serverProtocolVersion
                     // and _serverFeatures, both of which are now set.
                     _welcomeTcs?.TrySetResult(null);
-                    QueueHelperStatusRefresh(force: true);
-                    doc.Dispose();
-                    return;
-                }
-            case WireConstants.ActionHelperTranscodeLease:
-                {
-                    HelperTranscodeLeaseFrame? lease = null;
-                    try { lease = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperTranscodeLeaseFrame); }
-                    catch (Exception ex)
-                    {
-                        ConsoleUx.Warn(LogComponent.Mesh, "helper lease parse failed: "
-                            + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
-                    }
-                    if (lease != null)
-                        QueueHelperLease(lease);
                     doc.Dispose();
                     return;
                 }
@@ -296,143 +278,6 @@ internal sealed partial class MeshClient
                 }
                 catch { /* heartbeat will catch dead socket */ }
                 return;
-            case WireConstants.ActionHelperChallenge:
-                {
-                    HelperChallengeFrame? challenge = null;
-                    try { challenge = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperChallengeFrame); }
-                    catch (Exception ex)
-                    {
-                        ConsoleUx.Warn(LogComponent.Mesh, "helper_challenge parse failed: "
-                            + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
-                        doc.Dispose();
-                        return;
-                    }
-                    doc.Dispose();
-                    if (challenge == null) return;
-
-                    AppSettings settings = AppSettingsStore.Shared.Snapshot();
-                    string? trustKey = settings.Helper.TrustKey;
-                    if (string.IsNullOrWhiteSpace(trustKey))
-                    {
-                        Logger.WriteDiagnostic(
-                            LogComponent.Helper,
-                            "[mesh][helper] helper_challenge_received but no trust key configured",
-                            "helper_challenge_received but no trust key configured");
-                        return;
-                    }
-
-                    string signature = ComputeChallengeSignature(challenge.Nonce, _clientId, trustKey);
-                    var response = new HelperChallengeResponseFrame { Signature = signature };
-                    try
-                    {
-                        byte[] respBytes = JsonSerializer.SerializeToUtf8Bytes(
-                            response, MeshJsonContext.Default.HelperChallengeResponseFrame);
-                        await SendTextFrameAsync(respBytes, ct).ConfigureAwait(false);
-                        Logger.WriteDiagnostic(
-                            LogComponent.Helper,
-                            "[mesh][helper] helper_challenge_responded",
-                            "helper_challenge_responded");
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.WriteFileOnly("[mesh][helper] helper_challenge_response send failed: "
-                            + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
-                    }
-                    return;
-                }
-            case WireConstants.ActionHelperTrustGranted:
-                {
-                    _isTrusted = true;
-                    ConsoleUx.Write(LogComponent.Helper, "helper_trust_granted received from server");
-                    doc.Dispose();
-                    return;
-                }
-            case WireConstants.ActionHelperPullWindow:
-                {
-                    HelperPullWindowFrame? pull = null;
-                    try { pull = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperPullWindowFrame); }
-                    catch (Exception ex)
-                    {
-                        Logger.WriteFileOnly("[mesh][helper] helper_pull_window parse failed: "
-                            + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
-                        doc.Dispose();
-                        return;
-                    }
-                    doc.Dispose();
-                    if (pull == null || string.IsNullOrEmpty(pull.LeaseId)) return;
-                    if (_windowHolds.TryGetValue(pull.LeaseId, out var pullTcs))
-                    {
-                        pullTcs.TrySetResult(new HelperWindowResolution(
-                            HelperWindowOutcome.Pull,
-                            UploadUrlOverride: string.IsNullOrEmpty(pull.UploadUrl) ? null : pull.UploadUrl,
-                            DropReason: null));
-                    }
-                    else
-                    {
-                        // Stale pull for a lease we already dropped / never
-                        // held. Log only -- server may be slightly behind
-                        // our state and that's fine.
-                        Logger.WriteFileOnly("[mesh][helper] helper_pull_window for unknown lease="
-                            + LogUtil.SanitizeForConsole(pull.LeaseId, 64));
-                    }
-                    return;
-                }
-            case WireConstants.ActionHelperDropWindow:
-                {
-                    HelperDropWindowFrame? drop = null;
-                    try { drop = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperDropWindowFrame); }
-                    catch (Exception ex)
-                    {
-                        Logger.WriteFileOnly("[mesh][helper] helper_drop_window parse failed: "
-                            + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
-                        doc.Dispose();
-                        return;
-                    }
-                    doc.Dispose();
-                    if (drop == null || string.IsNullOrEmpty(drop.LeaseId)) return;
-                    string reason = string.IsNullOrEmpty(drop.Reason)
-                        ? WireConstants.HelperDropReasonSuperseded
-                        : drop.Reason;
-                    if (_windowHolds.TryGetValue(drop.LeaseId, out var dropTcs))
-                    {
-                        dropTcs.TrySetResult(new HelperWindowResolution(
-                            HelperWindowOutcome.Drop,
-                            UploadUrlOverride: null,
-                            DropReason: reason));
-                    }
-                    else
-                    {
-                        Logger.WriteFileOnly("[mesh][helper] helper_drop_window for unknown lease="
-                            + LogUtil.SanitizeForConsole(drop.LeaseId, 64)
-                            + " reason=" + LogUtil.SanitizeForConsole(reason, 32));
-                    }
-                    return;
-                }
-            case WireConstants.ActionHelperEligibilitySkipped:
-                {
-                    HelperEligibilitySkippedFrame? skip = null;
-                    try { skip = JsonSerializer.Deserialize(payload, MeshJsonContext.Default.HelperEligibilitySkippedFrame); }
-                    catch (Exception ex)
-                    {
-                        Logger.WriteFileOnly("[mesh][helper] helper_eligibility_skipped parse failed: "
-                            + ex.GetType().Name + ": " + LogUtil.SanitizeForConsole(ex.Message, 160));
-                        doc.Dispose();
-                        return;
-                    }
-                    doc.Dispose();
-                    if (skip == null) return;
-
-                    string stream = LogUtil.SanitizeForConsole(skip.StreamId, 32);
-                    string reason = LogUtil.SanitizeForConsole(skip.Reason, 32);
-                    string detail = "";
-                    if (skip.InFlight.HasValue && skip.InFlightLimit.HasValue)
-                        detail = " (in_flight=" + skip.InFlight.Value + "/" + skip.InFlightLimit.Value + ")";
-                    else if (skip.Strikes.HasValue)
-                        detail = " (strikes=" + skip.Strikes.Value + ")";
-                    ConsoleUx.Write(LogComponent.Helper,
-                        "helper not picked for stream=" + stream + " reason=" + reason + detail);
-                    return;
-                }
             default:
                 // Server-supplied string — strip control chars + truncate so a
                 // hostile or buggy server can't inject ANSI escapes into the
@@ -500,16 +345,6 @@ internal sealed partial class MeshClient
                 LogUtil.SanitizeForConsole(ex.Message, 80) +
                 " — preview=" + LogUtil.PayloadPreview(payload, 120));
         }
-    }
-
-    // HMAC-SHA256(key=trustKeyBytes, data=nonce+"\n"+clientId). Returns lowercase hex.
-    // Wire contract: must match server-side verification exactly.
-    internal static string ComputeChallengeSignature(string nonce, string clientId, string trustKey)
-    {
-        byte[] keyBytes = Encoding.UTF8.GetBytes(trustKey);
-        byte[] data = Encoding.UTF8.GetBytes(nonce + "\n" + clientId);
-        byte[] hash = HMACSHA256.HashData(keyBytes, data);
-        return Convert.ToHexStringLower(hash);
     }
 
 }

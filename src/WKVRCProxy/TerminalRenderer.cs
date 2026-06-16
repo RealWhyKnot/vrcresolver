@@ -160,20 +160,17 @@ internal sealed class TerminalRenderer
 
     public void RenderTools()
     {
-        AppSettings settings = _settings();
         WriteTableBlock("managed subsystems", new[]
         {
             ("VRChat hook", "ready", "keeps game video requests flowing through WKVRCProxy"),
             ("WhyKnot mesh", _meshConnected() ? "online" : "reconnecting", "resolves playback URLs and fallback decisions"),
             ("local video", "ready", "serves localhost.youtube.com playback to the game"),
-            ("video sharing", settings.Helper.GpuSharing ? "on" : "off", "prepares this PC to help with bounded video repair work"),
-            ("FFmpeg helper", settings.Helper.GpuSharing ? "idle" : "off", "accepts server-owned segment leases when diagnostics show an eligible encoder"),
             ("hosts entry", "managed", "keeps localhost.youtube.com pointing at this PC"),
             ("diagnostics", "recording", "writes logs, crash snapshots, and playback feedback"),
         });
     }
 
-    public void RenderDiagnostics(TerminalSessionStore session, FfmpegCapabilityProbeResult? helper = null)
+    public void RenderDiagnostics(TerminalSessionStore session)
     {
         var frames = new List<TerminalFrame>();
         frames.AddRange(TerminalBlocks.KeyValue("diagnostics", new[]
@@ -186,15 +183,6 @@ internal sealed class TerminalRenderer
             ("terminal history", session.HistoryPath),
             ("this session", session.SessionPath),
         }, UsableWidth(), Glyphs()));
-
-        if (helper != null)
-        {
-            frames.AddRange(TerminalBlocks.Panel(
-                "helper diagnostics",
-                HelperDiagnosticsRows(_settings(), helper),
-                UsableWidth(),
-                Glyphs()));
-        }
 
         RenderFrames("diagnostics", frames);
     }
@@ -231,7 +219,6 @@ internal sealed class TerminalRenderer
             ("last pull", DescribeAge(snapshot.LastWhyKnotRelayUtc, now), "last bytes received from WhyKnot"),
             ("peak speed", bandwidth.HasTraffic ? WatchdogDisplay.FormatBytesPerSecond(bandwidth.PeakBytesPerSecond) : "none yet",
                 TerminalEffectEngine.Sparkline(bandwidth.HistoryBytesPerSecond, 12, Glyphs())),
-            ("sharing", settings.Helper.GpuSharing ? "on" : "off", DescribeSharing(settings)),
             ("terminal", settings.Terminal.StatusLine ? "live prompt" : "prompt only", DescribeTerminal(settings)),
         });
     }
@@ -268,10 +255,8 @@ internal sealed class TerminalRenderer
             ("settings <name> <value>", "change a setting"),
             ("settings reset <name>", "reset one setting"),
             ("settings reset all", "reset every setting"),
-            ("example", "settings sharing off"),
-            ("example", "settings gpu-limit 25"),
-            ("example", "settings encoding-quality auto"),
-            ("example", "settings upload-limit 0"),
+            ("example", "settings status-line off"),
+            ("example", "settings video-support-updates on"),
         });
     }
 
@@ -288,45 +273,6 @@ internal sealed class TerminalRenderer
     private void WritePanel(string title, IEnumerable<(string Name, string State, string Detail)> rows)
     {
         RenderFrames("panel", TerminalBlocks.Panel(title, rows, UsableWidth(), Glyphs()));
-    }
-
-    private static IReadOnlyList<(string Name, string State, string Detail)> HelperDiagnosticsRows(
-        AppSettings settings,
-        FfmpegCapabilityProbeResult helper)
-    {
-        string schedulerState;
-        string schedulerDetail;
-        if (!settings.Helper.GpuSharing)
-        {
-            schedulerState = "off";
-            schedulerDetail = "sharing is disabled in settings";
-        }
-        else if (helper.CanUseHardwareH264)
-        {
-            schedulerState = "idle";
-            schedulerDetail = "waits for server leases; playback stays on the stable server URL";
-        }
-        else
-        {
-            schedulerState = helper.Status switch
-            {
-                FfmpegCapabilityProbeStatus.NotFound => "setup needed",
-                FfmpegCapabilityProbeStatus.NoHardwareEncoder => "not eligible",
-                FfmpegCapabilityProbeStatus.TimedOut => "timeout",
-                FfmpegCapabilityProbeStatus.Failed => "failed",
-                _ => "paused",
-            };
-            schedulerDetail = helper.Message;
-        }
-
-        return new[]
-        {
-            ("sharing", settings.Helper.GpuSharing ? "on" : "off", DescribeSharing(settings)),
-            ("ffmpeg", FfmpegState(helper), FfmpegDetail(helper)),
-            ("encoder", EncoderState(helper), EncoderDetail(helper)),
-            ("work model", "server-owned", "helpers encode leased H.264/AAC segments; they never become playback proxies"),
-            ("scheduler", schedulerState, schedulerDetail),
-        };
     }
 
     private void RenderFrames(string kind, IReadOnlyList<TerminalFrame> frames)
@@ -360,66 +306,6 @@ internal sealed class TerminalRenderer
         if (age.TotalSeconds < 60) return ((int)age.TotalSeconds).ToString(CultureInfo.InvariantCulture) + "s ago";
         if (age.TotalMinutes < 60) return ((int)age.TotalMinutes).ToString(CultureInfo.InvariantCulture) + "m ago";
         return ((int)Math.Min(age.TotalHours, 99)).ToString(CultureInfo.InvariantCulture) + "h ago";
-    }
-
-    private static string FfmpegState(FfmpegCapabilityProbeResult helper)
-    {
-        return helper.Status switch
-        {
-            FfmpegCapabilityProbeStatus.NotFound => "missing",
-            FfmpegCapabilityProbeStatus.TimedOut => "timeout",
-            FfmpegCapabilityProbeStatus.Failed => "failed",
-            _ => "found",
-        };
-    }
-
-    private static string FfmpegDetail(FfmpegCapabilityProbeResult helper)
-    {
-        if (!helper.Location.HasValue)
-            return "install tools\\ffmpeg.exe or add ffmpeg.exe to PATH";
-
-        string source = helper.Location.Value.Kind == FfmpegLocationKind.Bundled
-            ? "bundled"
-            : "PATH";
-        string version = helper.Version?.Version ?? "version unknown";
-        return source + " - " + version + " - " + helper.Location.Value.Path;
-    }
-
-    private static string EncoderState(FfmpegCapabilityProbeResult helper)
-    {
-        if (helper.PreferredEncoder.HasValue)
-            return "eligible";
-        if (helper.Status == FfmpegCapabilityProbeStatus.TimedOut)
-            return "timeout";
-        if (helper.Status == FfmpegCapabilityProbeStatus.Failed)
-            return "failed";
-        if (helper.Status == FfmpegCapabilityProbeStatus.NotFound)
-            return "missing";
-        return "not eligible";
-    }
-
-    private static string EncoderDetail(FfmpegCapabilityProbeResult helper)
-    {
-        if (!helper.PreferredEncoder.HasValue)
-            return helper.Message;
-
-        string available = string.Join(", ", helper.Encoders.Select(static encoder => encoder.DisplayName));
-        return "preferred " + helper.PreferredEncoder.Value.DisplayName + "; available " + available;
-    }
-
-    private static string DescribeSharing(AppSettings settings)
-    {
-        if (!settings.Helper.GpuSharing)
-            return "off";
-
-        string upload = settings.Helper.UploadLimitMbps == 0
-            ? "upload automatic"
-            : "upload up to " + settings.Helper.UploadLimitMbps.ToString(CultureInfo.InvariantCulture) + " MB/s";
-        string battery = settings.Helper.AllowOnBattery ? "battery allowed" : "battery paused";
-        string quality = settings.Helper.EncodingQuality == HelperEncodingQualityNames.Auto
-            ? "quality auto"
-            : "quality " + settings.Helper.EncodingQuality;
-        return quality + ", " + upload + ", " + battery;
     }
 
     private static string DescribeTerminal(AppSettings settings)

@@ -101,9 +101,9 @@ public class TerminalInputBufferTests
     {
         var registry = TerminalCommandRegistry.CreateDefault();
 
-        TerminalCompletion completion = registry.Complete("settings enc");
+        TerminalCompletion completion = registry.Complete("settings stat");
 
-        Assert.Equal("settings encoding-quality ", completion.Replacement);
+        Assert.Equal("settings status-line ", completion.Replacement);
         Assert.Empty(completion.Suggestions);
     }
 
@@ -112,9 +112,9 @@ public class TerminalInputBufferTests
     {
         var registry = TerminalCommandRegistry.CreateDefault();
 
-        TerminalCompletion completion = registry.Complete("settings set enc");
+        TerminalCompletion completion = registry.Complete("settings set stat");
 
-        Assert.Equal("settings set encoding-quality ", completion.Replacement);
+        Assert.Equal("settings set status-line ", completion.Replacement);
         Assert.Empty(completion.Suggestions);
     }
 
@@ -123,13 +123,11 @@ public class TerminalInputBufferTests
     {
         var registry = TerminalCommandRegistry.CreateDefault();
 
-        TerminalCompletion completion = registry.Complete("settings set encoding-quality ");
+        TerminalCompletion completion = registry.Complete("settings set status-line ");
 
         Assert.Equal("", completion.Replacement);
-        Assert.Contains(completion.Suggestions, c => c.Text == "auto");
-        Assert.Contains(completion.Suggestions, c => c.Text == "fast");
-        Assert.Contains(completion.Suggestions, c => c.Text == "balanced");
-        Assert.Contains(completion.Suggestions, c => c.Text == "quality");
+        Assert.Contains(completion.Suggestions, c => c.Text == "on");
+        Assert.Contains(completion.Suggestions, c => c.Text == "off");
     }
 
     [Fact]
@@ -137,9 +135,10 @@ public class TerminalInputBufferTests
     {
         var registry = TerminalCommandRegistry.CreateDefault();
 
-        TerminalCompletion completion = registry.Complete("settings encoding-quality f");
+        TerminalCompletion completion = registry.Complete("settings status-line o");
 
-        Assert.Equal("settings encoding-quality fast", completion.Replacement);
-        Assert.Empty(completion.Suggestions);
+        Assert.Equal("", completion.Replacement);
+        Assert.Contains(completion.Suggestions, c => c.Text == "on");
+        Assert.Contains(completion.Suggestions, c => c.Text == "off");
     }
 }

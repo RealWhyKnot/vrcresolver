@@ -38,16 +38,6 @@ namespace WKVRCProxy;
 // Pre-AOT this serialized a Dictionary<string, object?> via reflection;
 // migrated here to a typed DTO so the source-gen path covers it.
 [JsonSerializable(typeof(PlaybackFeedbackFrame))]
-[JsonSerializable(typeof(HelperStatusFrame))]
-[JsonSerializable(typeof(HelperTranscodeLeaseFrame))]
-[JsonSerializable(typeof(HelperTranscodeOutputSpecFrame))]
-[JsonSerializable(typeof(HelperTranscodeResultFrame))]
-[JsonSerializable(typeof(HelperChallengeFrame))]
-[JsonSerializable(typeof(HelperChallengeResponseFrame))]
-[JsonSerializable(typeof(HelperEligibilitySkippedFrame))]
-[JsonSerializable(typeof(HelperWindowReadyFrame))]
-[JsonSerializable(typeof(HelperPullWindowFrame))]
-[JsonSerializable(typeof(HelperDropWindowFrame))]
 // CodecInstaller persistence (state file at LocalLow root).
 // Watchdog-internal state file, JSON-on-disk.
 [JsonSerializable(typeof(CodecInstaller.CodecState))]
@@ -57,8 +47,6 @@ namespace WKVRCProxy;
 [JsonSerializable(typeof(TerminalAppSettings))]
 [JsonSerializable(typeof(RelayAppSettings))]
 [JsonSerializable(typeof(MaintenanceAppSettings))]
-[JsonSerializable(typeof(HelperAppSettings))]
-[JsonSerializable(typeof(HelperBenchmarkRecord))]
 // ReportingService outbound /report frames (anonymous failure
 // telemetry; gated by WKVRCPROXY_ANONYMOUS_REPORTING).
 [JsonSerializable(typeof(ReportingService.ReportPayload))]

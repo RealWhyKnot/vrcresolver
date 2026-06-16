@@ -101,8 +101,7 @@ public class OgFallbackHintTests
     public void DefaultTtl_IsSixtySeconds()
     {
         // Pinned: this is the user-visible recovery window between an
-        // observed AVPro failure and the og hint expiring. Changing it
-        // changes how long the helper stays off-line for the source.
+        // observed AVPro failure and the og hint expiring.
         var hint = new OgFallbackHint();
         Assert.Equal(TimeSpan.FromSeconds(60), hint.Ttl);
     }

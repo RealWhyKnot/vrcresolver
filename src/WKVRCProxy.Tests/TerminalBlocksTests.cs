@@ -22,27 +22,26 @@ public class TerminalBlocksTests
     }
 
     [Fact]
-    public void Panel_DoesNotTreatNotEligibleAsHealthy()
+    public void Panel_DoesNotTreatBlockedAsHealthy()
     {
         IReadOnlyList<TerminalFrame> frames = TerminalBlocks.Panel(
-            "helper diagnostics",
+            "diagnostics",
             new[]
             {
-                ("encoder", "eligible", "hardware encoder available"),
-                ("scheduler", "not eligible", "hardware encoder missing"),
+                ("mesh", "online", "connected to WhyKnot"),
+                ("relay", "missing", "local port unavailable"),
             },
             width: 80,
             glyphs: TerminalGlyphSet.Ascii);
 
-        TerminalTextRun eligible = frames
+        TerminalTextRun online = frames
             .SelectMany(static frame => frame.Runs)
-            .First(run => run.Text.Contains("eligible", StringComparison.Ordinal)
-                && !run.Text.Contains("not eligible", StringComparison.Ordinal));
-        TerminalTextRun notEligible = frames
+            .First(run => run.Text.Contains("online", StringComparison.Ordinal));
+        TerminalTextRun missing = frames
             .SelectMany(static frame => frame.Runs)
-            .First(run => run.Text.Contains("not eligible", StringComparison.Ordinal));
+            .First(run => run.Text.Contains("missing", StringComparison.Ordinal));
 
-        Assert.Equal(ConsoleColor.Green, eligible.Color);
-        Assert.Equal(ConsoleColor.Red, notEligible.Color);
+        Assert.Equal(ConsoleColor.Green, online.Color);
+        Assert.Equal(ConsoleColor.Red, missing.Color);
     }
 }

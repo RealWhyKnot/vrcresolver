@@ -265,12 +265,12 @@ internal static class Program
 
             if (!TryStartLocalRelay(s_relayPort, relayHttpsAllowed))
             {
-                ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start -- public-instance helper disabled.");
+                ConsoleUx.Warn(LogComponent.Relay, "local video relay could not start -- public-instance local video disabled.");
             }
         }
         else
         {
-            ConsoleUx.Warn(LogComponent.Relay, "could not reserve a local video port -- public-instance helper disabled.");
+            ConsoleUx.Warn(LogComponent.Relay, "could not reserve a local video port -- public-instance local video disabled.");
         }
 
         // Watch VRChat's output_log_*.txt for AVPro playback failures and
