@@ -11,7 +11,8 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
-_No notable changes since the last release._
+### Changed
+- **proxy:** Remove client gpu helper sharing (aec5a6a)
 
 ---
 
