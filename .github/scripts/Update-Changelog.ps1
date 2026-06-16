@@ -58,7 +58,8 @@ param(
     [string]$Version,
     [switch]$ForVersion,
     [string]$Repo = $env:GITHUB_REPOSITORY,
-    [string]$RepoRoot
+    [string]$RepoRoot,
+    [datetime]$NowUtc = ([datetime]::UtcNow)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,6 +86,25 @@ function Read-TextUtf8 {
 function Write-TextUtf8 {
     param([string]$Path, [string]$Content)
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Get-CentralTimeZone {
+    foreach ($id in @('Central Standard Time', 'America/Chicago')) {
+        try { return [System.TimeZoneInfo]::FindSystemTimeZoneById($id) }
+        catch { }
+    }
+    throw 'Could not resolve the America/Chicago release time zone.'
+}
+
+function Get-ReleaseDateStamp {
+    param([datetime]$NowUtc, [string]$Format)
+
+    $utc = $NowUtc
+    if ($utc.Kind -ne [System.DateTimeKind]::Utc) {
+        $utc = $utc.ToUniversalTime()
+    }
+    $central = [System.TimeZoneInfo]::ConvertTimeFromUtc($utc, (Get-CentralTimeZone))
+    return $central.ToString($Format, [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
 # Strip the (YYYY.M.D.N-XXXX) or (YYYY.M.D.N) build stamp the prepare-commit-msg
@@ -374,7 +394,7 @@ if ($Mode -eq 'Promote') {
     if (-not $Version) { throw "Promote mode requires -Version (e.g. v2026.4.27.3)." }
     if (-not $Repo) { throw "Promote mode requires -Repo or `$env:GITHUB_REPOSITORY (e.g. owner/repo)." }
 
-    $today = (Get-Date -Format 'yyyy-MM-dd')
+    $today = Get-ReleaseDateStamp -NowUtc $NowUtc -Format 'yyyy-MM-dd'
     $heading = "## [$Version](https://github.com/$Repo/releases/tag/$Version) - $today"
 
     $content = Read-TextUtf8 -Path $RootChangelog
