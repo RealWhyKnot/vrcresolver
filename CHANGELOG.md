@@ -11,6 +11,12 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
+_No notable changes since the last release._
+
+---
+
+## [v2026.6.15.1](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.6.15.1) - 2026-06-16
+
 ### Changed
 - **proxy:** Remove client gpu helper sharing (aec5a6a)
 
