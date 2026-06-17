@@ -34,7 +34,6 @@ function Add-ParseErrors {
 $trackedScripts = & git -C $Root ls-files '*.ps1' '*.psm1' '*.psd1'
 foreach ($relative in $trackedScripts) {
     $path = Join-Path $Root $relative
-    if (-not (Test-Path -LiteralPath $path)) { continue }
     $parseErrors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$parseErrors)
     Add-ParseErrors -Source $relative -ParseErrors $parseErrors
