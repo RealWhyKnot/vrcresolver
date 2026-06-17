@@ -1,0 +1,73 @@
+name: Nightly Beta Releases
+
+on:
+  schedule:
+    - cron: '10 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-beta-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Create beta tag when proxy changed
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate planner
+        shell: pwsh
+        run: |
+          ./.github/scripts/Test-WorkflowSyntax.ps1
+          ./.github/scripts/Test-NightlyBetaPlan.ps1
+          ./.github/scripts/Test-UpdateChangelog.ps1
+          ./.github/scripts/Test-GenerateReleaseNotes.ps1
+          ./.github/scripts/Test-ReleaseVersionSequence.ps1
+
+      - name: Plan nightly beta
+        id: plan
+        shell: pwsh
+        run: |
+          git fetch --tags --force
+          ./.github/scripts/Get-NightlyBetaPlan.ps1
+
+      - name: Report no changes
+        if: ${{ steps.plan.outputs.has_changes != 'true' }}
+        shell: pwsh
+        run: Write-Host "No proxy changes since the latest release tag."
+
+      - name: Push beta tag
+        if: ${{ steps.plan.outputs.has_changes == 'true' }}
+        shell: pwsh
+        env:
+          RELEASE_TOKEN: ${{ secrets.MIRROR_RELEASE_TOKEN }}
+          TAG_NAME: ${{ steps.plan.outputs.next_tag }}
+          CHANGED_PATH_COUNT: ${{ steps.plan.outputs.changed_path_count }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_TOKEN)) {
+            throw "MIRROR_RELEASE_TOKEN secret is required to push beta tags."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAG_NAME)) {
+            throw "Planner did not return a beta tag."
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a $env:TAG_NAME -m "WKVRCProxy nightly beta $env:TAG_NAME"
+          if ($LASTEXITCODE -ne 0) { throw "Could not create beta tag $env:TAG_NAME" }
+
+          $remote = "https://x-access-token:$env:RELEASE_TOKEN@github.com/${{ github.repository }}.git"
+          git push $remote "refs/tags/$env:TAG_NAME"
+          if ($LASTEXITCODE -ne 0) { throw "Could not push beta tag $env:TAG_NAME" }
+
+          Write-Host "Pushed $env:TAG_NAME for $env:CHANGED_PATH_COUNT changed release input path(s)."
