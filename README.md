@@ -28,7 +28,6 @@ What it does NOT do: bypass DRM, change VRChat's per-avatar limits, host content
 |---|---|
 | `WKVRCProxy.exe` | the watchdog. Long-running console window. Patches VRChat, holds the WebSocket, runs the trust-gateway listener. |
 | `tools/yt-dlp.exe` | the patched shim. Replaces VRChat's bundled yt-dlp at install time. AOT, 3.3 MB. |
-| `tools/yt-dlp-og-fallback.exe` | bundled vanilla yt-dlp. Safety net when VRChat's own copy is missing (fresh install, file deleted, etc.). |
 | `WKVRCProxy.Updater.exe` | self-update helper used by the watchdog's `/update` command. Manual run still works. |
 | `WKVRCProxy.Uninstaller.exe` | restore the original `yt-dlp.exe`, remove the hosts entry, wipe state. No prompt; running it IS consent. |
 

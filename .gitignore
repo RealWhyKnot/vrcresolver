@@ -1,7 +1,6 @@
 # Core Ignored Folders
 .old/
 todo/
-vendor/
 dist/
 release/
 logs/
@@ -29,7 +28,6 @@ wwwroot/
 *.local
 
 # Project Specific
-_tools_staging/
 .local_build_state.json
 version.txt
 src/WKVRCProxy/Generated/

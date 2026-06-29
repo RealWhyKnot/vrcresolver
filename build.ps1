@@ -24,7 +24,6 @@ Set-Location $PSScriptRoot
 try { & git config --local core.hooksPath .githooks 2>$null } catch {}
 
 $BuildDir = Join-Path $PSScriptRoot "dist"
-$ToolsStage = Join-Path $PSScriptRoot "_tools_staging"
 $StateFile = Join-Path $PSScriptRoot ".local_build_state.json"
 $CreatePackage = $Package -and -not $SkipZip
 
@@ -63,7 +62,6 @@ Write-Host "Building Version: $FullVersion" -ForegroundColor Magenta
 # --- Clean dist ---
 if (Test-Path $BuildDir) { Remove-Item $BuildDir -Recurse -Force }
 New-Item -ItemType Directory $BuildDir -Force | Out-Null
-if (-not (Test-Path $ToolsStage)) { New-Item -ItemType Directory $ToolsStage -Force | Out-Null }
 
 # --- BuildInfo stamp (git short-SHA + build timestamp) ---
 # Stamps the watchdog startup banner so the operator can correlate a
@@ -108,54 +106,6 @@ $BuildInfoProps = @(
     "/p:BuildInfoBuildTime=$buildTime",
     "/p:BuildInfoIsDevBuild=$isDevLiteral"
 )
-
-# --- Bundled FFmpeg / FFprobe for local playback support ---
-# WKVRCProxy should not depend on a user-installed FFmpeg. Stage a
-# static Windows build into dist/tools/ffmpeg.exe and dist/tools/ffprobe.exe,
-# with the upstream checksum verified before extraction.
-$FfmpegArchiveName = "ffmpeg-master-latest-win64-gpl.zip"
-$FfmpegReleaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
-$FfmpegArchive = Join-Path $ToolsStage $FfmpegArchiveName
-$FfmpegShaFile = Join-Path $ToolsStage "$FfmpegArchiveName.sha256"
-$FfmpegChecksums = Join-Path $ToolsStage "ffmpeg-checksums.sha256"
-$FfmpegExtractRoot = Join-Path $ToolsStage "ffmpeg-win64-gpl"
-Write-Host "`n--- Fetching bundled FFmpeg tools ---" -ForegroundColor Cyan
-Invoke-WebRequest -Uri "$FfmpegReleaseBase/checksums.sha256" -OutFile $FfmpegChecksums -UseBasicParsing
-$ChecksumLine = Get-Content $FfmpegChecksums |
-    Where-Object { $_ -match "\s\*?$([regex]::Escape($FfmpegArchiveName))$" } |
-    Select-Object -First 1
-if (-not $ChecksumLine) {
-    throw "Could not find checksum for $FfmpegArchiveName in BtbN checksums.sha256"
-}
-$ExpectedFfmpegSha = (($ChecksumLine -split "\s+")[0]).ToUpperInvariant()
-$CurrentFfmpegSha = ""
-if (Test-Path $FfmpegArchive) {
-    $CurrentFfmpegSha = (Get-FileHash $FfmpegArchive -Algorithm SHA256).Hash.ToUpperInvariant()
-}
-$FfmpegArchiveChanged = $false
-if ($CurrentFfmpegSha -ne $ExpectedFfmpegSha) {
-    Invoke-WebRequest -Uri "$FfmpegReleaseBase/$FfmpegArchiveName" -OutFile $FfmpegArchive -UseBasicParsing
-    $CurrentFfmpegSha = (Get-FileHash $FfmpegArchive -Algorithm SHA256).Hash.ToUpperInvariant()
-    $FfmpegArchiveChanged = $true
-}
-if ($CurrentFfmpegSha -ne $ExpectedFfmpegSha) {
-    throw "FFmpeg checksum mismatch. Expected $ExpectedFfmpegSha but got $CurrentFfmpegSha"
-}
-$ExpectedFfmpegSha | Out-File $FfmpegShaFile -Encoding utf8 -NoNewline
-
-$ExistingFfmpeg = Get-ChildItem $FfmpegExtractRoot -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-$ExistingFfprobe = Get-ChildItem $FfmpegExtractRoot -Recurse -Filter "ffprobe.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($FfmpegArchiveChanged -or -not $ExistingFfmpeg -or -not $ExistingFfprobe) {
-    if (Test-Path $FfmpegExtractRoot) { Remove-Item $FfmpegExtractRoot -Recurse -Force }
-    New-Item -ItemType Directory $FfmpegExtractRoot -Force | Out-Null
-    Expand-Archive -Path $FfmpegArchive -DestinationPath $FfmpegExtractRoot -Force
-}
-$FfmpegExe = Get-ChildItem $FfmpegExtractRoot -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-$FfprobeExe = Get-ChildItem $FfmpegExtractRoot -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
-if (-not $FfmpegExe -or -not $FfprobeExe) {
-    throw "Extracted FFmpeg archive did not contain ffmpeg.exe and ffprobe.exe"
-}
-Write-Host "FFmpeg tools ready ($($ExpectedFfmpegSha.Substring(0,12)))." -ForegroundColor Green
 
 # --- Publish .NET projects ---
 # The four exes split into two publish profiles:
@@ -208,13 +158,6 @@ if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Uninstaller publish failed" }
 # --- Stage tools/ subdir in dist ---
 $BuildTools = Join-Path $BuildDir "tools"
 New-Item -ItemType Directory $BuildTools -Force | Out-Null
-Copy-Item $FfmpegExe.FullName (Join-Path $BuildTools "ffmpeg.exe") -Force
-Copy-Item $FfprobeExe.FullName (Join-Path $BuildTools "ffprobe.exe") -Force
-$FfmpegNoticeDir = Join-Path $BuildTools "ffmpeg-notices"
-New-Item -ItemType Directory $FfmpegNoticeDir -Force | Out-Null
-Get-ChildItem $FfmpegExtractRoot -Recurse -File |
-    Where-Object { $_.Name -match '^(LICENSE|COPYING|README|VERSION|NOTICE)' } |
-    ForEach-Object { Copy-Item $_.FullName (Join-Path $FfmpegNoticeDir $_.Name) -Force }
 
 # Publish the patched yt-dlp wrapper directly into dist/tools/. AssemblyName=yt-dlp
 # in the project produces yt-dlp.exe; PatchManager copies this over VRChat's

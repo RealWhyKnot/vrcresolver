@@ -1,6 +1,6 @@
 # Security policy
 
-WKVRCProxy is alpha-stage software with **elevated trust requirements** on the user's machine: it modifies the Windows hosts file (admin), patches a binary VRChat ships (`yt-dlp.exe`), runs a local relay HTTP server, and can launch a Cloudflare WARP SOCKS5 helper. Vulnerability reports are taken seriously even though the project is small.
+WKVRCProxy is alpha-stage software with **elevated trust requirements** on the user's machine: it modifies the Windows hosts file (admin), patches a binary VRChat ships (`yt-dlp.exe`), and runs a local relay HTTP server. Vulnerability reports are taken seriously even though the project is small.
 
 ## Reporting
 
@@ -20,7 +20,6 @@ We try to acknowledge new reports within **7 days** and aim for an initial asses
 
 ## Out of scope
 
-- Bugs in vendored third-party binaries (`yt-dlp`, `streamlink`, `wgcf`, `wireproxy`, `bgutil-ytdlp-pot-provider`, `deno`). Please report those upstream -- we'll bump the pinned version when the upstream fix lands.
 - VRChat client behaviour, AVPro behaviour, or the trusted-host allowlist itself.
 - Issues that require an attacker to already have admin access on the user's machine.
 - "Loading failed" / playback failures — those are functional bugs, not security issues; use the bug-report issue template.
