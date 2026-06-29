@@ -499,28 +499,32 @@ internal static partial class Program
     private static async Task<int> ExecFallbackAsync(string[] args, string? url)
     {
         string exeDir = AppContext.BaseDirectory;
-        string ogPath = Path.Combine(exeDir, "yt-dlp-og.exe");
-        if (!File.Exists(ogPath))
-        {
-            Log("FALLBACK no-og: yt-dlp-og.exe missing at " + ogPath + " -- emitting empty stdout, exit 0");
-            return 0;
-        }
 
-        // Recursive-exec guard. If yt-dlp-og.exe classifies as one of our
-        // own wrappers (current build, prior release in the hash list, or
-        // a dev build with the embedded marker), spawning it would loop
-        // back into this same code path. Hand VRChat empty stdout instead
-        // so it lands in its own no-URL error path -- same as the no-og
-        // branch above.
-        //
-        // Hash list lives in LocalLow (the watchdog stages it on startup);
-        // marker + PE-info signals cover dev builds even when the list is
-        // missing.
+        // Recursive-exec guard. Any candidate that classifies as one of our own
+        // wrappers (current build, a prior release in the hash list, or a dev
+        // build with the embedded marker) would loop back into this same code
+        // path, so it is skipped. Hash list lives in LocalLow (the watchdog
+        // stages it on startup); marker + PE-info signals cover dev builds even
+        // when the list is missing.
         string knownHashesPath = Path.Combine(WkvrcPaths.StateRoot(), "known_wrapper_hashes.txt");
-        WrapperKind ogKind = WrapperIdentity.Classify(ogPath, knownHashesPath);
-        if (ogKind == WrapperKind.Ours)
+
+        // Pick a native yt-dlp to hand off to. FallbackBinary.Select walks, in order,
+        // yt-dlp-og.exe next to us, yt-dlp-og.exe in VRChat's Tools dir, then VRChat's
+        // own yt-dlp.exe there -- each gated so we never recurse into one of our own
+        // wrappers. Hash list lives in LocalLow (the watchdog stages it on startup);
+        // marker + PE-info signals cover dev builds even when the list is missing.
+        // Without this, a missing og made the wrapper emit empty stdout, which the user
+        // sees as a blank video for the whole resolve budget on any mesh outage.
+        string? vrcTools = VrcPathLocator.Find();
+        string? ogPath = FallbackBinary.Select(
+            exeDir,
+            vrcTools,
+            File.Exists,
+            p => WrapperIdentity.Classify(p, knownHashesPath) == WrapperKind.Ours);
+
+        if (ogPath == null)
         {
-            Log("FALLBACK refused: yt-dlp-og.exe classifies as our wrapper -- would recurse. Emitting empty stdout, exit 0.");
+            Log("FALLBACK no-og: no usable vanilla yt-dlp found -- emitting empty stdout, exit 0");
             return 0;
         }
 
@@ -534,7 +538,7 @@ internal static partial class Program
             RedirectStandardError = true,
             RedirectStandardInput = false,
             CreateNoWindow = true,
-            WorkingDirectory = exeDir,
+            WorkingDirectory = Path.GetDirectoryName(ogPath) ?? exeDir,
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
 
