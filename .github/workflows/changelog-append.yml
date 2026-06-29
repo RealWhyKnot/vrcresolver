@@ -55,7 +55,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history so the before..after range resolves
           token: ${{ secrets.GITHUB_TOKEN }}
