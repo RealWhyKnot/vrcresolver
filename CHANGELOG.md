@@ -11,8 +11,11 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
-### Changed
-- Bump the minor-and-patch group with 1 update (#68) (7da7132)
+_No notable changes since the last release._
+
+---
+
+## [v2026.6.30.1](https://github.com/RealWhyKnot/WKVRCProxy/releases/tag/v2026.6.30.1) - 2026-06-30
 
 ### Fixed
 - **release:** Use central date for changelog promotion (c7a570d)
