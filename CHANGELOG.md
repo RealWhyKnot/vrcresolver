@@ -11,6 +11,9 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
+### Changed
+- Bump the minor-and-patch group with 1 update (#68) (7da7132)
+
 ### Fixed
 - **release:** Use central date for changelog promotion (c7a570d)
 - **wrapper:** Fall back to native yt-dlp when og backup is missing (013bae9)
