@@ -11,7 +11,8 @@ Release entries are listed newest first. This changelog starts with the first pu
 
 ## Unreleased
 
-_No notable changes since the last release._
+### Breaking
+- Rename product to vrcresolver (d8dd29b)
 
 ---
 
