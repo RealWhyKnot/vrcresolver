@@ -30,7 +30,7 @@ wwwroot/
 # Project Specific
 .local_build_state.json
 version.txt
-src/WKVRCProxy/Generated/
+src/VrcResolver/Generated/
 *.log
 
 # Test / sample media — not for version control

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>VrcResolver.Shared</RootNamespace>
+    <AssemblyName>VrcResolver.Shared</AssemblyName>
+    <Company>RealWhyKnot</Company>
+    <Product>vrcresolver</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VrcResolver.Tests" />
+  </ItemGroup>
+
+</Project>

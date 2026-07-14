@@ -42,12 +42,12 @@ function Write-TestFile {
 }
 
 function New-TestRepo {
-    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("wkvrcproxy-nightly-beta-" + [System.Guid]::NewGuid().ToString("N"))
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("vrcresolver-nightly-beta-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $root | Out-Null
 
     Invoke-TestGit -RepoRoot $root -Arguments @("init", "-q", ".") | Out-Null
-    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.name", "WKVRCProxy Tests") | Out-Null
-    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.email", "wkvrcproxy-tests@example.invalid") | Out-Null
+    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.name", "vrcresolver Tests") | Out-Null
+    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.email", "vrcresolver-tests@example.invalid") | Out-Null
     Invoke-TestGit -RepoRoot $root -Arguments @("config", "core.autocrlf", "false") | Out-Null
 
     Write-TestFile -Path (Join-Path $root "src\package.txt") -Content "initial`n"
@@ -118,7 +118,7 @@ try {
 
     $repo = New-TestRepo
     [void]$tempRoots.Add($repo)
-    Write-TestFile -Path (Join-Path $repo "data\known_wrapper_hashes.txt") -Content "abc123`n"
+    Write-TestFile -Path (Join-Path $repo "data\wrapper_hashes.txt") -Content "abc123`n"
     Invoke-TestGit -RepoRoot $repo -Arguments @("add", ".") | Out-Null
     Invoke-TestGit -RepoRoot $repo -Arguments @("commit", "-q", "-m", "chore(release): append wrapper hash [skip changelog]") | Out-Null
     $plan = Invoke-Plan -RepoRoot $repo

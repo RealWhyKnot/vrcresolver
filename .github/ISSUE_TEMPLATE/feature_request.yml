@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, scan [open issues](https://github.com/RealWhyKnot/WKVRCProxy/issues?q=is%3Aissue) and the README.
+        Before filing, scan [open issues](https://github.com/RealWhyKnot/vrcresolver/issues?q=is%3Aissue) and the README.
 
         For non-trivial changes, please **open this issue first** so we can agree on direction before you spend time on a PR.
 
@@ -15,7 +15,7 @@ body:
     attributes:
       label: Problem
       description: |
-        What are you trying to do that WKVRCProxy doesn't currently support? Describe the situation, not a solution. The clearer the problem, the easier the design conversation.
+        What are you trying to do that vrcresolver doesn't currently support? Describe the situation, not a solution. The clearer the problem, the easier the design conversation.
       placeholder: "When I paste a URL from <host>, the resolver returns a 480p stream even though the host serves 1080p. I'd like a way to …"
     validations:
       required: true

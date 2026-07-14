@@ -15,7 +15,7 @@ function Invoke-Native {
 
 & git config --local core.hooksPath .githooks
 
-Invoke-Native 'dotnet format' { dotnet format WKVRCProxy.slnx }
+Invoke-Native 'dotnet format' { dotnet format vrcresolver.slnx }
 
 if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
     Import-Module PSScriptAnalyzer

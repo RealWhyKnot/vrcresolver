@@ -57,7 +57,7 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Restore
-        run: dotnet restore WKVRCProxy.slnx
+        run: dotnet restore vrcresolver.slnx
 
       - name: Install PowerShell analyzer
         shell: pwsh
@@ -68,10 +68,10 @@ jobs:
         run: ./scripts/lint.ps1
 
       - name: Build
-        run: dotnet build WKVRCProxy.slnx --configuration Release --no-restore -warnaserror
+        run: dotnet build vrcresolver.slnx --configuration Release --no-restore -warnaserror
 
       - name: Test
-        run: dotnet test src/WKVRCProxy.Tests/WKVRCProxy.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
+        run: dotnet test src/VrcResolver.Tests/VrcResolver.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
 
       - name: Upload test results
         if: always()

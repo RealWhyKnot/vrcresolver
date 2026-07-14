@@ -109,7 +109,7 @@ function Get-ReleaseDiffPathspecs {
     return @(
         ".",
         ":(top,exclude)CHANGELOG.md",
-        ":(top,exclude)data/known_wrapper_hashes.txt"
+        ":(top,exclude)data/wrapper_hashes.txt"
     )
 }
 

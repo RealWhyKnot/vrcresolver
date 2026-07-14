@@ -30,11 +30,11 @@ integrity TSV are emitted under `dist/` for the workflow to upload.
 
 The release body is the verbatim output of
 [Generate-ReleaseNotes.ps1](scripts/Generate-ReleaseNotes.ps1). The body points
-readers at `WKVRCProxy-v<version>.integrity.tsv`; the checksum values live in
+readers at `vrcresolver-v<version>.integrity.tsv`; the checksum values live in
 that TSV asset. Layout:
 
 ```
-# WKVRCProxy <tag>
+# vrcresolver <tag>
 
 ## What's Changed
 

@@ -9,14 +9,14 @@ body:
         Welcome. Questions are issues here — don't worry about filing one for something that turns out to be obvious. If it leads to a doc fix or a real bug we'll relabel.
 
         **Read first:**
-        - [README](https://github.com/RealWhyKnot/WKVRCProxy/blob/main/README.md) — install / build / first-run.
+        - [README](https://github.com/RealWhyKnot/vrcresolver/blob/main/README.md) — install / build / first-run.
 
   - type: textarea
     id: question
     attributes:
       label: Question
       description: What are you trying to figure out, set up, or understand?
-      placeholder: "I want to use WKVRCProxy with a custom VRChat install path. The Settings → Advanced field exists but I'm not sure how it interacts with the patcher — does it auto-detect changes if I move VRChat?"
+      placeholder: "I want to use vrcresolver with a custom VRChat install path. The Settings → Advanced field exists but I'm not sure how it interacts with the patcher — does it auto-detect changes if I move VRChat?"
     validations:
       required: true
 
@@ -32,7 +32,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: WKVRCProxy version
+      label: vrcresolver version
       description: From the **About** panel or `dist/version.txt`.
       placeholder: "2026.4.27.7-4974"
     validations:

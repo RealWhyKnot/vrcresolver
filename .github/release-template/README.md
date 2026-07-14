@@ -11,12 +11,12 @@ Each template runs through token substitution before the body composes. Any of t
 | `{tag}` | `v2026.5.5.4` |
 | `{version}` | `2026.5.5.4` |
 | `{owner}` | `RealWhyKnot` |
-| `{repo}` | `WKVRCProxy` |
-| `{full-repo}` | `RealWhyKnot/WKVRCProxy` |
+| `{repo}` | `vrcresolver` |
+| `{full-repo}` | `RealWhyKnot/vrcresolver` |
 | `{commit-sha}` | full 40-char hash of the tag's commit |
 | `{commit-sha-short}` | first 12 chars of the same hash |
 | `{prior-tag}` | `v2026.5.5.3` (empty on first release) |
-| `{zip-name}` | `WKVRCProxy-v2026.5.5.4.zip` |
+| `{zip-name}` | `vrcresolver-v2026.5.5.4.zip` |
 
 Tokens that the resolver could not compute render as the literal token string. This is intentional: a missing token is visible to a reader, who can then file an operator fix.
 

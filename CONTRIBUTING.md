@@ -1,4 +1,4 @@
-# Contributing to WKVRCProxy
+# Contributing to vrcresolver
 
 Thanks for your interest. This file is the contributor guide for the repo.
 
@@ -13,8 +13,8 @@ Thanks for your interest. This file is the contributor guide for the repo.
 You need: Windows 10/11 x64, .NET 10 SDK, PowerShell 5.1+, Git.
 
 ```powershell
-git clone https://github.com/RealWhyKnot/WKVRCProxy.git
-cd WKVRCProxy
+git clone https://github.com/RealWhyKnot/vrcresolver.git
+cd vrcresolver
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
@@ -24,7 +24,7 @@ The first `build.ps1` run also configures `git config core.hooksPath = .githooks
 
 1. Fork, branch off `main`. Branch name is up to you (`fix/...`, `feat/...`, `chore/...` are common).
 2. Make your change. Keep diffs small and focused — a "while I'm here" cleanup is its own PR.
-3. `dotnet build WKVRCProxy.slnx` must pass with `-warnaserror`.
+3. `dotnet build vrcresolver.slnx` must pass with `-warnaserror`.
 4. Run `powershell -File build.ps1 -SkipZip` once on the branch before opening the PR — it catches publish issues that `dotnet build` won't.
 5. Open the PR; the template tells you what to fill in.
 
@@ -49,6 +49,6 @@ Subject style follows the existing log: `type(scope?): short summary (YYYY.M.D.N
 
 ## Reporting bugs / asking questions
 
-- **Bug**: use the [bug report template](https://github.com/RealWhyKnot/WKVRCProxy/issues/new?template=bug_report.yml). Include the watchdog console output around the failure verbatim.
-- **Question / setup help**: open a [Discussion](https://github.com/RealWhyKnot/WKVRCProxy/discussions). We'll convert to an issue if it turns out to be a bug.
+- **Bug**: use the [bug report template](https://github.com/RealWhyKnot/vrcresolver/issues/new?template=bug_report.yml). Include the watchdog console output around the failure verbatim.
+- **Question / setup help**: open a [Discussion](https://github.com/RealWhyKnot/vrcresolver/discussions). We'll convert to an issue if it turns out to be a bug.
 - **Security issue**: see [SECURITY.md](.github/SECURITY.md) — use the private GitHub advisory flow, never a public issue.

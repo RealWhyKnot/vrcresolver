@@ -27,11 +27,11 @@ function Invoke-TestGit {
 }
 
 function New-TestRepo {
-    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("wkvrcproxy-release-sequence-" + [System.Guid]::NewGuid().ToString("N"))
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("vrcresolver-release-sequence-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $root | Out-Null
     Invoke-TestGit -RepoRoot $root -Arguments @("init", "-q", ".") | Out-Null
-    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.name", "WKVRCProxy Tests") | Out-Null
-    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.email", "wkvrcproxy-tests@example.invalid") | Out-Null
+    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.name", "vrcresolver Tests") | Out-Null
+    Invoke-TestGit -RepoRoot $root -Arguments @("config", "user.email", "vrcresolver-tests@example.invalid") | Out-Null
     Set-Content -LiteralPath (Join-Path $root "sample.txt") -Value "base" -Encoding ASCII
     Invoke-TestGit -RepoRoot $root -Arguments @("add", ".") | Out-Null
     Invoke-TestGit -RepoRoot $root -Arguments @("commit", "-q", "-m", "initial") | Out-Null

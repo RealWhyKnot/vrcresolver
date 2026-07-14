@@ -34,4 +34,4 @@ if ($psFiles) {
     }
 }
 
-Invoke-Native 'dotnet format check' { dotnet format WKVRCProxy.slnx --verify-no-changes --no-restore }
+Invoke-Native 'dotnet format check' { dotnet format vrcresolver.slnx --verify-no-changes --no-restore }

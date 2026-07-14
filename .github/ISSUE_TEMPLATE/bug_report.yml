@@ -1,12 +1,12 @@
 name: Bug report
-description: WKVRCProxy is misbehaving — a URL doesn't resolve, doesn't play, the patcher can't reach VRChat, the UI is broken, etc.
+description: vrcresolver is misbehaving — a URL doesn't resolve, doesn't play, the patcher can't reach VRChat, the UI is broken, etc.
 title: "[bug] "
 labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for filing a report. WKVRCProxy is alpha — most "video doesn't play" reports come down to one of:
+        Thanks for filing a report. vrcresolver is alpha — most "video doesn't play" reports come down to one of:
         - a strategy returned a URL AVPro can't actually play (look for "Demoted" chips in the Logs view),
         - the hosts-file mapping `127.0.0.1 localhost.youtube.com` didn't take (declined UAC, AV blocked it),
         - the host needs a direct connection and isn't on the deny-list (`vr-m.net` etc.).
@@ -28,7 +28,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: WKVRCProxy version
+      label: vrcresolver version
       description: From the **About** panel or `dist/version.txt`. Format `YYYY.M.D.N-HASH`.
       placeholder: "2026.4.27.7-4974"
     validations:
@@ -55,7 +55,7 @@ body:
   - type: dropdown
     id: install_loc
     attributes:
-      label: WKVRCProxy install location
+      label: vrcresolver install location
       description: The auto-updater needs write access. Installs under `Program Files` are known to break the updater.
       options:
         - "Anywhere except Program Files (recommended)"
@@ -142,7 +142,7 @@ body:
     attributes:
       label: Logs view output (correlation-ID block)
       description: |
-        From the **Logs** tab in the UI, paste every line for the failing request. Each request has a correlation ID like `[a1b2c3d4]` — grab the whole block from `Starting resolution for: …` through to the failure or final resolution. Don't summarize; paste verbatim. If the bug isn't a resolution issue, paste any relevant log lines you can find (`wkvrcproxy_*.log` next to the exe is the same content).
+        From the **Logs** tab in the UI, paste every line for the failing request. Each request has a correlation ID like `[a1b2c3d4]` — grab the whole block from `Starting resolution for: …` through to the failure or final resolution. Don't summarize; paste verbatim. If the bug isn't a resolution issue, paste any relevant log lines you can find (the `%LOCALAPPDATA%Low\vrcresolver\logs\` files carry the same content).
       render: text
       placeholder: |
         [a1b2c3d4] Starting resolution for: https://…
@@ -159,7 +159,7 @@ body:
       label: Reproduction steps
       description: What did you do, in order? Include in-world player type if you know it (Stream / Video / Movie & Chill / etc.). For non-playback bugs, describe what you clicked / configured.
       placeholder: |
-        1. Launched WKVRCProxy, then VRChat.
+        1. Launched vrcresolver, then VRChat.
         2. Joined world "Movie & Chill".
         3. Pasted the URL above into the player.
         4. Player showed "Loading…" indefinitely.
@@ -173,7 +173,7 @@ body:
       description: |
         Brief list of workarounds attempted. "Nothing yet" is fine.
       placeholder: |
-        - Restarted WKVRCProxy and VRChat
+        - Restarted vrcresolver and VRChat
         - Toggled Pre-Flight URL Probe in Settings
         - Cleared `strategy_memory.json`
     validations:

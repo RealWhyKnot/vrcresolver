@@ -142,10 +142,10 @@ jobs:
         id: zip
         shell: pwsh
         run: |
-          $zip = Get-ChildItem dist/WKVRCProxy-*.zip | Select-Object -First 1
+          $zip = Get-ChildItem dist/vrcresolver-*.zip | Select-Object -First 1
           if (-not $zip) { throw "No release zip found in dist/ -- build.ps1 -Package did not produce one." }
           $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash
-          $manifest = Get-ChildItem dist/WKVRCProxy-*.manifest.tsv | Select-Object -First 1
+          $manifest = Get-ChildItem dist/vrcresolver-*.manifest.tsv | Select-Object -First 1
           if (-not $manifest) { throw "No manifest found in dist/ -- build.ps1 -Package did not produce one. Generate-ReleaseNotes.ps1 needs it for the File integrity section." }
           $integrityName = $zip.Name -replace '\.zip$', '.integrity.tsv'
           $integrity = Join-Path $zip.DirectoryName $integrityName
@@ -330,7 +330,7 @@ jobs:
           Write-Host "Compare $inputPath vs $diffPath in the runner artifacts."
           throw "Release body still differs after auto-correct + retries."
 
-      - name: Append wrapper SHA to known_wrapper_hashes.txt
+      - name: Append wrapper SHA to wrapper_hashes.txt
         # Only fires for release tags (no -XXXX dev suffix). Dev builds keep
         # their SHA out of the public hash list -- WrapperIdentity identifies
         # them via the embedded marker and PE-metadata signals instead.
@@ -359,7 +359,7 @@ jobs:
           version="${TAG_NAME#v}"
           iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          list="data/known_wrapper_hashes.txt"
+          list="data/wrapper_hashes.txt"
           if [[ ! -f "$list" ]]; then
             echo "::error::Hash list missing at $list -- create the seed file in repo root"
             exit 1
@@ -404,7 +404,7 @@ jobs:
                   message: { headline: $headline, body: $body },
                   fileChanges: {
                     additions: [
-                      { path: "data/known_wrapper_hashes.txt", contents: $list }
+                      { path: "data/wrapper_hashes.txt", contents: $list }
                     ]
                   },
                   expectedHeadOid: $oid

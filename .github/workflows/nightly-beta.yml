@@ -64,7 +64,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a $env:TAG_NAME -m "WKVRCProxy nightly beta $env:TAG_NAME"
+          git tag -a $env:TAG_NAME -m "vrcresolver nightly beta $env:TAG_NAME"
           if ($LASTEXITCODE -ne 0) { throw "Could not create beta tag $env:TAG_NAME" }
 
           $remote = "https://x-access-token:$env:GH_TOKEN@github.com/${{ github.repository }}.git"

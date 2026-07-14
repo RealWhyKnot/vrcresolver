@@ -109,7 +109,7 @@ $BuildInfoProps = @(
 
 # --- Publish .NET projects ---
 # The four exes split into two publish profiles:
-#   * Watchdog (WKVRCProxy.exe) — regular self-contained single-file with R2R.
+#   * Watchdog (vrcresolver.exe) — regular self-contained single-file with R2R.
 #     Long-lived process; size doesn't matter as much; AOT audit pending.
 #   * Updater + Uninstaller — AOT (csproj sets PublishAot/Trimmed/full).
 #     Single native exe each; PublishSingleFile is incompatible with AOT
@@ -141,19 +141,36 @@ $AotPubArgs = @("-c", "Release", "-r", "win-x64", "--self-contained", "true",
     "/p:Version=$AsmVersion",
     "-o", $BuildDir, "--nologo")
 $WatchdogPubArgs = $AotPubArgs + $BuildInfoProps
-dotnet publish "src/WKVRCProxy/WKVRCProxy.csproj" @WatchdogPubArgs
-if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy publish failed" }
-dotnet publish "src/WKVRCProxy.Updater/WKVRCProxy.Updater.csproj" @AotPubArgs
-if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Updater publish failed" }
-$UpdaterExe = Join-Path $BuildDir "WKVRCProxy.Updater.exe"
+dotnet publish "src/VrcResolver/VrcResolver.csproj" @WatchdogPubArgs
+if ($LASTEXITCODE -ne 0) { throw "VrcResolver publish failed" }
+dotnet publish "src/VrcResolver.Updater/VrcResolver.Updater.csproj" @AotPubArgs
+if ($LASTEXITCODE -ne 0) { throw "VrcResolver.Updater publish failed" }
+$UpdaterExe = Join-Path $BuildDir "vrcresolver.Updater.exe"
 if (Test-Path $UpdaterExe) {
-    Copy-Item $UpdaterExe (Join-Path $BuildDir "WKVRCProxy.Updater.next.exe") -Force
+    Copy-Item $UpdaterExe (Join-Path $BuildDir "vrcresolver.Updater.next.exe") -Force
 }
 else {
-    throw "WKVRCProxy.Updater.exe missing after publish"
+    throw "vrcresolver.Updater.exe missing after publish"
 }
-dotnet publish "src/WKVRCProxy.Uninstaller/WKVRCProxy.Uninstaller.csproj" @AotPubArgs
-if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.Uninstaller publish failed" }
+dotnet publish "src/VrcResolver.Uninstaller/VrcResolver.Uninstaller.csproj" @AotPubArgs
+if ($LASTEXITCODE -ne 0) { throw "VrcResolver.Uninstaller publish failed" }
+
+# --- Transitional rename launchers ---
+# Ships this release cycle only (see src/VrcResolver.Compat). The old
+# updater keys the payload off WKVRCProxy.exe and relaunches that name; the
+# copies under the old updater names get swapped in by UpdaterRepair so a
+# stale old-named updater on disk becomes a forwarder. Drop this block once
+# the installed fleet has crossed the rename.
+dotnet publish "src/VrcResolver.Compat/VrcResolver.Compat.csproj" @AotPubArgs
+if ($LASTEXITCODE -ne 0) { throw "VrcResolver.Compat publish failed" }
+$CompatExe = Join-Path $BuildDir "WKVRCProxy.exe"
+if (Test-Path $CompatExe) {
+    Copy-Item $CompatExe (Join-Path $BuildDir "WKVRCProxy.Updater.exe") -Force
+    Copy-Item $CompatExe (Join-Path $BuildDir "WKVRCProxy.Updater.next.exe") -Force
+}
+else {
+    throw "WKVRCProxy.exe launcher missing after publish"
+}
 
 # --- Stage tools/ subdir in dist ---
 $BuildTools = Join-Path $BuildDir "tools"
@@ -175,28 +192,28 @@ New-Item -ItemType Directory $BuildTools -Force | Out-Null
 $YtDlpPubArgs = @("-c", "Release", "-r", "win-x64", "--self-contained", "true",
     "/p:Version=$AsmVersion",
     "-o", $BuildTools, "--nologo")
-dotnet publish "src/WKVRCProxy.YtDlp/WKVRCProxy.YtDlp.csproj" @YtDlpPubArgs
-if ($LASTEXITCODE -ne 0) { throw "WKVRCProxy.YtDlp publish failed" }
+dotnet publish "src/VrcResolver.YtDlp/VrcResolver.YtDlp.csproj" @YtDlpPubArgs
+if ($LASTEXITCODE -ne 0) { throw "VrcResolver.YtDlp publish failed" }
 
 # AOT publish leaves a yt-dlp.pdb (~14 MB) we don't need to ship — the .pdb
 # strip below picks it up.
 
 # --- Stage data/ subdir in dist (known wrapper hashes list) ---
-# Ships `data/known_wrapper_hashes.txt` alongside WKVRCProxy.exe so the
-# watchdog can identify older WKVRCProxy wrapper binaries that pre-date the
-# current install. The file is repo-tracked and maintained by the release
-# workflow (one SHA appended per published release). Dev builds carry
-# whatever state the working tree has and rely on the PE-metadata + embedded
-# marker signals for self-identification.
+# Ships `data/wrapper_hashes.txt` alongside vrcresolver.exe so the watchdog
+# can identify older wrapper binaries that pre-date the current install.
+# The file is repo-tracked and maintained by the release workflow (one SHA
+# appended per published release). Dev builds carry whatever state the
+# working tree has and rely on the PE-metadata + embedded marker signals
+# for self-identification.
 $BuildData = Join-Path $BuildDir "data"
 New-Item -ItemType Directory $BuildData -Force | Out-Null
-$KnownHashesSrc = Join-Path $PSScriptRoot "data/known_wrapper_hashes.txt"
+$KnownHashesSrc = Join-Path $PSScriptRoot "data/wrapper_hashes.txt"
 if (Test-Path $KnownHashesSrc) {
-    Copy-Item $KnownHashesSrc (Join-Path $BuildData "known_wrapper_hashes.txt") -Force
+    Copy-Item $KnownHashesSrc (Join-Path $BuildData "wrapper_hashes.txt") -Force
 }
 else {
-    Write-Warning "data/known_wrapper_hashes.txt missing from repo -- shipping empty list"
-    "" | Out-File (Join-Path $BuildData "known_wrapper_hashes.txt") -Encoding utf8 -NoNewline
+    Write-Warning "data/wrapper_hashes.txt missing from repo -- shipping empty list"
+    "" | Out-File (Join-Path $BuildData "wrapper_hashes.txt") -Encoding utf8 -NoNewline
 }
 
 # --- Trim debug symbols we don't ship ---
@@ -228,8 +245,8 @@ if ($CreatePackage) {
     }
     if (-not (Test-Path $ArtifactRoot)) { New-Item -ItemType Directory $ArtifactRoot -Force | Out-Null }
 
-    $ManifestPath = Join-Path $ArtifactRoot "WKVRCProxy-v$FullVersion.manifest.tsv"
-    $ZipPath = Join-Path $ArtifactRoot "WKVRCProxy-v$FullVersion.zip"
+    $ManifestPath = Join-Path $ArtifactRoot "vrcresolver-v$FullVersion.manifest.tsv"
+    $ZipPath = Join-Path $ArtifactRoot "vrcresolver-v$FullVersion.zip"
     if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
     # Manifest is tab-separated: <sha256>\t<size_bytes>\t<relative_path>.

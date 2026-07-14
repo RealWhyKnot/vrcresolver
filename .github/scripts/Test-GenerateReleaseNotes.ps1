@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptRoot = Split-Path -Parent $PSCommandPath
 $Generator = Join-Path $ScriptRoot 'Generate-ReleaseNotes.ps1'
-$TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("WKVRCProxy.ReleaseNotes." + [Guid]::NewGuid().ToString('N'))
+$TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("vrcresolver.ReleaseNotes." + [Guid]::NewGuid().ToString('N'))
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $PushedLocation = $false
 
@@ -82,30 +82,30 @@ try {
         -Path 'CHANGELOG.md' `
         -Content "# Changelog`n`n## Unreleased`n`n_No notable changes since the last release._`n" `
         -Subject 'chore: initial changelog'
-    Invoke-Git tag -a v2026.5.1.0 -m 'WKVRCProxy 2026.5.1.0'
+    Invoke-Git tag -a v2026.5.1.0 -m 'vrcresolver 2026.5.1.0'
 
     Commit-TestChange `
         -Path 'src.txt' `
         -Content "plain-prerelease`n" `
         -Subject 'fix(helper): plain prerelease fallback'
-    Invoke-Git tag -a v2026.5.2.0 -m 'WKVRCProxy 2026.5.2.0'
+    Invoke-Git tag -a v2026.5.2.0 -m 'vrcresolver 2026.5.2.0'
 
     Commit-TestChange `
         -Path 'src.txt' `
         -Content "beta`n" `
         -Subject 'fix(relay): beta port fallback'
-    Invoke-Git tag -a v2026.5.2.1-beta -m 'WKVRCProxy 2026.5.2.1-beta'
+    Invoke-Git tag -a v2026.5.2.1-beta -m 'vrcresolver 2026.5.2.1-beta'
 
     Commit-TestChange `
         -Path 'src.txt' `
         -Content "stable`n" `
         -Subject 'fix(vrclog): stable startup tail'
-    Invoke-Git tag -a v2026.5.3.0 -m 'WKVRCProxy 2026.5.3.0'
+    Invoke-Git tag -a v2026.5.3.0 -m 'vrcresolver 2026.5.3.0'
 
     $TemplateDir = Join-Path $TempRoot '.github/release-template'
     $StableNotes = (& $Generator `
             -Tag v2026.5.3.0 `
-            -Repo RealWhyKnot/WKVRCProxy `
+            -Repo RealWhyKnot/vrcresolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -SkipScrub) -join "`n"
@@ -119,7 +119,7 @@ try {
 
     $BetaNotes = (& $Generator `
             -Tag v2026.5.2.1-beta `
-            -Repo RealWhyKnot/WKVRCProxy `
+            -Repo RealWhyKnot/vrcresolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -SkipScrub) -join "`n"
@@ -131,7 +131,7 @@ try {
 
     $PlainPrereleaseNotes = (& $Generator `
             -Tag v2026.5.2.0 `
-            -Repo RealWhyKnot/WKVRCProxy `
+            -Repo RealWhyKnot/vrcresolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -SkipScrub) -join "`n"
@@ -141,27 +141,27 @@ try {
     Assert-NotContains -Text $PlainPrereleaseNotes -Unexpected 'fix(relay): beta port fallback'
 
     New-Item -ItemType Directory -Force -Path 'artifacts' | Out-Null
-    $zipPath = Join-Path $TempRoot 'artifacts/WKVRCProxy-v2026.5.3.0.zip'
-    $manifestPath = Join-Path $TempRoot 'artifacts/WKVRCProxy-v2026.5.3.0.manifest.tsv'
+    $zipPath = Join-Path $TempRoot 'artifacts/vrcresolver-v2026.5.3.0.zip'
+    $manifestPath = Join-Path $TempRoot 'artifacts/vrcresolver-v2026.5.3.0.manifest.tsv'
     $zipSha = 'E8966F33BE8246922756E3E8234CF8309FB6D3151665594203F53BBF5725164B'
-    Write-TestFile -Path 'artifacts/WKVRCProxy-v2026.5.3.0.zip' -Content 'zip'
-    Write-TestFile -Path 'artifacts/WKVRCProxy-v2026.5.3.0.manifest.tsv' -Content "A24EA7D3DF2B0718AFF60B5B9EBEBDF590ED4938D81A6B08CDEC7A880B326B0C`t123`tWKVRCProxy.exe`n"
+    Write-TestFile -Path 'artifacts/vrcresolver-v2026.5.3.0.zip' -Content 'zip'
+    Write-TestFile -Path 'artifacts/vrcresolver-v2026.5.3.0.manifest.tsv' -Content "A24EA7D3DF2B0718AFF60B5B9EBEBDF590ED4938D81A6B08CDEC7A880B326B0C`t123`tvrcresolver.exe`n"
 
     $IntegrityNotes = (& $Generator `
             -Tag v2026.5.3.0 `
-            -Repo RealWhyKnot/WKVRCProxy `
+            -Repo RealWhyKnot/vrcresolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -ZipPath $zipPath `
-            -ZipName 'WKVRCProxy-v2026.5.3.0.zip' `
+            -ZipName 'vrcresolver-v2026.5.3.0.zip' `
             -ZipSize 157017922 `
             -ZipSha256 $zipSha `
             -Manifest $manifestPath `
             -SkipScrub) -join "`n"
 
-    Assert-Contains -Text $IntegrityNotes -Expected 'WKVRCProxy-v2026.5.3.0.integrity.tsv'
+    Assert-Contains -Text $IntegrityNotes -Expected 'vrcresolver-v2026.5.3.0.integrity.tsv'
     Assert-NotContains -Text $IntegrityNotes -Unexpected "SHA256: $zipSha"
-    Assert-NotContains -Text $IntegrityNotes -Unexpected 'WKVRCProxy.exe                        '
+    Assert-NotContains -Text $IntegrityNotes -Unexpected 'vrcresolver.exe                        '
 
     Write-Host 'Generate-ReleaseNotes tests passed.'
 }

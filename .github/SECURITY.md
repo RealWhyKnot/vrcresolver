@@ -1,20 +1,20 @@
 # Security policy
 
-WKVRCProxy is alpha-stage software with **elevated trust requirements** on the user's machine: it modifies the Windows hosts file (admin), patches a binary VRChat ships (`yt-dlp.exe`), and runs a local relay HTTP server. Vulnerability reports are taken seriously even though the project is small.
+vrcresolver is alpha-stage software with **elevated trust requirements** on the user's machine: it modifies the Windows hosts file (admin), patches a binary VRChat ships (`yt-dlp.exe`), and runs a local relay HTTP server. Vulnerability reports are taken seriously even though the project is small.
 
 ## Reporting
 
 **Do not open a public issue for security reports.**
 
-Use **[GitHub Security Advisories](https://github.com/RealWhyKnot/WKVRCProxy/security/advisories/new)** — this gives a private channel and lets us coordinate a fix and disclosure timeline.
+Use **[GitHub Security Advisories](https://github.com/RealWhyKnot/vrcresolver/security/advisories/new)** — this gives a private channel and lets us coordinate a fix and disclosure timeline.
 
 We try to acknowledge new reports within **7 days** and aim for an initial assessment within **14 days**. There is no bug bounty.
 
 ## In scope
 
 - Local privilege escalation, unsafe admin-elevated operations, or hosts-file tampering by an unprivileged caller.
-- Anything that lets a remote URL or VRChat world cause WKVRCProxy to execute attacker-controlled code, exfiltrate local files, or persist beyond the running session.
-- The local relay server, IPC servers (HTTP / pipe / WebSocket), or any endpoint reachable from `localhost` while WKVRCProxy is running, if they expose unintended capabilities.
+- Anything that lets a remote URL or VRChat world cause vrcresolver to execute attacker-controlled code, exfiltrate local files, or persist beyond the running session.
+- The local relay server, IPC servers (HTTP / pipe / WebSocket), or any endpoint reachable from `localhost` while vrcresolver is running, if they expose unintended capabilities.
 - Patcher behaviour (`PatcherService.cs`) writing or restoring the wrong file, or being induced to corrupt VRChat's install.
 - Update / fetch paths in `build.ps1` that could be tricked into installing a tampered binary.
 

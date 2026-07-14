@@ -1,0 +1,16 @@
+# vrcresolver wrapper SHA-256 hashes by release. Entries recorded before
+# the product rename stay listed so pre-rename wrappers keep classifying
+# as ours. One released wrapper per line. Maintained by .github/workflows/release.yml
+# via the GraphQL createCommitOnBranch mutation. Do not edit by hand.
+#
+# Format: <sha256>  <version>  <iso-utc-date>
+# Used by WrapperIdentity (src/VrcResolver.Shared/WrapperIdentity.cs) as the
+# third of four "is this our binary?" signals. Released versions are matched
+# here; dev builds fall through to PE metadata + embedded marker signals.
+219aa99013999f2352d2e8cadade96c84a5929c154d92f728eb0bd07e9e54123  2026.5.14.0  2026-05-14T11:41:48Z
+ee3506ddc1a20fc33bd930d15e3a9b470237af1c522c6e82f6c8c68a6b3698c9  2026.5.16.0  2026-05-16T17:06:44Z
+bba47e37a1edad2fb11b2279b2cf38cea2afc0a226fac3e3c601adc8f12c324a  2026.5.27.0  2026-05-27T14:27:49Z
+98ab85d7370ac635262418660f827c90681cc9f68d2cc68ad465eb3c104ff006  2026.6.12.0  2026-06-12T05:49:38Z
+cafa4249a2c1b9faeb324e7c089771377eac503a79e31534997737044723050f  2026.6.15.0  2026-06-15T09:35:03Z
+341219f655a47c2427c34c0253411232a44fad9e486d27d7086807d7c8650101  2026.6.15.1  2026-06-16T00:49:15Z
+9b35214ac7a1554eb711f6ece019ed9ea2ad814689741e1f3bb594f1e15b4b60  2026.6.30.1  2026-06-30T18:45:39Z

@@ -1,8 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-
-  <PropertyGroup>
-    <RootNamespace>WKVRCProxy.Shared</RootNamespace>
-    <AssemblyName>WKVRCProxy.Shared</AssemblyName>
-  </PropertyGroup>
-
-</Project>
