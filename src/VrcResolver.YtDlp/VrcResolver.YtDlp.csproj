@@ -26,8 +26,8 @@
          OriginalFilename="yt-dlp" with no CompanyName, so the pair below
          is distinct enough to short-circuit positively. -->
     <Company>RealWhyKnot</Company>
-    <Product>vrcresolver</Product>
-    <AssemblyTitle>vrcresolver yt-dlp wrapper</AssemblyTitle>
+    <Product>VRCResolver</Product>
+    <AssemblyTitle>VRCResolver yt-dlp wrapper</AssemblyTitle>
   </PropertyGroup>
 
   <ItemGroup>

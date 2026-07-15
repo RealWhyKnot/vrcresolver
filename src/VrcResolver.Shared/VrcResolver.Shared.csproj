@@ -4,7 +4,7 @@
     <RootNamespace>VrcResolver.Shared</RootNamespace>
     <AssemblyName>VrcResolver.Shared</AssemblyName>
     <Company>RealWhyKnot</Company>
-    <Product>vrcresolver</Product>
+    <Product>VRCResolver</Product>
   </PropertyGroup>
 
   <ItemGroup>

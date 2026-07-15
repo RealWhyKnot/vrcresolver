@@ -1,12 +1,12 @@
-# vrcresolver
+# VRCResolver
 
-VRChat's in-world video players use yt-dlp under the hood. Vanilla yt-dlp is slow on cold starts, breaks against YouTube changes the moment they ship, and hands AVPro URLs that VRChat's trusted-host allowlist rejects in default-public worlds. vrcresolver fixes all three.
+VRChat's in-world video players use yt-dlp under the hood. Vanilla yt-dlp is slow on cold starts, breaks against YouTube changes the moment they ship, and hands AVPro URLs that VRChat's trusted-host allowlist rejects in default-public worlds. VRCResolver fixes all three.
 
 A Windows console daemon swaps VRChat's `Tools/yt-dlp.exe` for a patched build that asks a remote resolver (`vrcresolver.com`) and routes the resulting stream URL through a local listener so AVPro accepts it everywhere. If the remote is unreachable or anything else goes wrong, the patched binary falls through to the vanilla yt-dlp it preserved at install time. Watchdog absent does not break VRChat.
 
-vrcresolver is the new name for WKVRCProxy. Installs from before the rename update across automatically; state, settings, and the VRChat patch carry over.
+VRCResolver is the new name for WKVRCProxy. Installs from before the rename update across automatically; state, settings, and the VRChat patch carry over.
 
-**[Report a bug](https://github.com/RealWhyKnot/vrcresolver/issues/new?template=bug_report.yml)**
+**[Report a bug](https://github.com/RealWhyKnot/VRCResolver/issues/new?template=bug_report.yml)**
 
 ---
 

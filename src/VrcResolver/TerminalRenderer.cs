@@ -162,7 +162,7 @@ internal sealed class TerminalRenderer
     {
         WriteTableBlock("managed subsystems", new[]
         {
-            ("VRChat hook", "ready", "keeps game video requests flowing through vrcresolver"),
+            ("VRChat hook", "ready", "keeps game video requests flowing through VRCResolver"),
             ("resolver mesh", _meshConnected() ? "online" : "reconnecting", "resolves playback URLs and fallback decisions"),
             ("local video", "ready", "serves localhost.youtube.com playback to the game"),
             ("hosts entry", "managed", "keeps localhost.youtube.com pointing at this PC"),

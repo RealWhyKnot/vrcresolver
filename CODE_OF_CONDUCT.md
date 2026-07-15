@@ -14,6 +14,6 @@ Applies to all project spaces (this repository, its Discussions, its issue track
 
 ## Reporting
 
-If you experience or witness behaviour that violates this code, contact the maintainer privately via a [GitHub Security Advisory](https://github.com/RealWhyKnot/vrcresolver/security/advisories/new) (the private channel works for conduct reports too) or by direct message to **@RealWhyKnot** on GitHub.
+If you experience or witness behaviour that violates this code, contact the maintainer privately via a [GitHub Security Advisory](https://github.com/RealWhyKnot/VRCResolver/security/advisories/new) (the private channel works for conduct reports too) or by direct message to **@RealWhyKnot** on GitHub.
 
 Reports are handled confidentially. Consequences range from a warning to a permanent ban from project spaces, at the maintainer's discretion, following the enforcement guidelines in the Contributor Covenant.

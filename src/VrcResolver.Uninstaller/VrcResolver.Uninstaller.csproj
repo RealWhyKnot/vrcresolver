@@ -5,8 +5,8 @@
     <RootNamespace>VrcResolver.Uninstaller</RootNamespace>
     <AssemblyName>vrcresolver.Uninstaller</AssemblyName>
     <Company>RealWhyKnot</Company>
-    <Product>vrcresolver</Product>
-    <AssemblyTitle>vrcresolver uninstaller</AssemblyTitle>
+    <Product>VRCResolver</Product>
+    <AssemblyTitle>VRCResolver uninstaller</AssemblyTitle>
     <!-- AOT publish so the uninstaller is ~10x smaller. Trim-safe:
          pure file/process operations + Logger/CrashHandler/WkvrcPaths/
          ToolsDirSweeper from Shared. No JSON serialization. No reflection

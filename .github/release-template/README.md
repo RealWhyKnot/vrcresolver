@@ -11,8 +11,8 @@ Each template runs through token substitution before the body composes. Any of t
 | `{tag}` | `v2026.5.5.4` |
 | `{version}` | `2026.5.5.4` |
 | `{owner}` | `RealWhyKnot` |
-| `{repo}` | `vrcresolver` |
-| `{full-repo}` | `RealWhyKnot/vrcresolver` |
+| `{repo}` | `VRCResolver` |
+| `{full-repo}` | `RealWhyKnot/VRCResolver` |
 | `{commit-sha}` | full 40-char hash of the tag's commit |
 | `{commit-sha-short}` | first 12 chars of the same hash |
 | `{prior-tag}` | `v2026.5.5.3` (empty on first release) |

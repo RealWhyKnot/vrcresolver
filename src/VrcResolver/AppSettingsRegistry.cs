@@ -54,7 +54,7 @@ internal static class AppSettingsRegistry
 
         new AppSettingDefinition(
             "update-check",
-            "Check for new vrcresolver versions at startup.",
+            "Check for new VRCResolver versions at startup.",
             ["on", "off"],
             static s => FormatBool(s.Maintenance.UpdateCheck),
             static (AppSettings s, string value, out string error) =>

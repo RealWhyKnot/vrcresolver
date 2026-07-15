@@ -105,7 +105,7 @@ try {
     $TemplateDir = Join-Path $TempRoot '.github/release-template'
     $StableNotes = (& $Generator `
             -Tag v2026.5.3.0 `
-            -Repo RealWhyKnot/vrcresolver `
+            -Repo RealWhyKnot/VRCResolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -SkipScrub) -join "`n"
@@ -119,7 +119,7 @@ try {
 
     $BetaNotes = (& $Generator `
             -Tag v2026.5.2.1-beta `
-            -Repo RealWhyKnot/vrcresolver `
+            -Repo RealWhyKnot/VRCResolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -SkipScrub) -join "`n"
@@ -131,7 +131,7 @@ try {
 
     $PlainPrereleaseNotes = (& $Generator `
             -Tag v2026.5.2.0 `
-            -Repo RealWhyKnot/vrcresolver `
+            -Repo RealWhyKnot/VRCResolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -SkipScrub) -join "`n"
@@ -149,7 +149,7 @@ try {
 
     $IntegrityNotes = (& $Generator `
             -Tag v2026.5.3.0 `
-            -Repo RealWhyKnot/vrcresolver `
+            -Repo RealWhyKnot/VRCResolver `
             -TemplateDir $TemplateDir `
             -PrereleaseTags v2026.5.2.0 `
             -ZipPath $zipPath `

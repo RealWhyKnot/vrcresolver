@@ -189,7 +189,7 @@ internal sealed class PatchManager : IDisposable
             try
             {
                 File.Delete(targetPath);
-                ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan vrcresolver wrapper deleted from Tools (no backup to restore from). VRChat will re-download its yt-dlp on next session.");
+                ConsoleUx.Warn(LogComponent.Patch, "Recovery: orphan VRCResolver wrapper deleted from Tools (no backup to restore from). VRChat will re-download its yt-dlp on next session.");
             }
             catch (Exception ex)
             {
@@ -556,8 +556,8 @@ internal sealed class PatchManager : IDisposable
         // in the scrollback and update the console window title so a user
         // glancing at the taskbar sees the daemon is no longer functional
         // even after the message has scrolled off.
-        ConsoleUx.Fatal("vrcresolver halted -- Reinstall vrcresolver; reason=" + reason + " restored=" + restored);
-        try { Console.Title = "vrcresolver -- HALTED (" + reason + ")"; } catch { /* best-effort */ }
+        ConsoleUx.Fatal("VRCResolver halted -- Reinstall VRCResolver; reason=" + reason + " restored=" + restored);
+        try { Console.Title = "VRCResolver -- HALTED (" + reason + ")"; } catch { /* best-effort */ }
 
         try { File.WriteAllText(_haltFlagPath, DateTime.UtcNow.ToString("o") + " " + reason); }
         catch (Exception ex) { ConsoleUx.Warn(LogComponent.Patch, "could not write halt.flag: " + ex.Message); }

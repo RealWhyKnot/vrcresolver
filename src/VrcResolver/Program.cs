@@ -134,7 +134,7 @@ internal static class Program
 
             if (!acquired || !legacyAcquired)
             {
-                ConsoleUx.Warn(LogComponent.Terminal, "vrcresolver is already running.");
+                ConsoleUx.Warn(LogComponent.Terminal, "VRCResolver is already running.");
                 if (acquired) { try { mutex.ReleaseMutex(); } catch { /* ignore */ } }
                 if (legacyAcquired) { try { legacyMutex.ReleaseMutex(); } catch { /* ignore */ } }
                 return 1;

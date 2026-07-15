@@ -17,8 +17,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <Company>RealWhyKnot</Company>
-    <Product>vrcresolver</Product>
-    <AssemblyTitle>vrcresolver launcher</AssemblyTitle>
+    <Product>VRCResolver</Product>
+    <AssemblyTitle>VRCResolver launcher</AssemblyTitle>
   </PropertyGroup>
 
 </Project>

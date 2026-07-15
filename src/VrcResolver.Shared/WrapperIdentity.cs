@@ -56,7 +56,7 @@ public static class WrapperIdentity
     public const long OursSizeCeiling = 10L * 1024 * 1024;
 
     private const string OurCompanyName = "RealWhyKnot";
-    private const string OurProductName = "vrcresolver";
+    private const string OurProductName = "VRCResolver";
 
     public static string Marker => MarkerString;
 

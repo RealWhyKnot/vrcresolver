@@ -19,7 +19,7 @@ namespace VrcResolver;
 // stack trace over the operator's banner.
 internal static class UpdateCheck
 {
-    private const string Repo = "RealWhyKnot/vrcresolver";
+    private const string Repo = "RealWhyKnot/VRCResolver";
     // /releases/latest skips prereleases by GitHub convention; the list
     // endpoint includes them and we filter ourselves when the user has
     // not opted in. Page size 10 covers any realistic run of consecutive
@@ -47,7 +47,7 @@ internal static class UpdateCheck
 
             using var http = new HttpClient { Timeout = RequestTimeout };
             var asmVer = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "0.0.0.0";
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("vrcresolver-Watchdog/" + asmVer);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("VRCResolver-Watchdog/" + asmVer);
             // GitHub returns 403 without an Accept header in some scenarios.
             http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
 

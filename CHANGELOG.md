@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to WKVRCProxy. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses date-driven versioning (`YYYY.M.D.N` for releases, `YYYY.M.D.N-XXXX` for development builds).
+All notable changes to VRCResolver. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses date-driven versioning (`YYYY.M.D.N` for releases, `YYYY.M.D.N-XXXX` for development builds).
 
 Release entries are listed newest first. This changelog starts with the first public GitHub release.
 

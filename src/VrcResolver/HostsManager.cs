@@ -75,7 +75,7 @@ internal static class HostsManager
         string trimmed = rawLine.TrimStart();
         if (trimmed.Length == 0 || trimmed[0] == '#') return false;
 
-        // Strip trailing `# comment` (ours is `# vrcresolver`; pre-rename installs wrote `# WKVRCProxy`, but also
+        // Strip trailing `# comment` (ours is `# VRCResolver`; pre-rename installs wrote `# WKVRCProxy`, but also
         // tolerate hand-edited variants).
         int hashIdx = trimmed.IndexOf('#');
         string body = (hashIdx >= 0 ? trimmed[..hashIdx] : trimmed).Trim();
@@ -113,7 +113,7 @@ internal static class HostsManager
         if (IsBypassActive()) return 0;
         try
         {
-            File.AppendAllText(HostsPath, Environment.NewLine + "127.0.0.1 " + MarkerHost + " # vrcresolver" + Environment.NewLine);
+            File.AppendAllText(HostsPath, Environment.NewLine + "127.0.0.1 " + MarkerHost + " # VRCResolver" + Environment.NewLine);
             return 0;
         }
         catch (Exception ex)

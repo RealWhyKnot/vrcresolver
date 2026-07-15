@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, scan [open issues](https://github.com/RealWhyKnot/vrcresolver/issues?q=is%3Aissue) and the README.
+        Before filing, scan [open issues](https://github.com/RealWhyKnot/VRCResolver/issues?q=is%3Aissue) and the README.
 
         For non-trivial changes, please **open this issue first** so we can agree on direction before you spend time on a PR.
 

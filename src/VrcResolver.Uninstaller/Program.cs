@@ -48,7 +48,7 @@ internal static class Program
         errors += RunStep("schedule-self-delete", () => ScheduleInstallDirDelete(installDir));
 
         Console.WriteLine(errors == 0
-            ? "vrcresolver uninstalled. The install folder will disappear in a moment."
+            ? "VRCResolver uninstalled. The install folder will disappear in a moment."
             : $"Uninstall finished with {errors} non-fatal error(s) — see messages above.");
         return errors == 0 ? 0 : 2;
     }

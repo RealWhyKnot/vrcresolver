@@ -12,7 +12,7 @@ namespace VrcResolver.Updater;
 
 // No flags. Running this exe IS the request to check-and-maybe-update.
 //   1. Read current version from the vrcresolver.exe sitting next to us.
-//   2. Hit GitHub's releases-latest API for RealWhyKnot/vrcresolver.
+//   2. Hit GitHub's releases-latest API for RealWhyKnot/VRCResolver.
 //   3. If newer, prompt with a 15s timeout (default No on timeout).
 //   4. On Yes: download zip, verify SHA256 from release body, extract,
 //      stop the running watchdog, swap files atomically, relaunch, exit.
@@ -27,7 +27,7 @@ namespace VrcResolver.Updater;
 // current and the pre-rename names.
 internal static partial class Program
 {
-    private const string Repo = "RealWhyKnot/vrcresolver";
+    private const string Repo = "RealWhyKnot/VRCResolver";
     // /releases/latest skips prereleases by GitHub convention. The list
     // endpoint includes them; we filter ourselves when the user has not
     // opted in via Maintenance.IncludePrereleases. The opt-in is read
@@ -210,7 +210,7 @@ internal static partial class Program
             MaxAutomaticRedirections = 5,
         };
         using var http = new HttpClient(handler) { Timeout = FetchTimeout };
-        http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("vrcresolver-Updater", "1.0"));
+        http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("VRCResolver-Updater", "1.0"));
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         string apiUrl = includePrereleases ? AnyReleasesUrl : StableLatestUrl;
         Logger.WriteFileOnly("[updater] GET " + apiUrl + (includePrereleases ? " (include-prereleases=on)" : ""));
@@ -587,7 +587,7 @@ internal static partial class Program
             MaxAutomaticRedirections = 5,
         };
         using var http = new HttpClient(handler) { Timeout = FetchTimeout };
-        http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("vrcresolver-Updater", "1.0"));
+        http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("VRCResolver-Updater", "1.0"));
 
         Logger.WriteFileOnly("[updater] download GET " + url + " dest=" + dest);
         using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);

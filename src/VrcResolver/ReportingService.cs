@@ -47,7 +47,7 @@ internal static partial class ReportingService
     static ReportingService()
     {
         var asmVer = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "0.0.0.0";
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("vrcresolver-Reporter/" + asmVer);
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("VRCResolver-Reporter/" + asmVer);
     }
 
     public static void Initialize()

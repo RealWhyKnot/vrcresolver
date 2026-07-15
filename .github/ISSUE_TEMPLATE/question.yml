@@ -9,7 +9,7 @@ body:
         Welcome. Questions are issues here — don't worry about filing one for something that turns out to be obvious. If it leads to a doc fix or a real bug we'll relabel.
 
         **Read first:**
-        - [README](https://github.com/RealWhyKnot/vrcresolver/blob/main/README.md) — install / build / first-run.
+        - [README](https://github.com/RealWhyKnot/VRCResolver/blob/main/README.md) — install / build / first-run.
 
   - type: textarea
     id: question

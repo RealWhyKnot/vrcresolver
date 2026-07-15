@@ -79,7 +79,7 @@ internal sealed class TerminalCommandRegistry
 
         registry.Add(
             "update",
-            "Check for and install the latest vrcresolver release.",
+            "Check for and install the latest VRCResolver release.",
             UpdateCommand.ExecuteAsync,
             "upgrade");
 
@@ -95,7 +95,7 @@ internal sealed class TerminalCommandRegistry
 
         registry.Add(
             "quit",
-            "Shut down vrcresolver cleanly.",
+            "Shut down VRCResolver cleanly.",
             static (ctx, _, _) =>
             {
                 ctx.Renderer.Info("quit requested; shutting down.");

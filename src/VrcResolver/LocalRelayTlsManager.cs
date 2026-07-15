@@ -18,7 +18,7 @@ internal static class LocalRelayTlsManager
     // Cosmetic store label on newly created certs. Reuse/removal matching
     // is by CN + self-signed check (IsOurCertificate), so certs created
     // under the previous label keep working and get cleaned up the same.
-    private const string FriendlyName = "vrcresolver localhost.youtube.com relay";
+    private const string FriendlyName = "VRCResolver localhost.youtube.com relay";
     private const string HostName = HostsManager.MarkerHost;
     private const string LoopbackIp = "127.0.0.1";
     private const int BootstrapTimeoutMs = 60000;

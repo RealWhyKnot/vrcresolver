@@ -207,7 +207,7 @@ internal sealed partial class MeshClient : IAsyncDisposable
     public MeshClient()
     {
         var ver = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
-        _userAgent = "vrcresolver-Watchdog/" + ver;
+        _userAgent = "VRCResolver-Watchdog/" + ver;
         var handler = new HttpClientHandler { AllowAutoRedirect = false };
         _httpClient = new HttpClient(handler) { Timeout = ApexAttemptTimeout };
     }

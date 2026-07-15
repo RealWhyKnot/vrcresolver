@@ -21,8 +21,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <Company>RealWhyKnot</Company>
-    <Product>vrcresolver</Product>
-    <AssemblyTitle>vrcresolver watchdog</AssemblyTitle>
+    <Product>VRCResolver</Product>
+    <AssemblyTitle>VRCResolver watchdog</AssemblyTitle>
 
     <!-- Suppress the IL warning cluster MessagePack 3.1.4 emits against
          its dynamic resolver chain (BuiltinResolver -> AttributeFormatterResolver

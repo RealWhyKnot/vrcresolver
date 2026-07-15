@@ -5,8 +5,8 @@
     <RootNamespace>VrcResolver.Updater</RootNamespace>
     <AssemblyName>vrcresolver.Updater</AssemblyName>
     <Company>RealWhyKnot</Company>
-    <Product>vrcresolver</Product>
-    <AssemblyTitle>vrcresolver updater</AssemblyTitle>
+    <Product>VRCResolver</Product>
+    <AssemblyTitle>VRCResolver updater</AssemblyTitle>
     <!-- AOT publish so the updater is ~10x smaller (was ~80 MB self-
          contained single-file). Trimming in 'full' mode is safe here
          because:

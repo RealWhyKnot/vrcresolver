@@ -233,7 +233,7 @@ public static class ConsoleUx
         lock (s_lock)
         {
             WriteRaw(ConsoleColor.DarkGray, divider);
-            WriteRaw(ConsoleColor.White, $"  vrcresolver {version}");
+            WriteRaw(ConsoleColor.White, $"  VRCResolver {version}");
             WriteRaw(ConsoleColor.Gray, "  local video relay for VRChat");
             WriteRaw(ConsoleColor.Gray, $"  sha {sha}  built {buildTime}");
             if (isDev)
